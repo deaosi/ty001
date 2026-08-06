@@ -316,6 +316,14 @@
   }
   .audit-status.running { background: rgba(251, 191, 36, .07); border-color: rgba(251, 191, 36, .4); color: var(--amber); }
   .audit-status.done { background: rgba(52, 211, 153, .08); border-color: rgba(52, 211, 153, .4); color: var(--green); }
+  .live-badge {
+    display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 999px;
+    background: rgba(34, 211, 238, .15); border: 1px solid rgba(34, 211, 238, .5);
+    color: #22d3ee; font-size: 11px; font-weight: 600; vertical-align: 1px;
+    animation: livePulse 1.8s ease-in-out infinite;
+  }
+  @keyframes livePulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+  @media (prefers-reduced-motion: reduce) { .live-badge { animation: none; } }
   .audit-cols { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; }
   .audit-col { min-width: 0; }
   .audit-col h3 { font-size: 13px; margin-bottom: 10px; color: var(--text-sub); font-weight: 600; letter-spacing: .3px; }
@@ -556,6 +564,7 @@
       </div>
       <div class="header-actions">
         <select id="auditDays" class="platform-select" onchange="onAuditDaysChange()">
+          <option value="1">今天</option>
           <option value="3">近3天</option>
           <option value="7" selected>近7天</option>
           <option value="14">近14天</option>
@@ -649,6 +658,7 @@
           </select>
         </div>
         <span class="msg-count" id="traceCount"></span>
+        <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px" onclick="loadTodayLive()">⚡ 今天实时</button>
         <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px" id="btnLoadTrace" onclick="loadTraceMessages(true)">🔄 重新抓取</button>
       </div>
       <div class="msg-list" id="traceList"><div class="msg-empty">点击"原始消息"标签加载消息记录</div></div>
@@ -726,6 +736,12 @@ async function fetchJSON(url, opts) {
   const resp = await fetch(url, opts);
   if (!resp.ok) throw new Error('HTTP ' + resp.status);
   return resp.json();
+}
+
+// 本地时区日期串(YYYY-MM-DD): 避免 toISOString() 在 UTC+8 偏移出错误的"昨天"
+function localDateStr(d) {
+  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 
 // ---------- 平台配置 ----------
@@ -834,7 +850,7 @@ function overviewDaysLabel() {
     const e = document.getElementById('overviewEnd').value;
     return (s && e) ? `${s} ~ ${e}` : '自定义';
   }
-  return `近${days}天`;
+  return days === '1' ? '今天' : `近${days}天`;
 }
 
 function onOverviewDateInput() {
@@ -875,8 +891,8 @@ function onOverviewDaysChange() {
     if (!document.getElementById('overviewStart').value) {
       const end = new Date(); end.setDate(end.getDate() - 1);
       const start = new Date(); start.setDate(start.getDate() - 7);
-      document.getElementById('overviewStart').value = start.toISOString().slice(0, 10);
-      document.getElementById('overviewEnd').value = end.toISOString().slice(0, 10);
+      document.getElementById('overviewStart').value = localDateStr(start);
+      document.getElementById('overviewEnd').value = localDateStr(end);
     }
   }
   loadOverview();
@@ -1102,6 +1118,27 @@ async function loadTraceMessages(force) {
   }
 }
 
+// "今天实时": 显式 start=end=今天, 走 历史(库)+今天实时 合并路径, 并显示实时徽标
+async function loadTodayLive() {
+  const s = selectedShop;
+  if (!s) return;
+  const t = localDateStr(new Date());
+  const listEl = document.getElementById('traceList');
+  listEl.innerHTML = '<div class="msg-loading"><div class="spinner" style="margin:0 auto 8px"></div>正在实时抓取今日消息…</div>';
+  try {
+    const data = await fetchJSON(`/api/trace/messages/${s.thirdShopId}?start=${t}&end=${t}`);
+    traceMessages = data.messages || [];
+    tracePage = 0;
+    traceLoaded = true;
+    document.getElementById('traceCount').textContent = `共 ${data.total.toLocaleString()} 条消息 · 今日实时`;
+    document.getElementById('detailDate').textContent =
+      `${data.startDate} ~ ${data.endDate} · 实时`;
+    renderTraceList();
+  } catch (e) {
+    listEl.innerHTML = `<div class="msg-empty">今日实时加载失败: ${e.message}</div>`;
+  }
+}
+
 function renderTraceList() {
   const listEl = document.getElementById('traceList');
   const filter = document.getElementById('traceFilter').value;
@@ -1237,6 +1274,11 @@ let auditTimer = null;  // pollAudit 的定时器句柄, 供组切换等场景�
 
 function auditQueryParams() {
   const days = document.getElementById('auditDays').value;
+  if (days === '1') {
+    // "今天"实时: 显式 start=end=今天, 走 历史(库)+今天实时 合并路径
+    const t = localDateStr(new Date());
+    return `start=${t}&end=${t}`;
+  }
   if (days === 'custom') {
     const s = document.getElementById('auditStart').value;
     const e = document.getElementById('auditEnd').value;
@@ -1244,6 +1286,13 @@ function auditQueryParams() {
     return 'days=7';
   }
   return `days=${days}`;
+}
+
+// 区间是否含今天 => 后端返回 live:true 时给状态栏加"实时"徽标
+function liveBadgeHtml(live) {
+  return live
+    ? ' <span class="live-badge">实时</span>'
+    : '';
 }
 
 function onAuditDaysChange() {
@@ -1254,8 +1303,8 @@ function onAuditDaysChange() {
     if (!document.getElementById('auditStart').value) {
       const end = new Date(); end.setDate(end.getDate() - 1);
       const start = new Date(); start.setDate(start.getDate() - 7);
-      document.getElementById('auditStart').value = start.toISOString().slice(0, 10);
-      document.getElementById('auditEnd').value = end.toISOString().slice(0, 10);
+      document.getElementById('auditStart').value = localDateStr(start);
+      document.getElementById('auditEnd').value = localDateStr(end);
     }
   }
   // 只加载缓存结果, 不自动开始核算(核算由「开始核算」按钮显式触发)
@@ -1305,6 +1354,7 @@ async function startAudit(force) {
       renderAudit(r.result);
       statusEl.className = 'audit-status done';
       statusEl.textContent = `核算完成 ✅ ${r.startDate} ~ ${r.endDate}`;
+      statusEl.innerHTML = `核算完成 ✅ ${r.startDate} ~ ${r.endDate}${liveBadgeHtml(r.result && r.result.live)}`;
       resetAuditUI();
     } else if (r.status === 'running') {
       pollAudit();
@@ -1362,8 +1412,8 @@ function pollAudit() {
         if (t.result) {
           renderAudit(t.result);
           document.getElementById('auditStatus').className = 'audit-status done';
-          document.getElementById('auditStatus').textContent =
-            `核算完成 ✅ ${t.result.startDate} ~ ${t.result.endDate} · 总条数 ${t.result.total.toLocaleString()} · 核算采纳率 ${t.result.rate.toFixed(2)}%`;
+          document.getElementById('auditStatus').innerHTML =
+            `核算完成 ✅ ${t.result.startDate} ~ ${t.result.endDate} · 总条数 ${t.result.total.toLocaleString()} · 核算采纳率 ${t.result.rate.toFixed(2)}%${liveBadgeHtml(t.result.live)}`;
         } else if (t.error) {
           document.getElementById('auditStatus').className = 'audit-status';
           document.getElementById('auditStatus').textContent = '核算失败: ' + t.error;
@@ -1455,7 +1505,7 @@ async function reloadCachedAudit() {
       // 命中与当前所选时间段一致的缓存才作为「完成」渲染
       renderAudit(result);
       statusEl.className = 'audit-status done';
-      statusEl.textContent = `核算完成 ✅ ${result.startDate} ~ ${result.endDate} · 总条数 ${result.total.toLocaleString()} · 核算采纳率 ${result.rate.toFixed(2)}%`;
+      statusEl.innerHTML = `核算完成 ✅ ${result.startDate} ~ ${result.endDate} · 总条数 ${result.total.toLocaleString()} · 核算采纳率 ${result.rate.toFixed(2)}%${liveBadgeHtml(result.live)}`;
     } else if (result) {
       // 有缓存但时间段与当前选择不一致: 展示旧结果, 但明确提示这不是当前时间段
       renderAudit(result);

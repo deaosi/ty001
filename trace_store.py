@@ -11,6 +11,7 @@ SQLite(data/trace.db), 供核算/展示做纯本地聚合, 交互路径零上游
   - 口径与 stat_trace_daily 完全一致: adopted = send_type IN (1,2,3)
   - 去重靠 (third_shop_id, trace_id) 唯一索引, 重抓/重复运行幂等
 """
+import datetime
 import json
 import sqlite3
 import threading
@@ -293,6 +294,26 @@ def db_window_covers(start, end):
         return False
 
 
+def db_day_window_covers(hist_start, hist_end):
+    """判断库是否完整覆盖 [hist_start, hist_end] 这一段历史区间(不含今天)
+
+    用于"历史走库 + 今天实时"合并路径: hist_end 通常是昨天(今天之前),
+    只要库的整日窗口覆盖这段历史, 就认为历史部分可以纯本地聚合。
+    """
+    if not DB_FILE.exists():
+        return False
+    try:
+        c = _conn()
+        row = c.execute(
+            "SELECT MIN(day) AS lo, MAX(day) AS hi FROM trace_daily"
+        ).fetchone()
+        if not row or not row["lo"] or not row["hi"]:
+            return False
+        return row["lo"] <= hist_start and hist_end <= row["hi"]
+    except Exception:
+        return False
+
+
 def query_daily(shop_id, start, end):
     """该店在区间内的逐日聚合(用于折线图/核算总览)"""
     if not DB_FILE.exists():
@@ -380,20 +401,29 @@ def overview_aggregate(start, end, platform=None):
 
 
 def prune_window(keep_days=30):
-    """滚动裁剪: 只保留最近 keep_days 天(按本地日历日), 返回删除的消息行数"""
+    """滚动裁剪: 保留最近 keep_days 个完整本地日历日(删除更早), 返回删除的消息行数
+
+    整日窗口语义: 库内只存"已定型的完整日"(最新是昨天, 今天实时不进库),
+    所以保留窗口 = [昨天 - (keep_days-1) .. 昨天], 共 keep_days 个完整日。
+    删除边界: 最早完整日 00:00 之前的消息与按日聚合全部删除。
+    """
     if not DB_FILE.exists():
         return 0
-    cutoff = time.strftime("%Y-%m-%d", time.localtime(time.time() - keep_days * 86400))
+    today = datetime.date.today()
+    yesterday = today - datetime.timedelta(days=1)
+    # 保留窗口的最早完整日(含): 昨天往前 (keep_days - 1) 天
+    keep_start = yesterday - datetime.timedelta(days=keep_days - 1)
+    keep_start_str = keep_start.isoformat()
+    # 最早完整日 00:00 的本地时间毫秒数(删除边界)
+    cutoff_ms = int(time.mktime(datetime.datetime(keep_start.year, keep_start.month, keep_start.day).timetuple()) * 1000)
     with _write_lock:
         c = _conn(write=True)
         try:
-            # 按本地日历日裁剪: 用 msg_time 折算本地日
             cur = c.execute(
-                """DELETE FROM messages WHERE msg_time < ?""",
-                (int(time.time() * 1000) - keep_days * 86400 * 1000,),
+                "DELETE FROM messages WHERE msg_time < ?", (cutoff_ms,)
             )
             deleted = cur.rowcount
-            c.execute("DELETE FROM trace_daily WHERE day < ?", (cutoff,))
+            c.execute("DELETE FROM trace_daily WHERE day < ?", (keep_start_str,))
             c.execute("DELETE FROM shops WHERE third_shop_id NOT IN (SELECT DISTINCT third_shop_id FROM messages)")
             c.commit()
             return deleted

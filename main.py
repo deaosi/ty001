@@ -1173,7 +1173,22 @@ def trace_shop(shop_id: str, days: int = 7, force: int = 0, start: str | None = 
     if not shop:
         raise HTTPException(404, "店铺不存在")
     start, end = date_range(days, end) if not start else (start, end or (datetime.date.today() - datetime.timedelta(days=1)).isoformat())
-    # SQLite 快路径: 数据库已覆盖该区间 => 纯本地聚合(核算提速主因)
+    today_str = datetime.date.today().isoformat()
+    # 区间含今天: 历史(库) + 今天(实时) 合并, 保留实时数据
+    if (not force and _use_sqlite_trace()
+            and start <= today_str <= end):
+        try:
+            merged = _trace_shop_merged(shop_id, start, end)
+            if merged and merged[0]:
+                stat, has_today = merged
+                return {"shop": shop, "startDate": start, "endDate": end,
+                        "fetchedAt": time.time(), "stat": stat,
+                        "live": has_today}
+        except RiskTriggered:
+            raise HTTPException(502, "风控/登录失效, 请重新登录后重试")
+        except Exception as e:
+            print(f"[trace] SQLite+实时 合并路径失败, 回退在线抓取: {e}")
+    # SQLite 快路径: 数据库已覆盖该区间(纯历史) => 纯本地聚合(核算提速主因)
     if (not force and _use_sqlite_trace()
             and trace_store.db_window_covers(start, end)):
         try:
@@ -1274,6 +1289,40 @@ def _trace_shop_from_db(shop_id, start, end):
         return None
     # 复用 stat_trace_daily 的聚合逻辑(保证口径一致)
     return _aggregate_stat_rows(rows, start, end)
+
+
+def _trace_shop_merged(shop_id, start, end):
+    """历史天走 SQLite + 今天实时抓取, 合并出 [start, end] 的单店 stat
+
+    口径: 完整历史天(含昨天)读库聚合(与探域逐日口径一致);
+      "今天"未定型, 实时抓取当天消息(不走 6h 缓存), 只读不写库。
+    返回 (stat_dict, has_today_flag); 实时抓取抛 RiskTriggered 时向上传播。
+    """
+    today_str = datetime.date.today().isoformat()
+    yesterday_str = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+    has_today = start <= today_str <= end
+    # 历史部分: start .. min(end, 昨天)(ISO 日期字符串字典序可比较)
+    hist_end = end if end < today_str else yesterday_str
+    rows = []
+    if start <= hist_end:
+        rows = trace_store.query_shop_aggregate(
+            shop_id, start, hist_end,
+            int(datetime.datetime.fromisoformat(start).timestamp() * 1000),
+            int((datetime.datetime.fromisoformat(hist_end) + datetime.timedelta(days=1)).timestamp() * 1000) - 1,
+        )
+    # 今天实时(未定型日不进库, 只读合并)
+    live = []
+    if has_today:
+        live_res = _fetch_trace_day(shop_id, today_str)
+        if live_res is None:
+            live_res = []  # 今天暂无数据/请求失败, 历史部分照常返回
+        live = [_trim_trace_msg(m) for m in live_res]
+        rows.extend(live)
+    # 区间含今天时恒返回 stat(即使全空), 避免回退到会写库的 stat_trace_daily;
+    # 纯历史且无数据才返回 None(由调用方走在线抓取兜底)
+    if not has_today and not rows and not live:
+        return None, False
+    return _aggregate_stat_rows(rows, start, end), has_today
 
 
 def _aggregate_stat_rows(results, start, end):
@@ -1467,6 +1516,9 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
                 shops = [s for s in shops if s.get("platform") == platform]
             total = len(shops)
             begin, end_t = f"{start} 00:00:00", f"{end} 23:59:59"
+            today_str = datetime.date.today().isoformat()
+            # 区间含今天 => 单店走"历史库 + 今天实时"合并(今天未定型不进库)
+            range_has_today = start <= today_str <= end
             _trace_state["progress"] = {"done": 0, "total": total, "current": ""}
             shop_list = []
             agg_total = agg_adopted = 0
@@ -1485,7 +1537,14 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
                 if i > 1 and not days_all_cached(shop["thirdShopId"], start, end):
                     sleep_trace_shop()
                 try:
-                    stat = stat_trace_daily(shop["thirdShopId"], start, end)
+                    if range_has_today:
+                        # 含今天: 历史(库)+今天(实时) 合并, 不写库
+                        merged = _trace_shop_merged(shop["thirdShopId"], start, end)
+                        if not merged or not merged[0]:
+                            continue
+                        stat = merged[0]
+                    else:
+                        stat = stat_trace_daily(shop["thirdShopId"], start, end)
                     shop_list.append(
                         {"shop": shop, "total": stat["total"], "adopted": stat["adopted"], "rate": stat["rate"]}
                     )
@@ -1530,6 +1589,8 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
                 "rate": round(agg_adopted / agg_total * 100, 2) if agg_total else 0,
                 "shopList": shop_list,
                 "byStaff": staff_list,
+                # 区间含今天时标记实时(前端显示"实时"徽标)
+                "live": start <= datetime.date.today().isoformat() <= end,
             }
             _trace_state["last_run"] = time.time()
             save_trace_overview_cache(_trace_state["result"])
@@ -1618,6 +1679,21 @@ def trace_messages(shop_id: str, days: int = 7, force: int = 0,
     if not shop:
         raise HTTPException(404, "店铺不存在")
     start, end = date_range(days, end) if not start else (start, end or (datetime.date.today() - datetime.timedelta(days=1)).isoformat())
+    today_str = datetime.date.today().isoformat()
+    # 区间含今天: 历史(库) + 今天(实时) 合并
+    if (not force and _use_sqlite_trace()
+            and start <= today_str <= end):
+        try:
+            merged = _trace_shop_merged(shop_id, start, end)
+            if merged and merged[0]:
+                stat, has_today = merged
+                return {"shop": shop, "startDate": start, "endDate": end,
+                        "total": stat["total"], "daily": stat.get("daily", []),
+                        "messages": stat.get("messages", []), "live": has_today}
+        except RiskTriggered:
+            raise HTTPException(502, "风控/登录失效, 请重新登录后重试")
+        except Exception as e:
+            print(f"[trace] 原始消息 合并路径失败, 回退在线抓取: {e}")
     cache = _load_trace_days_cache(shop_id) if not force else None
     if cache and cache.get("days") and not force:
         start_d = datetime.date.fromisoformat(start)
@@ -1827,8 +1903,11 @@ def backfill_trace_db():
 
 
 def prefetch_trace_window(days=30):
-    """夜间预抓: 抓近 days 天(截至昨天)的缺失/过期天, 并滚动裁剪到 days 天窗口
+    """夜间预抓: 抓近 days 天(截至昨天, 整日窗口)的缺失/过期天, 并滚动裁剪
 
+    每天 00:00 由计划任务 TanyuDashboardTracePrefetch 触发:
+    零点一过, 昨天才真正定型, 这里把"昨天"整体抓取入库(当天数据当天实时展示,
+    不进库); 完成后 prune_window 按整日边界裁剪, 窗口恒为最近 days 个完整日。
     用现有 stat_trace_daily 逻辑(逐日缓存 + TTL), 命中缓存的天零请求;
     风控触发立即停止。完成后调用 prune_window 裁剪最旧一天。
     """
