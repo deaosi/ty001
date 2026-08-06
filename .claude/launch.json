@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "tanyu-dashboard",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["main.py"],
+      "port": 8080,
+      "autoPort": true
+    }
+  ]
+}

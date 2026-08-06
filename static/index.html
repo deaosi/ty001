@@ -1,0 +1,1630 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>探域数据看板</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0d1322;
+    --bg-soft: #111a2e;
+    --card: #151d31;
+    --card-hover: #1a2439;
+    --border: #243050;
+    --border-soft: #1d2842;
+    --text: #e8edf7;
+    --text-sub: #8b96ae;
+    --text-dim: #5c6780;
+    --blue: #5b8cff;
+    --cyan: #22d3ee;
+    --green: #34d399;
+    --amber: #fbbf24;
+    --red: #fb7185;
+    --purple: #a78bfa;
+    --blue-glow: rgba(91, 140, 255, .18);
+    --radius: 12px;
+    --shadow: 0 4px 24px rgba(0, 0, 0, .35);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background:
+      radial-gradient(1000px 400px at 80% -10%, rgba(91, 140, 255, .08), transparent 60%),
+      radial-gradient(800px 300px at 10% 110%, rgba(34, 211, 238, .05), transparent 60%),
+      var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #2a3554; border-radius: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  /* ---------- 头部 ---------- */
+  .header {
+    background: linear-gradient(135deg, rgba(20, 30, 60, .95), rgba(13, 19, 34, .98));
+    border-bottom: 1px solid var(--border);
+    padding: 14px 26px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    position: sticky; top: 0; z-index: 50;
+    backdrop-filter: blur(8px);
+  }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand-logo {
+    width: 38px; height: 38px; border-radius: 10px;
+    background: linear-gradient(135deg, var(--blue), var(--cyan));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px; box-shadow: 0 4px 14px var(--blue-glow);
+  }
+  .brand h1 { font-size: 17px; font-weight: 650; letter-spacing: .3px; }
+  .brand .sub { font-size: 12px; color: var(--text-sub); margin-top: 2px; }
+  .header-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .date-info {
+    font-size: 12px; color: var(--text-sub); background: var(--card);
+    border: 1px solid var(--border); padding: 7px 12px; border-radius: 8px;
+    font-variant-numeric: tabular-nums;
+  }
+  .date-info.loading { color: var(--cyan); animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .45; } }
+  .btn {
+    border: none; border-radius: 8px; padding: 8px 14px; font-size: 13px; cursor: pointer;
+    font-weight: 550; transition: all .18s; font-family: inherit;
+  }
+  .btn-primary { background: var(--blue); color: #fff; }
+  .btn-primary:hover { background: #4d7df0; box-shadow: 0 4px 14px var(--blue-glow); }
+  .btn-ghost { background: var(--card); color: var(--text); border: 1px solid var(--border); }
+  .btn-ghost:hover { background: var(--card-hover); border-color: #31406b; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .platform-select {
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 13px;
+    cursor: pointer; background: var(--card); color: var(--text); font-family: inherit; outline: none;
+  }
+  .platform-select:focus { border-color: var(--blue); }
+  .platform-select option { color: var(--text); background: var(--card); }
+
+  /* 集团选择器 */
+  .group-select {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--card); border: 1px solid var(--border-soft);
+    border-radius: 8px; padding: 6px 10px; cursor: pointer;
+    font-size: 13px; color: var(--text); position: relative;
+    max-width: 220px;
+  }
+  .group-select:hover { border-color: var(--blue); }
+  .group-select .g-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .group-select .g-arrow { font-size: 10px; color: var(--muted); }
+  .group-menu {
+    position: absolute; top: calc(100% + 6px); right: 0; z-index: 50;
+    min-width: 240px; max-height: 320px; overflow-y: auto;
+    background: var(--card); border: 1px solid var(--border-soft);
+    border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.4);
+    padding: 6px; display: none;
+  }
+  .group-menu.open { display: block; }
+  .group-menu .g-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px; border-radius: 8px; cursor: pointer;
+    font-size: 13px; color: var(--text);
+  }
+  .group-menu .g-item:hover { background: var(--hover); }
+  .group-menu .g-item.active { color: var(--blue); background: rgba(91,140,255,.1); }
+  .group-menu .g-item .g-badge {
+    font-size: 11px; color: var(--muted); background: var(--bg);
+    border-radius: 4px; padding: 1px 6px; white-space: nowrap;
+  }
+  .group-menu .g-item .g-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  }
+  .group-menu .g-tip {
+    padding: 6px 10px; font-size: 11px; color: var(--muted);
+    border-top: 1px solid var(--border-soft); margin-top: 4px;
+  }
+  .group-menu .g-empty { padding: 14px; text-align: center; color: var(--muted); font-size: 12px; }
+
+  /* 日期控件 */
+  .date-range {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--card); border: 1px solid var(--border-soft);
+    border-radius: 8px; padding: 5px 8px;
+  }
+  .date-range input[type="date"] {
+    background: transparent; border: none; color: var(--text);
+    font-size: 12.5px; outline: none; width: 118px;
+    color-scheme: dark;
+  }
+  .date-range .sep { color: var(--muted); font-size: 12px; }
+  .progress-bar {
+    display: none; height: 4px; background: rgba(91, 140, 255, .15); border-radius: 2px;
+    overflow: hidden; margin-top: 8px; width: 160px;
+  }
+  .progress-bar.show { display: block; }
+  .progress-bar .fill { height: 100%; background: linear-gradient(90deg, var(--blue), var(--cyan)); border-radius: 2px; transition: width .4s; }
+
+  /* ---------- 风控横幅 ---------- */
+  .risk-banner {
+    max-width: 1480px; margin: 14px auto 0; padding: 10px 16px; display: flex; gap: 10px; align-items: center;
+    background: rgba(251, 113, 133, .1); border: 1px solid rgba(251, 113, 133, .4);
+    border-radius: 10px; color: #fda4af; font-size: 13px; line-height: 1.5;
+  }
+  .risk-banner button { margin-left: auto; padding: 3px 12px; font-size: 12px; }
+
+  /* ---------- 主容器 ---------- */
+  .container { max-width: 1480px; margin: 0 auto; padding: 22px 26px 60px; }
+
+  /* ---------- 指标卡 ---------- */
+  .overview-head {
+    display: flex; justify-content: flex-end; align-items: center;
+    margin-bottom: 14px;
+  }
+  .overview-toolbar {
+    display: flex; align-items: center; gap: 10px;
+  }
+  .overview-cards {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 16px; margin-bottom: 22px;
+  }
+  .o-card {
+    background: linear-gradient(160deg, var(--card), var(--bg-soft));
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 18px 20px; position: relative; overflow: hidden;
+    transition: transform .18s, border-color .18s, box-shadow .18s;
+  }
+  .o-card:hover { transform: translateY(-2px); border-color: #31406b; box-shadow: var(--shadow); }
+  .o-card::after {
+    content: ""; position: absolute; top: -40px; right: -40px; width: 120px; height: 120px;
+    border-radius: 50%; opacity: .14; filter: blur(8px);
+  }
+  .o-card.c-teal::after { background: var(--cyan); }
+  .o-card.c-amber::after { background: var(--amber); }
+  .o-card.c-red::after { background: var(--purple); }
+  .o-card .label { font-size: 12px; color: var(--text-sub); margin-bottom: 8px; letter-spacing: .5px; }
+  .o-card .value { font-size: 30px; font-weight: 720; font-variant-numeric: tabular-nums; letter-spacing: -.5px; }
+  .o-card .trend { font-size: 12px; margin-top: 10px; display: flex; align-items: center; gap: 5px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 3px; padding: 3px 9px;
+    border-radius: 20px; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums;
+  }
+  .badge.up { background: rgba(52, 211, 153, .12); color: var(--green); }
+  .badge.down { background: rgba(251, 113, 133, .12); color: var(--red); }
+  .badge.flat { background: rgba(139, 150, 174, .12); color: var(--text-sub); }
+  .trend.note { color: var(--text-dim); }
+
+  /* ---------- 面板 ---------- */
+  .panel {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: var(--radius); margin-bottom: 22px; overflow: hidden;
+  }
+  .panel-head {
+    display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+    gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--border-soft);
+  }
+  .panel-head h2 { font-size: 15px; font-weight: 620; display: flex; align-items: center; gap: 8px; }
+  .panel-head .sub { font-size: 12px; color: var(--text-dim); margin-top: 3px; }
+  .panel-body { padding: 16px 18px; }
+
+  /* ---------- 工具栏与表格 ---------- */
+  .toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+  .search-box { flex: 1; min-width: 220px; position: relative; }
+  .search-box input {
+    width: 100%; padding: 10px 14px 10px 38px; border: 1px solid var(--border);
+    border-radius: 9px; font-size: 13px; background: var(--bg-soft); color: var(--text);
+    outline: none; transition: border-color .15s, box-shadow .15s; font-family: inherit;
+  }
+  .search-box input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-glow); }
+  .search-box input::placeholder { color: var(--text-dim); }
+  .search-box .icon { position: absolute; left: 13px; top: 50%; transform: translateY(-50%); color: var(--text-dim); font-size: 14px; }
+  .toolbar .count { font-size: 12px; color: var(--text-sub); font-variant-numeric: tabular-nums; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th {
+    background: rgba(13, 19, 34, .6); color: var(--text-sub); font-weight: 600;
+    text-align: right; padding: 11px 14px; white-space: nowrap; border-bottom: 1px solid var(--border);
+    font-size: 12px; letter-spacing: .3px;
+  }
+  thead th:first-child, tbody td:first-child { text-align: left; }
+  tbody td { padding: 11px 14px; text-align: right; border-bottom: 1px solid var(--border-soft); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  tbody tr { transition: background .12s; cursor: pointer; }
+  tbody tr:hover { background: rgba(91, 140, 255, .07); }
+  tbody tr.selected { background: rgba(91, 140, 255, .14); }
+  tbody tr:last-child td { border-bottom: none; }
+  .shop-cell { display: flex; flex-direction: column; gap: 2px; }
+  .shop-cell .name { font-weight: 550; color: var(--text); }
+  .shop-cell .id { font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  .platform-tag {
+    display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 5px;
+    background: rgba(34, 211, 238, .1); color: var(--cyan); border: 1px solid rgba(34, 211, 238, .2);
+  }
+
+  /* 消息记录表 */
+  .msg-toolbar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 10px 14px; border-bottom: 1px solid var(--border-soft);
+  }
+  .msg-filter {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12px; color: var(--muted);
+  }
+  .msg-filter select {
+    background: var(--bg); border: 1px solid var(--border-soft);
+    color: var(--text); border-radius: 6px; padding: 3px 6px;
+    font-size: 12px; outline: none;
+  }
+  .msg-list { max-height: 520px; overflow-y: auto; }
+  .msg-item {
+    display: flex; gap: 12px; padding: 10px 14px;
+    border-bottom: 1px solid var(--border-soft);
+    align-items: flex-start;
+  }
+  .msg-item:hover { background: var(--hover); }
+  .msg-item .m-time { font-size: 11px; color: var(--muted); white-space: nowrap; min-width: 70px; }
+  .msg-item .m-body { flex: 1; min-width: 0; }
+  .msg-item .m-tags { display: flex; gap: 6px; margin-bottom: 4px; flex-wrap: wrap; }
+  .msg-item .m-content {
+    font-size: 12.5px; color: var(--text); line-height: 1.6;
+    word-break: break-all; max-height: 60px; overflow: hidden;
+    position: relative;
+  }
+  .msg-item .m-content.expanded { max-height: none; }
+  .msg-item .m-more {
+    font-size: 11px; color: var(--blue); cursor: pointer; margin-top: 2px;
+    display: inline-block;
+  }
+  .msg-item .m-staff { font-size: 11px; color: var(--muted); margin-top: 3px; }
+  .st-badge {
+    display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 4px;
+    white-space: nowrap;
+  }
+  .st-auto { background: rgba(52,211,153,.14); color: var(--green); }
+  .st-menu { background: rgba(91,140,255,.14); color: var(--blue); }
+  .st-edit { background: rgba(251,191,36,.14); color: var(--amber); }
+  .st-none { background: rgba(139,150,174,.14); color: var(--muted); }
+  .msg-loading, .msg-empty {
+    padding: 24px; text-align: center; color: var(--muted); font-size: 13px;
+  }
+  .msg-count { font-size: 12px; color: var(--muted); }
+
+  /* 抽屉 tab */
+  .drawer-tabs {
+    display: flex; gap: 8px; margin-bottom: 14px;
+    border-bottom: 1px solid var(--border-soft); padding-bottom: 10px;
+  }
+  .dtab {
+    background: transparent; border: none; color: var(--muted);
+    font-size: 13px; padding: 6px 12px; border-radius: 8px;
+    cursor: pointer; transition: all .2s;
+  }
+  .dtab:hover { color: var(--text); background: var(--hover); }
+  .dtab.active { color: var(--blue); background: rgba(91,140,255,.12); font-weight: 550; }
+  .num { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .sub-line { font-size: 11px; color: var(--text-dim); margin-top: 3px; }
+  .empty { padding: 42px; text-align: center; color: var(--text-dim); font-size: 13px; }
+  .rate-pill { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 620; font-variant-numeric: tabular-nums; }
+  .rate-pill.good { background: rgba(52, 211, 153, .13); color: var(--green); }
+  .rate-pill.mid { background: rgba(251, 191, 36, .13); color: var(--amber); }
+  .rate-pill.bad { background: rgba(251, 113, 133, .13); color: var(--red); }
+
+  /* ---------- 核算板块 ---------- */
+  .audit-status {
+    font-size: 13px; color: var(--text-sub); background: rgba(91, 140, 255, .07);
+    border: 1px dashed rgba(91, 140, 255, .35); border-radius: 9px; padding: 10px 14px; margin-bottom: 14px;
+  }
+  .audit-status.running { background: rgba(251, 191, 36, .07); border-color: rgba(251, 191, 36, .4); color: var(--amber); }
+  .audit-status.done { background: rgba(52, 211, 153, .08); border-color: rgba(52, 211, 153, .4); color: var(--green); }
+  .audit-cols { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; }
+  .audit-col { min-width: 0; }
+  .audit-col h3 { font-size: 13px; margin-bottom: 10px; color: var(--text-sub); font-weight: 600; letter-spacing: .3px; }
+  .audit-col-head {
+    display: flex; align-items: center; justify-content: space-between;
+    cursor: pointer; user-select: none; margin-bottom: 10px;
+  }
+  .audit-col-head h3 { margin-bottom: 0; }
+  .audit-col-head:hover h3 { color: var(--text); }
+  .staff-count { font-size: 11px; color: var(--text-dim); font-weight: 400; margin-left: 4px; }
+  .staff-toggle {
+    padding: 2px 10px; font-size: 11.5px; border-radius: 6px;
+    color: var(--text-sub); background: var(--bg-soft); border: 1px solid var(--border-soft);
+  }
+  .staff-toggle:hover { color: var(--text); }
+  /* 客服头像与紧凑芯片网格 */
+  .staff-avatar {
+    width: 26px; height: 26px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; color: #fff; flex-shrink: 0;
+  }
+  .staff-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  .staff-chip {
+    background: var(--bg-soft); border: 1px solid var(--border-soft); border-radius: 10px;
+    padding: 9px 10px; cursor: pointer; transition: border-color .15s, background .15s;
+  }
+  .staff-chip:hover { border-color: #31406b; background: var(--card-hover); }
+  .staff-chip-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .staff-chip .staff-avatar { width: 24px; height: 24px; font-size: 11px; }
+  .staff-chip-name { font-size: 12px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+  .staff-chip-meta { font-size: 10.5px; color: var(--text-dim); margin-top: 6px; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+  .staff-chip-count { font-variant-numeric: tabular-nums; }
+  .staff-chip-arrow { font-size: 9px; color: var(--text-dim); transition: transform .18s; }
+  .staff-chip.open .staff-chip-arrow { transform: rotate(180deg); }
+  .staff-chip-detail { display: none; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border-soft); font-size: 11px; color: var(--text-sub); }
+  .staff-chip.open .staff-chip-detail { display: block; }
+  .staff-chip-detail .drow { display: flex; justify-content: space-between; padding: 2px 0; }
+  .staff-chip-detail .drow b { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text); }
+  .staff-grid-more {
+    grid-column: 1 / -1; display: flex; justify-content: center; padding-top: 2px;
+  }
+  .staff-grid-more button {
+    border: 1px dashed var(--border-soft); background: var(--bg-soft); color: var(--text-sub);
+    border-radius: 8px; padding: 6px 18px; font-size: 12px; cursor: pointer; font-family: inherit;
+    transition: border-color .15s, color .15s;
+  }
+  .staff-grid-more button:hover { border-color: #31406b; color: var(--text); }
+  .audit-summary-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 14px; }
+  .a-card { background: var(--bg-soft); border: 1px solid var(--border-soft); border-radius: 9px; padding: 12px 14px; }
+  .a-card .label { font-size: 11px; color: var(--text-dim); margin-bottom: 5px; }
+  .a-card .value { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .a-card .value.green { color: var(--green); }
+  .a-card .value.blue { color: var(--blue); }
+  .a-card .value.amber { color: var(--amber); }
+
+  /* ---------- 抽屉 ---------- */
+  .drawer-mask {
+    position: fixed; inset: 0; background: rgba(5, 9, 18, .55); backdrop-filter: blur(2px);
+    opacity: 0; pointer-events: none; transition: opacity .25s; z-index: 100;
+  }
+  .drawer-mask.show { opacity: 1; pointer-events: auto; }
+  .drawer {
+    position: fixed; top: 0; right: 0; bottom: 0; width: min(480px, 92vw);
+    background: var(--card); border-left: 1px solid var(--border);
+    transform: translateX(100%); transition: transform .28s cubic-bezier(.32, .72, .32, 1);
+    z-index: 101; display: flex; flex-direction: column;
+    box-shadow: -12px 0 40px rgba(0, 0, 0, .4);
+  }
+  .drawer.show { transform: translateX(0); }
+  .drawer-head {
+    padding: 18px 20px; border-bottom: 1px solid var(--border-soft);
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
+  }
+  .drawer-head h2 { font-size: 16px; font-weight: 650; }
+  .drawer-head .meta { font-size: 12px; color: var(--text-sub); margin-top: 5px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .drawer-close {
+    background: none; border: 1px solid var(--border); color: var(--text-sub); cursor: pointer;
+    width: 30px; height: 30px; border-radius: 8px; font-size: 15px; transition: all .15s;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .drawer-close:hover { background: var(--card-hover); color: var(--text); }
+  .drawer-body { padding: 18px 20px; overflow-y: auto; flex: 1; }
+  .detail-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 18px; }
+  .d-card { background: var(--bg-soft); border: 1px solid var(--border-soft); border-radius: 10px; padding: 13px 14px; }
+  .d-card .label { font-size: 11px; color: var(--text-dim); margin-bottom: 6px; }
+  .d-card .value { font-size: 22px; font-weight: 720; font-variant-numeric: tabular-nums; letter-spacing: -.4px; }
+  .d-card .vs { font-size: 12px; margin-top: 6px; font-weight: 600; }
+  .d-card .prev { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+  .chart-card { background: var(--bg-soft); border: 1px solid var(--border-soft); border-radius: 10px; padding: 14px; }
+  .chart-card h3 { font-size: 13px; margin-bottom: 10px; color: var(--text-sub); font-weight: 600; }
+  .chart-box { height: 240px; position: relative; }
+
+  /* ---------- 其他 ---------- */
+  .loading { text-align: center; padding: 40px; color: var(--text-dim); }
+  .spinner {
+    width: 30px; height: 30px; border: 3px solid var(--border); border-top-color: var(--blue);
+    border-radius: 50%; animation: spin .8s linear infinite; margin: 0 auto 10px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: #1b2440; color: var(--text); padding: 11px 22px; border-radius: 10px;
+    font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .25s; z-index: 200;
+    border: 1px solid var(--border); box-shadow: var(--shadow);
+  }
+  .toast.show { opacity: 1; }
+  .login-dialog {
+    position: fixed; inset: 0; z-index: 150; display: none; align-items: center; justify-content: center;
+    background: rgba(5, 9, 18, .6);
+  }
+  .login-dialog.show { display: flex; }
+  .login-box {
+    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+    padding: 26px 30px; width: min(420px, 90vw); box-shadow: var(--shadow);
+  }
+  .login-box h3 { font-size: 16px; margin-bottom: 6px; }
+  .login-box p { font-size: 13px; color: var(--text-sub); margin-bottom: 16px; line-height: 1.6; }
+  .login-steps { list-style: none; font-size: 13px; color: var(--text-sub); margin-bottom: 18px; }
+  .login-steps li { padding: 5px 0; display: flex; gap: 8px; align-items: flex-start; }
+  .login-steps li::before { content: "→"; color: var(--blue); font-weight: 700; }
+  .login-status { font-size: 13px; padding: 10px 14px; border-radius: 9px; margin-bottom: 14px; background: rgba(91,140,255,.08); color: var(--blue); border: 1px dashed rgba(91,140,255,.35); }
+  .login-status.done { background: rgba(52,211,153,.08); color: var(--green); border-color: rgba(52,211,153,.4); }
+  .login-status.failed { background: rgba(251,113,133,.08); color: var(--red); border-color: rgba(251,113,133,.4); }
+  @media (max-width: 1100px) {
+    .audit-cols { grid-template-columns: 1fr; }
+    .detail-metrics { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 700px) {
+    .container { padding: 16px 14px 50px; }
+    .header { padding: 12px 16px; }
+    .overview-cards { grid-template-columns: 1fr; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<header class="header">
+  <div class="brand">
+    <div class="brand-logo">📊</div>
+    <div>
+      <h1>探域数据看板</h1>
+      <div class="sub" id="dateSub">近7天 · 全部抓取平台 · 全部店铺</div>
+    </div>
+  </div>
+  <div class="header-actions">
+    <span class="date-info" id="dateInfo">--</span>
+    <div class="group-select" id="groupSelect" onclick="toggleGroupMenu(event)">
+      <span class="g-dot" id="groupDot" style="background:var(--cyan)"></span>
+      <span class="g-label" id="groupLabel">加载集团…</span>
+      <span class="g-arrow">▾</span>
+      <div class="group-menu" id="groupMenu"></div>
+    </div>
+    <select id="platformSelect" class="platform-select" onchange="switchPlatform(this.value)">
+      <option value="">全部平台</option>
+    </select>
+    <button class="btn btn-ghost" id="btnLogin" onclick="openLogin()">🔑 登录更新Cookie</button>
+    <button class="btn btn-primary" id="btnRefresh" onclick="startRefresh()">🔄 刷新数据</button>
+  </div>
+  <div class="progress-bar" id="progressBar"><div class="fill" id="progressFill"></div></div>
+</header>
+
+<div class="risk-banner" id="riskBanner" style="display:none">
+  <span>⚠️</span>
+  <span id="riskBannerText">检测到风控/登录失效信号, 已自动停止所有抓取任务</span>
+  <button class="btn btn-ghost" onclick="dismissRiskBanner()">知道了</button>
+</div>
+
+<div class="container">
+  <!-- 平台概览 -->
+  <div class="overview-head">
+    <div class="overview-toolbar">
+      <select id="overviewDays" class="platform-select" onchange="onOverviewDaysChange()">
+        <option value="1">昨天</option>
+        <option value="3">近3天</option>
+        <option value="7" selected>近7天</option>
+        <option value="14">近14天</option>
+        <option value="30">近30天</option>
+        <option value="custom">自定义</option>
+      </select>
+      <div class="date-range" id="overviewDateRange" style="display:none">
+        <input type="date" id="overviewStart" value="" onchange="onOverviewDateInput()">
+        <span class="sep">~</span>
+        <input type="date" id="overviewEnd" value="" onchange="onOverviewDateInput()">
+      </div>
+      <span class="date-info" id="overviewDateInfo">--</span>
+    </div>
+  </div>
+  <div class="overview-cards" id="overviewCards">
+    <div class="o-card c-teal"><div class="label">3分钟回复率</div><div class="value">--</div><div class="trend">加载中…</div></div>
+    <div class="o-card c-amber"><div class="label">采纳率</div><div class="value">--</div><div class="trend">加载中…</div></div>
+    <div class="o-card c-red"><div class="label">生成率</div><div class="value">--</div><div class="trend">加载中…</div></div>
+  </div>
+
+  <!-- 店铺列表 -->
+  <div class="panel">
+    <div class="panel-head">
+      <div>
+        <h2>🏬 店铺表现</h2>
+        <div class="sub">点击店铺查看详情</div>
+      </div>
+      <div class="toolbar" style="margin-bottom:0">
+        <div class="search-box" style="min-width:200px">
+          <span class="icon">🔍</span>
+          <input id="searchInput" placeholder="搜索店铺名称…" oninput="renderTable()">
+        </div>
+        <span class="count" id="shopCount">-- 家店铺</span>
+      </div>
+    </div>
+    <div class="panel-body" style="padding:0">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>店铺</th>
+              <th>平台</th>
+              <th>3分钟回复率</th>
+              <th>采纳率</th>
+              <th>生成率</th>
+            </tr>
+          </thead>
+          <tbody id="shopTableBody">
+            <tr><td colspan="5" class="empty">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- 核算板块 -->
+  <div class="panel" id="auditSection">
+    <div class="panel-head">
+      <div>
+        <h2>🧮 核算板块</h2>
+        <div class="sub">核算采纳率 = (自动发送 + 侧边栏点击发送 + 编辑后发送) ÷ 消息总条数 · 逐条遍历消息轨迹</div>
+      </div>
+      <div class="header-actions">
+        <select id="auditDays" class="platform-select" onchange="onAuditDaysChange()">
+          <option value="3">近3天</option>
+          <option value="7" selected>近7天</option>
+          <option value="14">近14天</option>
+          <option value="30">近30天</option>
+          <option value="custom">自定义</option>
+        </select>
+        <div class="date-range" id="auditDateRange" style="display:none">
+          <input type="date" id="auditStart" value="">
+          <span class="sep">~</span>
+          <input type="date" id="auditEnd" value="">
+        </div>
+        <button class="btn btn-primary" id="btnAudit" onclick="startAudit(true)">▶ 开始核算</button>
+        <div class="progress-bar audit-progress" id="auditProgress" style="margin-top:0"><div class="fill" id="auditProgressFill"></div></div>
+      </div>
+    </div>
+    <div class="panel-body">
+      <div class="audit-status" id="auditStatus">尚未核算 · 点击"开始核算"遍历全部店铺消息记录</div>
+      <div class="audit-summary-cards" id="auditSummaryCards" style="display:none">
+        <div class="a-card"><div class="label">消息总条数</div><div class="value blue" id="aTotal">--</div></div>
+        <div class="a-card"><div class="label">采纳条数</div><div class="value amber" id="aAdopted">--</div></div>
+        <div class="a-card"><div class="label">核算采纳率</div><div class="value green" id="aRate">--</div></div>
+      </div>
+      <div class="audit-cols">
+        <div class="audit-col">
+          <h3>📦 按店铺核算</h3>
+          <div class="table-wrap" style="border:1px solid var(--border-soft);border-radius:10px">
+            <table>
+              <thead>
+                <tr><th>店铺</th><th>平台</th><th>消息总条数</th><th>采纳条数</th><th>核算采纳率</th><th>明细</th></tr>
+              </thead>
+              <tbody id="auditShopBody"><tr><td colspan="5" class="empty">等待核算…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="audit-col">
+          <div class="audit-col-head" onclick="toggleStaffPanel()">
+            <h3>🧑‍💼 按人工核算 <span class="staff-count" id="staffCount"></span></h3>
+            <button class="btn btn-ghost staff-toggle" id="staffToggleBtn">收起 ▲</button>
+          </div>
+          <div id="staffPanel" style="display:grid;gap:10px">
+            <div class="table-wrap" style="border:1px solid var(--border-soft);border-radius:10px;padding:10px">
+              <div class="staff-grid" id="auditStaffGrid"><span class="empty">等待核算…</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 店铺详情抽屉 -->
+<div class="drawer-mask" id="drawerMask" onclick="closeDetail()"></div>
+<div class="drawer" id="shopDrawer" role="dialog" aria-label="店铺详情">
+  <div class="drawer-head">
+    <div>
+      <h2 id="detailTitle">店铺详情</h2>
+      <div class="meta">
+        <span id="detailDate">--</span>
+        <span id="detailPlatform">--</span>
+      </div>
+    </div>
+    <button class="drawer-close" onclick="closeDetail()" aria-label="关闭">✕</button>
+  </div>
+  <div class="drawer-body">
+    <div class="drawer-tabs">
+      <button class="dtab active" id="tabMetrics" onclick="switchDrawerTab('metrics')">📈 指标趋势</button>
+      <button class="dtab" id="tabTrace" onclick="switchDrawerTab('trace')">📋 原始消息</button>
+    </div>
+    <div id="paneMetrics">
+      <div class="detail-metrics" id="detailMetrics"><div class="loading"><div class="spinner"></div>加载详情…</div></div>
+      <div class="chart-card"><h3>📈 核算采纳率趋势(逐日)</h3><div class="chart-box"><canvas id="chartAi"></canvas></div></div>
+    </div>
+    <div id="paneTrace" style="display:none">
+      <div class="msg-toolbar">
+        <div class="msg-filter">
+          时间:
+          <input type="date" id="traceStart" style="background:var(--bg);border:1px solid var(--border-soft);border-radius:6px;color:var(--text);padding:3px 6px;font-size:12px;color-scheme:dark;outline:none">
+          <span>~</span>
+          <input type="date" id="traceEnd" style="background:var(--bg);border:1px solid var(--border-soft);border-radius:6px;color:var(--text);padding:3px 6px;font-size:12px;color-scheme:dark;outline:none">
+        </div>
+        <div class="msg-filter">
+          发送状态:
+          <select id="traceFilter" onchange="tracePage=0;renderTraceList()">
+            <option value="">全部</option>
+            <option value="1">自动发送</option>
+            <option value="2">侧边栏点击发送</option>
+            <option value="3">编辑后发送</option>
+            <option value="none">未发送</option>
+          </select>
+        </div>
+        <span class="msg-count" id="traceCount"></span>
+        <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px" id="btnLoadTrace" onclick="loadTraceMessages(true)">🔄 重新抓取</button>
+      </div>
+      <div class="msg-list" id="traceList"><div class="msg-empty">点击"原始消息"标签加载消息记录</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- 登录对话框 -->
+<div class="login-dialog" id="loginDialog">
+  <div class="login-box">
+    <h3>🔑 登录更新 Cookie</h3>
+    <p>浏览器将自动弹出探域平台登录窗口, 登录完成后自动抓取 Cookie 并保存, 无需手动提供。</p>
+    <ol class="login-steps">
+      <li>点击下方按钮, 浏览器窗口自动打开探域平台</li>
+      <li>如未登录, 在浏览器中完成扫码/账号登录</li>
+      <li><b>推荐使用「微信扫码登录」</b> — 扫码后平台会展示你名下的全部集团, 选择任一集团即可, 看板将自动记录全部集团列表, 之后可自由切换抓取不同平台的店铺</li>
+      <li>登录成功后自动抓取 Cookie 并保存到本地</li>
+    </ol>
+    <div class="login-status" id="loginStatus">等待操作…</div>
+    <div style="display:flex;gap:10px;justify-content:flex-end">
+      <button class="btn btn-ghost" onclick="closeLogin()">关闭</button>
+      <button class="btn btn-primary" id="btnLoginStart" onclick="startBrowserLogin()">🚀 打开浏览器登录</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const METRICS = [
+  { key: 'service_3m_response_rate', title: '3分钟回复率', format: 'percent' },
+  { key: 'ai_consult_response_accept_rate', title: '采纳率', format: 'percent' },
+  { key: 'ai_consult_response_rate', title: '生成率', format: 'percent' },
+];
+const METRIC_TITLES = Object.fromEntries(METRICS.map(m => [m.key, m.title]));
+const FORMATS = Object.fromEntries(METRICS.map(m => [m.key, m.format]));
+
+let shops = [];
+let overviewData = null;
+let selectedShop = null;
+let charts = {};
+let refreshing = false;
+let currentPlatform = '';  // '' = 全部, 否则平台ID
+let platformInfo = { fetch: [], keep: [], all: [] };
+let groups = [];          // 集团列表
+let currentGroup = null;  // 当前集团
+
+const PLATFORM_NAMES = { 0: '淘宝', 1: '拼多多', 2: '京东', 4: '快手', 5: '抖音', 7: '天猫' };
+
+function fmtNum(v, format) {
+  if (v === null || v === undefined) return '--';
+  if (format === 'currency') return '¥' + Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+  if (format === 'percent') return Number(v).toFixed(2) + '%';
+  if (format === 'integer') return Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 0 });
+  return String(v);
+}
+
+function trendHtml(comparePercent, opts = {}) {
+  if (comparePercent === null || comparePercent === undefined) return '<span class="trend note">无环比</span>';
+  const cls = comparePercent > 0 ? 'up' : comparePercent < 0 ? 'down' : 'flat';
+  const arrow = comparePercent > 0 ? '▲' : comparePercent < 0 ? '▼' : '—';
+  const suffix = opts.suffix !== undefined ? opts.suffix : '';
+  const note = opts.note ? `<span class="trend note">${opts.note}</span>` : '';
+  return `<span class="badge ${cls}">${arrow} ${Math.abs(comparePercent).toFixed(2)}% ${suffix}</span>${note}`;
+}
+
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2800);
+}
+
+async function fetchJSON(url, opts) {
+  const resp = await fetch(url, opts);
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  return resp.json();
+}
+
+// ---------- 平台配置 ----------
+async function loadPlatforms() {
+  try {
+    platformInfo = await fetchJSON('/api/platforms');
+    const sel = document.getElementById('platformSelect');
+    sel.innerHTML = '<option value="">全部平台</option>';
+    const fetchPlats = platformInfo.fetch || [];
+    fetchPlats.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = String(p.id);
+      opt.textContent = p.name;
+      sel.appendChild(opt);
+    });
+  } catch (e) {
+    console.error('平台配置加载失败', e);
+  }
+}
+
+// ---------- 集团 ----------
+async function loadGroups() {
+  try {
+    const data = await fetchJSON('/api/groups');
+    groups = data.groups || [];
+    currentGroup = data.current || null;
+    renderGroupSelect();
+  } catch (e) {
+    console.error('集团加载失败', e);
+    document.getElementById('groupLabel').textContent = '集团加载失败';
+  }
+}
+
+function renderGroupSelect() {
+  const label = document.getElementById('groupLabel');
+  const dot = document.getElementById('groupDot');
+  const menu = document.getElementById('groupMenu');
+  if (currentGroup && currentGroup.name) {
+    label.textContent = currentGroup.name;
+    dot.style.background = 'var(--green)';
+  } else {
+    label.textContent = '未登录或集团未知';
+    dot.style.background = 'var(--amber)';
+  }
+  if (!groups.length) {
+    menu.innerHTML = `<div class="g-empty">暂无集团列表<br><span style="font-size:11px">通过「登录更新Cookie」重新登录以发现全部集团</span></div>`;
+    return;
+  }
+  menu.innerHTML = groups.map(g => {
+    const name = g.groupName || g.name || '未知集团';
+    const active = g.current ? 'active' : '';
+    const badge = g.groupId ? `<span class="g-badge">${(g.groupId || '').slice(0, 8)}…</span>` : '';
+    const color = g.accountType === 3 ? '#22d3ee' : '#a78bfa';
+    return `<div class="g-item ${active}" onclick="switchGroup('${g.groupId}')">
+      <span class="g-dot" style="background:${color}"></span>
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${name}</span>
+      ${active ? '<span style="color:var(--blue);font-size:11px">✓</span>' : ''}
+    </div>`;
+  }).join('') + `<div class="g-tip">💡 提示: 集团列表来自微信扫码登录。切换集团会自动同步该集团的店铺列表。</div>`;
+}
+
+function toggleGroupMenu(event) {
+  event.stopPropagation();
+  document.getElementById('groupMenu').classList.toggle('open');
+}
+
+async function switchGroup(groupId) {
+  const g = groups.find(x => x.groupId === groupId);
+  if (!g) return;
+  if (g.current) {
+    document.getElementById('groupMenu').classList.remove('open');
+    return;
+  }
+  if (!g.accountId) {
+    toast('该集团缺少登录账号信息, 无法切换。请通过「登录更新Cookie」用微信扫码登录一次');
+    document.getElementById('groupMenu').classList.remove('open');
+    return;
+  }
+  document.getElementById('groupMenu').classList.remove('open');
+  toast(`正在切换到 ${g.groupName || g.name || groupId} …`);
+  try {
+    const r = await fetchJSON('/api/groups/switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ group_id: groupId }),
+    });
+    toast(`已切换到 ${(r.group && r.group.name) || g.groupName || '新集团'} ✅ 正在加载店铺…`);
+    await loadGroups();
+    await loadShops();
+    loadOverview();
+    startAudit(false);
+  } catch (e) {
+    toast('切换集团失败: ' + e.message);
+  }
+}
+
+document.addEventListener('click', () => {
+  document.getElementById('groupMenu').classList.remove('open');
+});
+
+function overviewDaysLabel() {
+  const days = document.getElementById('overviewDays').value;
+  if (days === 'custom') {
+    const s = document.getElementById('overviewStart').value;
+    const e = document.getElementById('overviewEnd').value;
+    return (s && e) ? `${s} ~ ${e}` : '自定义';
+  }
+  return `近${days}天`;
+}
+
+function onOverviewDateInput() {
+  const s = document.getElementById('overviewStart').value;
+  const e = document.getElementById('overviewEnd').value;
+  if (s && e) {
+    loadOverview();
+    document.getElementById('dateSub').textContent =
+      `${overviewDaysLabel()} · ${currentPlatform ? PLATFORM_NAMES[currentPlatform] || '平台' : '全部抓取平台'} · 全部店铺`;
+  }
+}
+
+function switchPlatform(value) {
+  currentPlatform = value;
+  document.getElementById('dateSub').textContent =
+    `${overviewDaysLabel()} · ${currentPlatform ? PLATFORM_NAMES[currentPlatform] || '平台' : '全部抓取平台'} · 全部店铺`;
+  loadShops();
+}
+
+// ---------- 概览 ----------
+let overviewReqId = 0;  // 防竞态: 只应用最新一次请求的结果
+
+function overviewQueryParams() {
+  const days = document.getElementById('overviewDays').value;
+  if (days === 'custom') {
+    const s = document.getElementById('overviewStart').value;
+    const e = document.getElementById('overviewEnd').value;
+    if (s && e) return `start=${s}&end=${e}`;
+  }
+  return `days=${days}`;
+}
+
+function onOverviewDaysChange() {
+  const custom = document.getElementById('overviewDays').value === 'custom';
+  document.getElementById('overviewDateRange').style.display = custom ? 'inline-flex' : 'none';
+  if (custom) {
+    // 默认填充最近7天
+    if (!document.getElementById('overviewStart').value) {
+      const end = new Date(); end.setDate(end.getDate() - 1);
+      const start = new Date(); start.setDate(start.getDate() - 7);
+      document.getElementById('overviewStart').value = start.toISOString().slice(0, 10);
+      document.getElementById('overviewEnd').value = end.toISOString().slice(0, 10);
+    }
+  }
+  loadOverview();
+  // 同步顶部标题的日期文案
+  document.getElementById('dateSub').textContent =
+    `${overviewDaysLabel()} · ${currentPlatform ? PLATFORM_NAMES[currentPlatform] || '平台' : '全部抓取平台'} · 全部店铺`;
+}
+
+async function loadOverview() {
+  const platform = currentPlatform || '1';
+  const myId = ++overviewReqId;
+  const infoEl = document.getElementById('overviewDateInfo');
+  infoEl.classList.add('loading');
+  infoEl.textContent = '加载中…';
+  try {
+    overviewData = await fetchJSON(`/api/overview?platform=${platform}&${overviewQueryParams()}`);
+    if (myId !== overviewReqId) return;  // 已有更新的请求, 丢弃本次结果
+    const items = overviewData.items;
+    const cards = document.querySelectorAll('.o-card');
+    const order = [
+      'service_3m_response_rate',
+      'ai_consult_response_accept_rate',
+      'ai_consult_response_rate'
+    ];
+    const colors = ['#22d3ee', '#fbbf24', '#a78bfa'];
+    cards.forEach((card, i) => {
+      const key = order[i];
+      const m = items[key];
+      if (!m) {
+        card.querySelector('.value').textContent = '--';
+        card.querySelector('.trend').innerHTML = '<span class="trend note">无数据</span>';
+        return;
+      }
+      const fmt = FORMATS[key];
+      card.querySelector('.label').textContent = METRIC_TITLES[key];
+      card.querySelector('.value').textContent = fmtNum(m.current, fmt);
+      card.querySelector('.value').style.color = colors[i];
+      card.querySelector('.trend').innerHTML = trendHtml(m.comparePercent);
+    });
+    infoEl.classList.remove('loading');
+    infoEl.textContent = `${overviewData.startDate} ~ ${overviewData.endDate} · ${overviewData.platformName || ''}`;
+    // 顶栏同步显示当前时间范围
+    const headerInfo = document.getElementById('dateInfo');
+    if (headerInfo) {
+      const lbl = overviewDaysLabel();
+      headerInfo.textContent = lbl.includes('~')
+        ? `自定义 · ${lbl}` : `${lbl} · ${overviewData.startDate} ~ ${overviewData.endDate}`;
+    }
+  } catch (e) {
+    if (myId !== overviewReqId) return;  // 已有更新的请求, 不处理
+    // 限速繁忙(503)时数据没变, 保留加载状态, 排队自动重试
+    if (e.message.includes('503')) {
+      setTimeout(() => { if (myId === overviewReqId) loadOverview(); }, 1500);
+    } else {
+      infoEl.classList.remove('loading');
+      infoEl.textContent = '加载失败';
+    }
+    console.error('概览加载失败', e);
+  }
+}
+
+// ---------- 店铺列表 ----------
+async function loadShops() {
+  try {
+    const platformParam = currentPlatform ? `?platform=${currentPlatform}` : '';
+    const data = await fetchJSON(`/api/shops${platformParam}`);
+    shops = data.shops || [];
+    renderTable();
+    await loadAllShopSummaries();
+  } catch (e) {
+    document.getElementById('shopTableBody').innerHTML =
+      `<tr><td colspan="5" class="empty">店铺列表加载失败: ${e.message}</td></tr>`;
+  }
+}
+
+async function loadAllShopSummaries() {
+  let loaded = 0, failed = 0;
+  // 分批并发: 每批 5 个店铺并行请求, 避免 21 个串行逐个排队拖慢整体
+  const BATCH = 5;
+  for (let i = 0; i < shops.length; i += BATCH) {
+    const batch = shops.slice(i, i + BATCH);
+    const results = await Promise.allSettled(batch.map(async (s) => {
+      const data = await fetchJSON(`/api/shop/${s.thirdShopId}?days=7`);
+      s.summary = data.items || {};
+      loaded++;
+    }));
+    results.forEach(r => { if (r.status === 'rejected') { failed++; } });
+    renderTable();
+    document.getElementById('shopCount').textContent =
+      `正在加载 ${Math.min(i + BATCH, shops.length)}/${shops.length} 家… (成功 ${loaded} 失败 ${failed})`;
+  }
+  document.getElementById('shopCount').textContent = `${shops.length} 家店铺 (成功 ${loaded} 失败 ${failed})`;
+  if (failed > 0) toast(`部分店铺数据加载失败: ${failed} 家`);
+}
+
+function renderTable() {
+  const kw = document.getElementById('searchInput').value.trim().toLowerCase();
+  const rows = shops
+    .filter(s => !kw || (s.shopName || '').toLowerCase().includes(kw))
+    .sort((a, b) => (b.summary?.service_3m_response_rate?.current || 0) - (a.summary?.service_3m_response_rate?.current || 0));
+
+  const tbody = document.getElementById('shopTableBody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="5" class="empty">没有匹配的店铺</td></tr>`;
+    document.getElementById('shopCount').textContent = `0 家店铺`;
+    return;
+  }
+  document.getElementById('shopCount').textContent = `${rows.length} 家店铺`;
+
+  tbody.innerHTML = rows.map(s => {
+    const m = s.summary || {};
+    const sel = selectedShop && selectedShop.thirdShopId === s.thirdShopId ? 'selected' : '';
+    const s3m = m.service_3m_response_rate;
+    const acc = m.ai_consult_response_accept_rate;
+    const rep = m.ai_consult_response_rate;
+    const pill = v => v ? ratePill(v.current) : '--';
+    return `<tr class="${sel}" onclick="openDetail('${s.thirdShopId}')">
+      <td><div class="shop-cell"><span class="name">${s.shopName || '未知'}</span><span class="id">${s.thirdShopId}</span></div></td>
+      <td><span class="platform-tag">${s.platformName || '-'}</span></td>
+      <td><span class="num">${fmtNum(s3m?.current, 'percent')}</span><div class="sub-line">${s3m ? '环比 ' + (s3m.comparePercent > 0 ? '▲' : '▼') + Math.abs(s3m.comparePercent).toFixed(2) + '%' : ''}</div></td>
+      <td><span class="num">${fmtNum(acc?.current, 'percent')}</span><div class="sub-line">${acc ? '环比 ' + (acc.comparePercent > 0 ? '▲' : '▼') + Math.abs(acc.comparePercent).toFixed(2) + '%' : ''}</div></td>
+      <td><span class="num">${fmtNum(rep?.current, 'percent')}</span><div class="sub-line">${rep ? '环比 ' + (rep.comparePercent > 0 ? '▲' : '▼') + Math.abs(rep.comparePercent).toFixed(2) + '%' : ''}</div></td>
+    </tr>`;
+  }).join('');
+}
+
+function ratePill(rate) {
+  const cls = rate >= 70 ? 'good' : rate >= 40 ? 'mid' : 'bad';
+  return `<span class="rate-pill ${cls}">${Number(rate).toFixed(2)}%</span>`;
+}
+
+// ---------- 店铺详情(抽屉) ----------
+let traceLoaded = false;
+
+async function openDetail(shopId, tab) {
+  const s = shops.find(x => x.thirdShopId === shopId);
+  if (!s) return;
+  selectedShop = s;
+  renderTable();
+  document.getElementById('detailTitle').textContent = `${s.shopName || '店铺'}`;
+  document.getElementById('detailPlatform').textContent = s.platformName || '';
+  document.getElementById('drawerMask').classList.add('show');
+  document.getElementById('shopDrawer').classList.add('show');
+  document.getElementById('detailMetrics').innerHTML = '<div class="loading"><div class="spinner"></div>加载详情…</div>';
+  traceLoaded = false;
+  switchDrawerTab(tab || 'metrics');
+
+  Object.values(charts).forEach(c => c.destroy());
+  charts = {};
+
+  try {
+    // 并行: 详情指标 + 消息轨迹(含按日聚合)
+    const [data, traceData] = await Promise.all([
+      fetchJSON(`/api/shop/${shopId}?days=7`),
+      fetchJSON(`/api/trace/messages/${shopId}?days=7`),
+    ]);
+    renderDetailMetrics(data.items);
+    document.getElementById('detailDate').textContent = `${data.startDate} ~ ${data.endDate}`;
+    renderCharts(traceData);
+  } catch (e) {
+    document.getElementById('detailMetrics').innerHTML = `<div class="empty">详情加载失败: ${e.message}</div>`;
+  }
+}
+
+function switchDrawerTab(tab) {
+  const metrics = tab === 'metrics';
+  document.getElementById('tabMetrics').classList.toggle('active', metrics);
+  document.getElementById('tabTrace').classList.toggle('active', !metrics);
+  document.getElementById('paneMetrics').style.display = metrics ? '' : 'none';
+  document.getElementById('paneTrace').style.display = metrics ? 'none' : '';
+  if (!metrics && selectedShop && !traceLoaded) {
+    loadTraceMessages(false);
+  }
+}
+
+// ---------- 原始消息记录 ----------
+let traceMessages = [];
+let tracePage = 0;
+const TRACE_PAGE_SIZE = 200;
+
+function traceTime(t) {
+  if (!t) return '';
+  if (typeof t === 'number') return new Date(t).toLocaleString('zh-CN', { hour12: false });
+  return String(t);
+}
+
+function traceContent(c) {
+  if (!c) return '';
+  if (Array.isArray(c)) return c.join('\n');
+  return String(c);
+}
+
+function sendTypeBadge(st) {
+  const map = {
+    1: ['自动发送', 'st-auto'],
+    2: ['侧边栏点击发送', 'st-menu'],
+    3: ['编辑后发送', 'st-edit'],
+  };
+  const [label, cls] = map[st] || ['未发送', 'st-none'];
+  return `<span class="st-badge ${cls}">${label}</span>`;
+}
+
+async function loadTraceMessages(force) {
+  const s = selectedShop;
+  if (!s) return;
+  const start = document.getElementById('traceStart').value;
+  const end = document.getElementById('traceEnd').value;
+  const listEl = document.getElementById('traceList');
+  listEl.innerHTML = '<div class="msg-loading"><div class="spinner" style="margin:0 auto 8px"></div>正在抓取消息记录…</div>';
+  document.getElementById('traceCount').textContent = '';
+  try {
+    let q = `days=7${force ? '&force=1' : ''}`;
+    if (start && end) q = `start=${start}&end=${end}${force ? '&force=1' : ''}`;
+    const data = await fetchJSON(`/api/trace/messages/${s.thirdShopId}?${q}`);
+    traceMessages = data.messages || [];
+    tracePage = 0;
+    traceLoaded = true;
+    document.getElementById('traceCount').textContent = `共 ${data.total.toLocaleString()} 条消息`;
+    if (start && end) document.getElementById('detailDate').textContent = `${data.startDate} ~ ${data.endDate}`;
+    renderTraceList();
+  } catch (e) {
+    listEl.innerHTML = `<div class="msg-empty">消息记录加载失败: ${e.message}</div>`;
+  }
+}
+
+function renderTraceList() {
+  const listEl = document.getElementById('traceList');
+  const filter = document.getElementById('traceFilter').value;
+  const rows = traceMessages.filter(m => {
+    if (filter === 'none') return !m.sendType;
+    if (filter) return String(m.sendType) === filter;
+    return true;
+  });
+  if (!rows.length) {
+    listEl.innerHTML = '<div class="msg-empty">无匹配的消息记录</div>';
+    return;
+  }
+  const pageRows = rows.slice(0, (tracePage + 1) * TRACE_PAGE_SIZE);
+  let html = pageRows.map(m => `
+    <div class="msg-item">
+      <div class="m-time">${traceTime(m.time)}</div>
+      <div class="m-body">
+        <div class="m-tags">
+          ${sendTypeBadge(m.sendType)}
+          ${m.type ? `<span class="st-badge st-none">${m.type}</span>` : ''}
+          ${m.buyer ? `<span class="st-badge st-none" style="background:rgba(167,139,250,.12);color:#a78bfa">买家: ${esc(m.buyer)}</span>` : ''}
+        </div>
+        <div class="m-content">${esc(traceContent(m.content))}</div>
+        ${m.staff ? `<div class="m-staff">👤 ${esc(m.staff)}</div>` : ''}
+      </div>
+    </div>`).join('');
+  const remaining = rows.length - pageRows.length;
+  html += remaining > 0
+    ? `<div style="text-align:center;padding:14px"><button class="btn btn-ghost" style="padding:5px 14px;font-size:12.5px" onclick="loadMoreTrace()">加载更多 (剩余 ${remaining.toLocaleString()} 条)</button></div>`
+    : `<div style="text-align:center;padding:10px;color:var(--muted);font-size:12px">已全部加载 ${rows.length.toLocaleString()} 条</div>`;
+  listEl.innerHTML = html;
+}
+
+function loadMoreTrace() {
+  tracePage++;
+  renderTraceList();
+}
+
+function esc(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function renderDetailMetrics(items) {
+  const colors = {
+    service_3m_response_rate: '#22d3ee',
+    ai_consult_response_accept_rate: '#fbbf24',
+    ai_consult_response_rate: '#a78bfa'
+  };
+  document.getElementById('detailMetrics').innerHTML = METRICS.map(m => {
+    const v = items[m.key];
+    if (!v) return '';
+    const prevNote = `上期 ${fmtNum(v.previous, FORMATS[m.key])}`;
+    return `<div class="d-card">
+      <div class="label">${m.title}</div>
+      <div class="value" style="color:${colors[m.key]}">${fmtNum(v.current, FORMATS[m.key])}</div>
+      <div class="vs">${trendHtml(v.comparePercent)}</div>
+      <div class="prev">${prevNote}</div>
+    </div>`;
+  }).join('');
+}
+
+function renderCharts(traceData) {
+  const daily = (traceData && traceData.daily) || [];
+  if (!daily.length) return;
+  const dates = daily.map(d => d.date);
+  const rates = daily.map(d => d.rate);
+  const totals = daily.map(d => d.total);
+  const ctx = document.getElementById('chartAi').getContext('2d');
+  if (charts.chartAi) charts.chartAi.destroy();
+  charts.chartAi = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: dates,
+      datasets: [
+        {
+          label: '核算采纳率(%)',
+          data: rates,
+          borderColor: '#22d3ee',
+          backgroundColor: '#22d3ee22',
+          tension: 0.35,
+          pointRadius: 3,
+          pointBackgroundColor: '#22d3ee',
+          borderWidth: 2,
+          yAxisID: 'y',
+        },
+        {
+          label: '消息条数',
+          data: totals,
+          borderColor: '#a78bfa',
+          backgroundColor: '#a78bfa22',
+          tension: 0.35,
+          pointRadius: 2,
+          pointBackgroundColor: '#a78bfa',
+          borderWidth: 1.5,
+          borderDash: [4, 4],
+          yAxisID: 'y1',
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 }, color: '#8b96ae' } },
+      },
+      scales: {
+        x: { ticks: { maxTicksLimit: 7, font: { size: 10 }, color: '#8b96ae' }, grid: { color: 'rgba(36,48,80,.4)' } },
+        y: { position: 'left', ticks: { font: { size: 10 }, color: '#8b96ae', callback: v => v + '%' }, grid: { color: 'rgba(36,48,80,.4)' }, suggestedMax: 100 },
+        y1: { position: 'right', ticks: { font: { size: 10 }, color: '#8b96ae' }, grid: { drawOnChartArea: false } },
+      },
+    },
+  });
+}
+
+function closeDetail() {
+  selectedShop = null;
+  document.getElementById('shopDrawer').classList.remove('show');
+  document.getElementById('drawerMask').classList.remove('show');
+  Object.values(charts).forEach(c => c.destroy());
+  charts = {};
+  renderTable();
+}
+
+// 从核算表格打开店铺消息明细
+function openTraceDrawer(shopId) {
+  openDetail(shopId, 'trace');
+}
+
+// ---------- 核算板块 ----------
+let auditPolling = false;
+
+function auditQueryParams() {
+  const days = document.getElementById('auditDays').value;
+  if (days === 'custom') {
+    const s = document.getElementById('auditStart').value;
+    const e = document.getElementById('auditEnd').value;
+    if (s && e) return `start=${s}&end=${e}`;
+    return 'days=7';
+  }
+  return `days=${days}`;
+}
+
+function onAuditDaysChange() {
+  const custom = document.getElementById('auditDays').value === 'custom';
+  document.getElementById('auditDateRange').style.display = custom ? 'inline-flex' : 'none';
+  if (custom) {
+    // 默认填充最近7天
+    if (!document.getElementById('auditStart').value) {
+      const end = new Date(); end.setDate(end.getDate() - 1);
+      const start = new Date(); start.setDate(start.getDate() - 7);
+      document.getElementById('auditStart').value = start.toISOString().slice(0, 10);
+      document.getElementById('auditEnd').value = end.toISOString().slice(0, 10);
+    }
+  }
+  startAudit(false);
+}
+
+async function startAudit(force) {
+  if (auditPolling) {
+    toast('核算任务进行中, 请稍候…');
+    return;
+  }
+  const days = document.getElementById('auditDays').value;
+  if (days === 'custom') {
+    const s = document.getElementById('auditStart').value;
+    const e = document.getElementById('auditEnd').value;
+    if (!s || !e) {
+      toast('请选择完整的开始和结束日期');
+      return;
+    }
+    if (s > e) {
+      toast('开始日期不能晚于结束日期');
+      return;
+    }
+  }
+  const statusEl = document.getElementById('auditStatus');
+  statusEl.className = 'audit-status running';
+  statusEl.textContent = '正在启动核算任务…';
+  document.getElementById('btnAudit').disabled = true;
+  document.getElementById('auditProgress').classList.add('show');
+  document.getElementById('auditSummaryCards').style.display = 'none';
+  try {
+    const r = await fetchJSON(`/api/trace/overview?${auditQueryParams()}${force ? '&force=1' : ''}`);
+    if (r.status === 'done' && r.result) {
+      renderAudit(r.result);
+      statusEl.className = 'audit-status done';
+      statusEl.textContent = `核算完成 ✅ ${r.startDate} ~ ${r.endDate}`;
+    } else if (r.status === 'running') {
+      pollAudit();
+    }
+  } catch (e) {
+    statusEl.className = 'audit-status';
+    statusEl.textContent = '核算启动失败: ' + e.message;
+    resetAuditUI();
+    checkRisk();
+  }
+}
+
+function pollAudit() {
+  auditPolling = true;
+  const timer = setInterval(async () => {
+    try {
+      const t = await fetchJSON('/api/trace/overview/status');
+      const p = t.progress || {};
+      if (p.total > 0) {
+        document.getElementById('auditProgressFill').style.width = Math.round(p.done / p.total * 100) + '%';
+        const cur = t.error ? '错误: ' + t.error : (p.current || '');
+        document.getElementById('auditStatus').textContent =
+          `核算中: ${p.done}/${p.total} 家店铺 · ${cur}`;
+      }
+      if (!t.running) {
+        clearInterval(timer);
+        auditPolling = false;
+        if (t.result) {
+          renderAudit(t.result);
+          document.getElementById('auditStatus').className = 'audit-status done';
+          document.getElementById('auditStatus').textContent =
+            `核算完成 ✅ ${t.result.startDate} ~ ${t.result.endDate} · 总条数 ${t.result.total.toLocaleString()} · 核算采纳率 ${t.result.rate.toFixed(2)}%`;
+        } else if (t.error) {
+          document.getElementById('auditStatus').className = 'audit-status';
+          document.getElementById('auditStatus').textContent = '核算失败: ' + t.error;
+        }
+        resetAuditUI();
+      }
+    } catch (e) {
+      clearInterval(timer);
+      auditPolling = false;
+      resetAuditUI();
+      toast('核算状态获取失败');
+    }
+  }, 2000);
+}
+
+function resetAuditUI() {
+  document.getElementById('btnAudit').disabled = false;
+  setTimeout(() => document.getElementById('auditProgress').classList.remove('show'), 800);
+}
+
+function renderAudit(result) {
+  document.getElementById('auditSummaryCards').style.display = 'grid';
+  document.getElementById('aTotal').textContent = (result.total || 0).toLocaleString();
+  document.getElementById('aAdopted').textContent = (result.adopted || 0).toLocaleString();
+  document.getElementById('aRate').textContent = (result.rate || 0).toFixed(2) + '%';
+
+  const shopBody = document.getElementById('auditShopBody');
+  const list = result.shopList || [];
+  if (!list.length) {
+    shopBody.innerHTML = `<tr><td colspan="6" class="empty">无数据</td></tr>`;
+  } else {
+    shopBody.innerHTML = list
+      .slice()
+      .sort((a, b) => b.total - a.total)
+      .map(x => `<tr>
+        <td><div class="shop-cell"><span class="name">${x.shop.shopName || '未知'}</span><span class="id">${x.shop.thirdShopId}</span></div></td>
+        <td><span class="platform-tag">${x.shop.platformName || '-'}</span></td>
+        <td>${x.total.toLocaleString()}</td>
+        <td>${x.adopted.toLocaleString()}</td>
+        <td>${ratePill(x.rate)}</td>
+        <td><button class="btn btn-ghost" style="padding:2px 8px;font-size:11.5px" onclick="openTraceDrawer('${x.shop.thirdShopId}')">查看明细</button></td>
+      </tr>`).join('');
+  }
+
+  const staff = result.byStaff || [];
+  document.getElementById('staffCount').textContent = staff.length ? `(${staff.length}人)` : '';
+  const gridEl = document.getElementById('auditStaffGrid');
+  if (!staff.length) {
+    gridEl.innerHTML = `<span class="empty">无数据</span>`;
+  } else {
+    const sorted = staff.slice().sort((a, b) => b.total - a.total);
+    // 供"展开全部"按钮复用完整数据
+    window.__auditStaffSorted = sorted;
+    window.__auditTotal = result.total || 1;
+    const avatarColors = ['#22d3ee', '#a78bfa', '#fbbf24', '#f472b6', '#34d399', '#f87171', '#60a5fa', '#fb923c'];
+    const chipOf = (x, i) => {
+      const av = avatarColors[i % avatarColors.length];
+      const initial = (x.account || '?').charAt(0).toUpperCase();
+      const totalStr = (x.total || 0).toLocaleString();
+      return `<div class="staff-chip" onclick="toggleStaffChip(this)" title="点击展开占比明细">
+        <div class="staff-chip-top">
+          <span class="staff-avatar" style="background:${av}">${esc(initial)}</span>
+          <span class="staff-chip-name">${esc(x.account)}</span>
+          <span class="staff-chip-arrow">▾</span>
+        </div>
+        <div class="staff-chip-meta">
+          <span class="staff-chip-count">${totalStr} 条</span>
+          <span>${ratePill(x.rate)}</span>
+        </div>
+        <div class="staff-chip-detail">
+          <div class="drow"><span>消息总条数</span><b>${totalStr}</b></div>
+          <div class="drow"><span>采纳条数</span><b>${(x.adopted || 0).toLocaleString()}</b></div>
+          <div class="drow"><span>采纳占比</span><b>${(x.total / (result.total || 1) * 100).toFixed(1)}%</b></div>
+        </div>
+      </div>`;
+    };
+    const STAFF_PREVIEW = 10;  // 默认只展示前 10 个(消息量最高的), 其余折叠
+    const chipsHtml = sorted.slice(0, STAFF_PREVIEW).map((x, i) => chipOf(x, i)).join('');
+    let extraHtml = '';
+    if (sorted.length > STAFF_PREVIEW) {
+      const hidden = sorted.length - STAFF_PREVIEW;
+      extraHtml = `<div class="staff-grid-more"><button onclick="expandStaffGrid(this)" data-expanded="0">展开全部 ${hidden} 位客服 ▾</button></div>`;
+    }
+    gridEl.innerHTML = chipsHtml + extraHtml;
+  }
+}
+
+// 展开/收起全部客服芯片
+function expandStaffGrid(btn) {
+  const gridEl = document.getElementById('auditStaffGrid');
+  const expanded = btn.dataset.expanded === '1';
+  const all = window.__auditStaffSorted || [];
+  const avatarColors = ['#22d3ee', '#a78bfa', '#fbbf24', '#f472b6', '#34d399', '#f87171', '#60a5fa', '#fb923c'];
+  const chipOf = (x, i) => `<div class="staff-chip" onclick="toggleStaffChip(this)" title="点击展开占比明细">
+      <div class="staff-chip-top">
+        <span class="staff-avatar" style="background:${avatarColors[i % avatarColors.length]}">${esc((x.account || '?').charAt(0).toUpperCase())}</span>
+        <span class="staff-chip-name">${esc(x.account)}</span>
+        <span class="staff-chip-arrow">▾</span>
+      </div>
+      <div class="staff-chip-meta">
+        <span class="staff-chip-count">${(x.total || 0).toLocaleString()} 条</span>
+        <span>${ratePill(x.rate)}</span>
+      </div>
+      <div class="staff-chip-detail">
+        <div class="drow"><span>消息总条数</span><b>${(x.total || 0).toLocaleString()}</b></div>
+        <div class="drow"><span>采纳条数</span><b>${(x.adopted || 0).toLocaleString()}</b></div>
+        <div class="drow"><span>采纳占比</span><b>${(x.total / (window.__auditTotal || 1) * 100).toFixed(1)}%</b></div>
+      </div>
+    </div>`;
+  const STAFF_PREVIEW = 10;
+  if (expanded) {
+    // 收起: 回到前 10 个
+    gridEl.innerHTML = all.slice(0, STAFF_PREVIEW).map((x, i) => chipOf(x, i)).join('') +
+      `<div class="staff-grid-more"><button onclick="expandStaffGrid(this)" data-expanded="0">展开全部 ${all.length - STAFF_PREVIEW} 位客服 ▾</button></div>`;
+    btn.dataset.expanded = '0';
+    btn.textContent = `展开全部 ${all.length - STAFF_PREVIEW} 位客服 ▾`;
+  } else {
+    // 展开: 全部显示
+    gridEl.innerHTML = all.map((x, i) => chipOf(x, i)).join('') +
+      `<div class="staff-grid-more"><button onclick="expandStaffGrid(this)" data-expanded="1">收起 ${all.length - STAFF_PREVIEW} 位客服 ▴</button></div>`;
+    btn.dataset.expanded = '1';
+    btn.textContent = `收起 ${all.length - STAFF_PREVIEW} 位客服 ▴`;
+  }
+}
+
+// 单个客服芯片展开/收起(显示占比明细)
+function toggleStaffChip(el) {
+  el.classList.toggle('open');
+}
+
+// 客服面板整体折叠展开
+function toggleStaffPanel() {
+  const panel = document.getElementById('staffPanel');
+  const btn = document.getElementById('staffToggleBtn');
+  const collapsed = panel.style.display === 'none';
+  panel.style.display = collapsed ? '' : 'none';
+  btn.textContent = collapsed ? '收起 ▲' : '展开 ▼';
+}
+
+// ---------- 刷新 ----------
+async function startRefresh() {
+  if (refreshing) return;
+  refreshing = true;
+  document.getElementById('btnRefresh').disabled = true;
+  document.getElementById('progressBar').classList.add('show');
+  toast('刷新任务已启动, 正在拉取全部店铺数据…');
+  try {
+    await fetchJSON('/api/refresh');
+    pollProgress();
+  } catch (e) {
+    toast('刷新启动失败: ' + e.message);
+    resetRefreshUI();
+    checkRisk();
+  }
+}
+
+function pollProgress() {
+  const timer = setInterval(async () => {
+    try {
+      const t = await fetchJSON('/api/tasks/refresh');
+      const { done, total, current } = t.progress || {};
+      if (total > 0) {
+        document.getElementById('progressFill').style.width = Math.round(done / total * 100) + '%';
+        document.getElementById('dateSub').textContent = `刷新中: ${current || done + '/' + total}`;
+      }
+      if (!t.running) {
+        clearInterval(timer);
+        resetRefreshUI();
+        const lastRun = t.last_run ? new Date(t.last_run * 1000).toLocaleString('zh-CN') : '';
+        if (t.error) {
+          toast('刷新完成(有错误): ' + t.error);
+        } else {
+          toast(`刷新完成 ✅ 上次刷新: ${lastRun}`);
+        }
+        document.getElementById('dateSub').textContent = '近7天 · 全部抓取平台 · 全部店铺';
+        await loadAllShopSummaries();
+        loadOverview();
+      }
+    } catch (e) {
+      clearInterval(timer);
+      resetRefreshUI();
+      toast('刷新状态获取失败');
+    }
+  }, 2000);
+}
+
+function resetRefreshUI() {
+  refreshing = false;
+  document.getElementById('btnRefresh').disabled = false;
+  setTimeout(() => document.getElementById('progressBar').classList.remove('show'), 1000);
+}
+
+// ---------- 风控状态 ----------
+async function checkRisk() {
+  try {
+    const r = await fetchJSON('/api/risk');
+    if (r.triggered) {
+      const at = r.at ? new Date(r.at * 1000).toLocaleString('zh-CN') : '';
+      document.getElementById('riskBannerText').textContent =
+        `检测到风控/登录失效信号${r.lastCode ? ' (code=' + r.lastCode + ')' : ''}: ${r.reason || ''} · ${at} · 已自动停止所有抓取任务, 请点击「登录更新Cookie」重新登录`;
+      document.getElementById('riskBanner').style.display = 'flex';
+    } else {
+      document.getElementById('riskBanner').style.display = 'none';
+    }
+  } catch (e) {
+    /* 忽略状态获取失败 */
+  }
+}
+
+function dismissRiskBanner() {
+  document.getElementById('riskBanner').style.display = 'none';
+}
+
+setInterval(checkRisk, 15000);
+checkRisk();
+
+// ---------- 浏览器登录 ----------
+let loginPolling = false;
+
+function openLogin() {
+  document.getElementById('loginDialog').classList.add('show');
+  document.getElementById('loginStatus').className = 'login-status';
+  document.getElementById('loginStatus').textContent = '等待操作…';
+}
+
+function closeLogin() {
+  document.getElementById('loginDialog').classList.remove('show');
+}
+
+async function startBrowserLogin() {
+  if (loginPolling) {
+    toast('登录流程已在运行中');
+    return;
+  }
+  document.getElementById('btnLoginStart').disabled = true;
+  const statusEl = document.getElementById('loginStatus');
+  try {
+    const r = await fetchJSON('/api/login/start', { method: 'POST' });
+    if (!r.ok) {
+      statusEl.textContent = r.message || '启动失败';
+      statusEl.className = 'login-status failed';
+      return;
+    }
+    statusEl.textContent = '浏览器已打开, 请在弹出的窗口中完成登录…';
+    pollLogin();
+  } catch (e) {
+    statusEl.textContent = '登录启动失败: ' + e.message;
+    statusEl.className = 'login-status failed';
+  }
+}
+
+function pollLogin() {
+  loginPolling = true;
+  const timer = setInterval(async () => {
+    try {
+      const t = await fetchJSON('/api/login/status');
+      const statusEl = document.getElementById('loginStatus');
+      statusEl.textContent = t.message || t.phase;
+      if (t.phase === 'got_cookie') {
+        statusEl.className = 'login-status done';
+        statusEl.textContent = '✅ Cookie 已保存! 可关闭此窗口。' + (t.message || '');
+        clearInterval(timer);
+        loginPolling = false;
+        document.getElementById('btnLoginStart').disabled = false;
+        setTimeout(() => {
+          closeLogin();
+          toast('Cookie 已更新 ✅ 请刷新数据');
+          loadGroups();
+          checkRisk();  // 新凭证已生效, 风控横幅应立即清除
+        }, 2000);
+      } else if (t.phase === 'failed') {
+        statusEl.className = 'login-status failed';
+        clearInterval(timer);
+        loginPolling = false;
+        document.getElementById('btnLoginStart').disabled = false;
+      }
+    } catch (e) {
+      clearInterval(timer);
+      loginPolling = false;
+      document.getElementById('btnLoginStart').disabled = false;
+    }
+  }, 2000);
+}
+
+// ---------- 初始化 ----------
+(async function init() {
+  // 平台列表是纯本地配置, 快; 集团下拉涉及远程 detail 请求(可能排队), 不阻塞核算渲染
+  await loadPlatforms();
+  loadGroups();  // 异步: 集团下拉后台加载
+  loadOverview();
+  checkRisk();
+  // 先加载最近一次核算结果(只读缓存, 快路径: 不依赖店铺/集团, 秒开)
+  try {
+    const r = await fetchJSON(`/api/trace/overview?${auditQueryParams()}&from_cache=1`);
+    const result = r.result || (r.status === 'idle' && r.latest) || null;
+    if (result) {
+      renderAudit(result);
+      document.getElementById('auditStatus').className = 'audit-status done';
+      document.getElementById('auditStatus').textContent =
+        `核算完成 ✅ ${result.startDate} ~ ${result.endDate} · 总条数 ${result.total.toLocaleString()} · 核算采纳率 ${result.rate.toFixed(2)}%`;
+    }
+  } catch (e) {
+    console.error('核算结果加载失败', e);
+  }
+  // 店铺列表异步加载, 不阻塞核算板块渲染
+  loadShops();
+})();
+</script>
+</body>
+</html>
