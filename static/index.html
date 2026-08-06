@@ -353,7 +353,12 @@
   .staff-chip:hover { border-color: #31406b; background: var(--card-hover); }
   .staff-chip-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .staff-chip .staff-avatar { width: 24px; height: 24px; font-size: 11px; }
-  .staff-chip-name { font-size: 12px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+  .staff-chip-name {
+    font-size: 12px; font-weight: 600; color: var(--text); flex: 1; min-width: 0;
+    display: flex; flex-direction: column; line-height: 1.25;
+  }
+  .staff-chip-name .staff-name { font-size: 12.5px; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .staff-chip-name .staff-account-sub { font-size: 10px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .staff-chip-meta { font-size: 10.5px; color: var(--text-dim); margin-top: 6px; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
   .staff-chip-count { font-variant-numeric: tabular-nums; }
   .staff-chip-arrow { font-size: 9px; color: var(--text-dim); transition: transform .18s; }
@@ -371,6 +376,12 @@
   .staff-pool::-webkit-scrollbar-thumb { background: rgba(91,140,255,.3); border-radius: 4px; }
   .staff-pool::-webkit-scrollbar-thumb:hover { background: rgba(91,140,255,.55); }
   .staff-pool::-webkit-scrollbar-corner { background: transparent; }
+  .staff-filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .staff-filter-hint { font-size: 11px; color: var(--text-dim); }
+  .audit-sel-label { font-size: 12px; color: var(--blue); font-weight: 600; }
+  .audit-sel-label b { font-variant-numeric: tabular-nums; }
+  .audit-shop-check { width: 14px; height: 14px; accent-color: #22d3ee; cursor: pointer; }
+  .audit-shop-date { font-size: 11px; color: var(--text-sub); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .audit-summary-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 14px; }
   .a-card { background: var(--bg-soft); border: 1px solid var(--border-soft); border-radius: 9px; padding: 12px 14px; }
   .a-card .label { font-size: 11px; color: var(--text-dim); margin-bottom: 5px; }
@@ -563,6 +574,9 @@
         <div class="sub">核算采纳率 = (自动发送 + 侧边栏点击发送 + 编辑后发送) ÷ 消息总条数 · 逐条遍历消息轨迹</div>
       </div>
       <div class="header-actions">
+        <select id="auditPlatform" class="platform-select" onchange="onAuditPlatformChange()">
+          <option value="">全部平台</option>
+        </select>
         <select id="auditDays" class="platform-select" onchange="onAuditDaysChange()">
           <option value="1">今天</option>
           <option value="3">近3天</option>
@@ -576,6 +590,10 @@
           <span class="sep">~</span>
           <input type="date" id="auditEnd" value="" onchange="onAuditDateInput()">
         </div>
+        <span class="audit-sel-label" id="auditSelLabel" style="display:none"></span>
+        <button class="btn btn-ghost" id="btnAuditSel" onclick="auditSelected()" style="display:none">🧮 核算所选</button>
+        <button class="btn btn-ghost" id="btnAuditClearSel" onclick="clearAuditSel()" style="display:none">✕ 清除</button>
+        <button class="btn btn-ghost" id="btnAuditBack" onclick="backToFullAudit()" style="display:none">⬅ 返回全量</button>
         <button class="btn btn-primary" id="btnAudit" onclick="startAudit(true)">▶ 开始核算</button>
         <button class="btn btn-ghost" id="btnAuditPause" onclick="toggleAuditPause()" style="display:none">⏸ 暂停</button>
         <button class="btn btn-ghost" id="btnAuditCancel" onclick="cancelAudit()" style="display:none;color:var(--red,#f87171)">⏹ 取消</button>
@@ -595,9 +613,12 @@
           <div class="table-wrap" style="border:1px solid var(--border-soft);border-radius:10px">
             <table>
               <thead>
-                <tr><th>店铺</th><th>平台</th><th>消息总条数</th><th>采纳条数</th><th>核算采纳率</th><th>明细</th></tr>
+                <tr>
+                  <th style="width:32px"><input type="checkbox" id="auditSelAll" onclick="toggleAuditSelAll(this)" title="全选"></th>
+                  <th>店铺</th><th>平台</th><th>核算日期</th><th>消息总条数</th><th>采纳条数</th><th>核算采纳率</th><th>明细</th>
+                </tr>
               </thead>
-              <tbody id="auditShopBody"><tr><td colspan="5" class="empty">等待核算…</td></tr></tbody>
+              <tbody id="auditShopBody"><tr><td colspan="8" class="empty">等待核算…</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -607,6 +628,22 @@
             <button class="btn btn-ghost staff-toggle" id="staffToggleBtn">收起 ▲</button>
           </div>
           <div id="staffPanel" style="display:grid;gap:10px">
+            <div class="staff-filter-row">
+              <select id="staffDays" class="platform-select" onchange="onStaffDaysChange()">
+                <option value="1">今天</option>
+                <option value="3">近3天</option>
+                <option value="7" selected>近7天</option>
+                <option value="14">近14天</option>
+                <option value="30">近30天</option>
+                <option value="custom">自定义</option>
+              </select>
+              <div class="date-range" id="staffDateRange" style="display:none">
+                <input type="date" id="staffStart" value="" onchange="loadStaffData()">
+                <span class="sep">~</span>
+                <input type="date" id="staffEnd" value="" onchange="loadStaffData()">
+              </div>
+              <span class="staff-filter-hint" id="staffFilterHint"></span>
+            </div>
             <div class="staff-pool table-wrap" style="border:1px solid var(--border-soft);border-radius:10px;padding:10px">
               <div class="staff-grid" id="auditStaffGrid"><span class="empty">等待核算…</span></div>
             </div>
@@ -705,6 +742,13 @@ let currentPlatform = '';  // '' = 全部, 否则平台ID
 let platformInfo = { fetch: [], keep: [], all: [] };
 let groups = [];          // 集团列表
 let currentGroup = null;  // 当前集团
+// 核算板块状态: 平台筛选 / 店铺勾选子集(账号池模式) / 客服独立时间筛选
+let auditPlatform = '';            // 核算平台筛选, '' = 全部
+let auditSelShops = [];            // 已勾选店铺 thirdShopId 列表
+let auditSelMode = false;          // 是否处于"核算所选店铺"子集模式
+let staffFilter = { days: '7', start: '', end: '' };  // 客服账号池独立时间筛选
+let staffFilterCustom = false;   // 用户手动改过客服时间筛选(renderAudit 不再覆盖该视图)
+const shopCheckboxStates = {};     // thirdShopId -> checked, 跨渲染保留勾选
 
 const PLATFORM_NAMES = { 0: '淘宝', 1: '拼多多', 2: '有赞', 4: '快手', 5: '抖音', 7: '京东' };
 
@@ -757,6 +801,17 @@ async function loadPlatforms() {
       opt.textContent = p.name;
       sel.appendChild(opt);
     });
+    // 核算板块的平台筛选下拉: 只列抓取平台
+    const auditSel = document.getElementById('auditPlatform');
+    if (auditSel) {
+      auditSel.innerHTML = '<option value="">全部平台</option>';
+      fetchPlats.forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = String(p.id);
+        opt.textContent = p.name;
+        auditSel.appendChild(opt);
+      });
+    }
   } catch (e) {
     console.error('平台配置加载失败', e);
   }
@@ -769,6 +824,31 @@ async function loadGroups() {
     groups = data.groups || [];
     currentGroup = data.current || null;
     renderGroupSelect();
+    // 首次加载时集团→平台联动: 当前集团平台有 summary 数据, 默认选中
+    // (切集团时由 switchGroup 处理; 此处只处理初始加载, 避免重复刷新)
+    // /api/groups 的 current 对象只有 {id,name,chatbotGroupId}, 平台从
+    // groups 数组中 current:true 的那条拿
+    if (currentGroup && !window.__groupPlatformLinked) {
+      const curGroup = (data.groups || []).find(g => g.current)
+        || (data.groups || []).find(g => g.groupId === currentGroup.id)
+        || (data.groups || []).find(g => g.groupId === currentGroup.chatbotGroupId)
+        || null;
+      const gp = curGroup ? String(curGroup.platform) : '';
+      if (gp && platformInfo.fetch && platformInfo.fetch.some(p => String(p.id) === gp)) {
+        currentPlatform = gp;
+        const sel = document.getElementById('platformSelect');
+        if (sel) sel.value = gp;
+        auditPlatform = gp;
+        const auditSel = document.getElementById('auditPlatform');
+        if (auditSel) auditSel.value = gp;
+        refreshHeaderSub();
+        loadOverview();
+        loadShops();
+        reloadCachedAudit();
+        loadStaffData();  // 客服面板跟随联动平台刷新
+      }
+      window.__groupPlatformLinked = true;
+    }
   } catch (e) {
     console.error('集团加载失败', e);
     document.getElementById('groupLabel').textContent = '集团加载失败';
@@ -831,9 +911,24 @@ async function switchGroup(groupId) {
     toast(`已切换到 ${(r.group && r.group.name) || g.groupName || '新集团'} ✅ 正在加载店铺…`);
     stopAuditPolling();  // 后端已取消旧集团核算: 停掉旧轮询, 避免把旧组结果渲染到新组下
     await loadGroups();
+    // 集团→平台联动: 跳到该集团对应的平台(该平台才有 summary 数据)
+    // summary 平台维度以激活集团为作用域, 不联动则顶部三张卡无数据
+    const linkedPlatform = String(g.platform);
+    if (linkedPlatform && platformInfo.fetch.some(p => String(p.id) === linkedPlatform)) {
+      currentPlatform = linkedPlatform;
+      const sel = document.getElementById('platformSelect');
+      if (sel) sel.value = linkedPlatform;
+      // 核算板块平台筛选同步联动(默认跟随集团平台, 也可手动改)
+      auditPlatform = linkedPlatform;
+      const auditSel = document.getElementById('auditPlatform');
+      if (auditSel) auditSel.value = linkedPlatform;
+      refreshHeaderSub();
+    }
+    clearAuditSel();
     await loadShops();
     loadOverview();
     reloadCachedAudit();  // 组切换后缓存已失效, 只加载缓存, 不自动核算
+    loadStaffData();      // 客服面板跟随新平台刷新
   } catch (e) {
     toast('切换集团失败: ' + e.message);
   }
@@ -858,16 +953,20 @@ function onOverviewDateInput() {
   const e = document.getElementById('overviewEnd').value;
   if (s && e) {
     loadOverview();
-    document.getElementById('dateSub').textContent =
-      `${overviewDaysLabel()} · ${currentPlatform ? PLATFORM_NAMES[currentPlatform] || '平台' : '全部抓取平台'} · 全部店铺`;
+    refreshHeaderSub();
   }
 }
 
 function switchPlatform(value) {
   currentPlatform = value;
+  refreshHeaderSub();
+  loadShops();
+}
+
+// 同步顶部副标题(时间段 · 平台 · 店铺范围)
+function refreshHeaderSub() {
   document.getElementById('dateSub').textContent =
     `${overviewDaysLabel()} · ${currentPlatform ? PLATFORM_NAMES[currentPlatform] || '平台' : '全部抓取平台'} · 全部店铺`;
-  loadShops();
 }
 
 // ---------- 概览 ----------
@@ -897,8 +996,7 @@ function onOverviewDaysChange() {
   }
   loadOverview();
   // 同步顶部标题的日期文案
-  document.getElementById('dateSub').textContent =
-    `${overviewDaysLabel()} · ${currentPlatform ? PLATFORM_NAMES[currentPlatform] || '平台' : '全部抓取平台'} · 全部店铺`;
+  refreshHeaderSub();
 }
 
 async function loadOverview() {
@@ -1274,18 +1372,31 @@ let auditTimer = null;  // pollAudit 的定时器句柄, 供组切换等场景�
 
 function auditQueryParams() {
   const days = document.getElementById('auditDays').value;
+  let q = '';
   if (days === '1') {
     // "今天"实时: 显式 start=end=今天, 走 历史(库)+今天实时 合并路径
     const t = localDateStr(new Date());
-    return `start=${t}&end=${t}`;
-  }
-  if (days === 'custom') {
+    q = `start=${t}&end=${t}`;
+  } else if (days === 'custom') {
     const s = document.getElementById('auditStart').value;
     const e = document.getElementById('auditEnd').value;
-    if (s && e) return `start=${s}&end=${e}`;
-    return 'days=7';
+    q = (s && e) ? `start=${s}&end=${e}` : 'days=7';
+  } else {
+    q = `days=${days}`;
   }
-  return `days=${days}`;
+  // 平台筛选: 只核算该平台店铺
+  if (auditPlatform) q += `&platform=${auditPlatform}`;
+  // 店铺勾选子集(账号池模式): 只核算勾选的店铺
+  if (auditSelShops.length) q += `&shop_ids=${auditSelShops.join(',')}`;
+  return q;
+}
+
+// 核算平台筛选变化: 只加载缓存, 不自动触发核算
+function onAuditPlatformChange() {
+  auditPlatform = document.getElementById('auditPlatform').value;
+  clearAuditSel();
+  reloadCachedAudit();
+  loadStaffData();
 }
 
 // 区间是否含今天 => 后端返回 live:true 时给状态栏加"实时"徽标
@@ -1309,13 +1420,124 @@ function onAuditDaysChange() {
   }
   // 只加载缓存结果, 不自动开始核算(核算由「开始核算」按钮显式触发)
   reloadCachedAudit();
+  loadStaffData();
 }
 
 // 自定义日期输入变化: 同样只加载缓存, 不自动触发核算
 function onAuditDateInput() {
   const s = document.getElementById('auditStart').value;
   const e = document.getElementById('auditEnd').value;
-  if (s && e) reloadCachedAudit();
+  if (s && e) {
+    reloadCachedAudit();
+    loadStaffData();
+  }
+}
+
+// ---------- 核算店铺勾选(账号池模式) ----------
+function toggleAuditSel(shopId, checked) {
+  shopCheckboxStates[shopId] = !!checked;
+  auditSelShops = Object.keys(shopCheckboxStates).filter(id => shopCheckboxStates[id]);
+  updateAuditSelUI();
+}
+
+function toggleAuditSelAll(cb) {
+  const rows = document.querySelectorAll('#auditShopBody tr');
+  rows.forEach(row => {
+    const box = row.querySelector('.audit-shop-check');
+    if (box) {
+      box.checked = cb.checked;
+      shopCheckboxStates[box.value] = cb.checked;
+    }
+  });
+  auditSelShops = Object.keys(shopCheckboxStates).filter(id => shopCheckboxStates[id]);
+  updateAuditSelUI();
+}
+
+function updateAuditSelUI() {
+  const n = auditSelShops.length;
+  const label = document.getElementById('auditSelLabel');
+  const btn = document.getElementById('btnAuditSel');
+  const clear = document.getElementById('btnAuditClearSel');
+  if (label) label.style.display = n ? '' : 'none';
+  if (label) label.innerHTML = `已选 <b>${n}</b> 家店铺`;
+  if (btn) btn.style.display = n ? '' : 'none';
+  if (clear) clear.style.display = n ? '' : 'none';
+  if (auditSelMode) {
+    document.getElementById('btnAuditBack').style.display = '';
+  } else {
+    document.getElementById('btnAuditBack').style.display = 'none';
+  }
+}
+
+// 核算勾选的店铺(自定义时间段重算单个/多个店铺)
+async function auditSelected() {
+  if (auditPolling) { toast('核算任务进行中, 请稍候…'); return; }
+  if (!auditSelShops.length) { toast('请先勾选要核算的店铺'); return; }
+  auditSelMode = true;
+  updateAuditSelUI();
+  await startAudit(true);  // auditQueryParams 已带 shop_ids
+}
+
+// 退出店铺子集核算模式, 回到全量视图
+async function backToFullAudit() {
+  auditSelMode = false;
+  clearAuditSel();
+  reloadCachedAudit();
+  loadStaffData();  // 刷新客服面板范围提示(去掉"所选N店")
+}
+
+function clearAuditSel() {
+  auditSelShops = [];
+  shopCheckboxStates.__clearAll = true;
+  for (const k in shopCheckboxStates) shopCheckboxStates[k] = false;
+  delete shopCheckboxStates.__clearAll;
+  const all = document.getElementById('auditSelAll');
+  if (all) all.checked = false;
+  updateAuditSelUI();
+}
+
+// ---------- 客服账号池独立时间筛选 ----------
+function onStaffDaysChange() {
+  staffFilter.days = document.getElementById('staffDays').value;
+  staffFilterCustom = true;
+  const custom = staffFilter.days === 'custom';
+  document.getElementById('staffDateRange').style.display = custom ? 'inline-flex' : 'none';
+  if (custom && !document.getElementById('staffStart').value) {
+    const end = new Date(); end.setDate(end.getDate() - 1);
+    const start = new Date(); start.setDate(start.getDate() - 7);
+    document.getElementById('staffStart').value = localDateStr(start);
+    document.getElementById('staffEnd').value = localDateStr(end);
+  }
+  loadStaffData();
+}
+
+function staffQueryParams() {
+  if (staffFilter.days === 'custom') {
+    const s = document.getElementById('staffStart').value;
+    const e = document.getElementById('staffEnd').value;
+    if (s && e) return `start=${s}&end=${e}`;
+    return 'days=7';
+  }
+  return `days=${staffFilter.days}`;
+}
+
+async function loadStaffData() {
+  const gridEl = document.getElementById('auditStaffGrid');
+  const hintEl = document.getElementById('staffFilterHint');
+  const periodLabel = staffFilter.days === 'custom'
+    ? `${document.getElementById('staffStart').value} ~ ${document.getElementById('staffEnd').value}`
+    : (staffFilter.days === '1' ? '今天' : `近${staffFilter.days}天`);
+  const scopeLabel = (auditPlatform ? PLATFORM_NAMES[auditPlatform] : '全部平台')
+    + (auditSelMode && auditSelShops.length ? ` · 所选${auditSelShops.length}店` : '');
+  if (hintEl) hintEl.textContent = `期间: ${periodLabel}${scopeLabel ? ' · ' + scopeLabel : ''}`;
+  gridEl.innerHTML = `<span class="empty">加载中…</span>`;
+  try {
+    const q = `${staffQueryParams()}${auditPlatform ? `&platform=${auditPlatform}` : ''}${auditSelMode && auditSelShops.length ? `&shop_ids=${auditSelShops.join(',')}` : ''}`;
+    const d = await fetchJSON(`/api/trace/staff?${q}`);
+    renderStaffGrid(d.byStaff || []);
+  } catch (e) {
+    gridEl.innerHTML = `<span class="empty">客服数据加载失败: ${e.message}</span>`;
+  }
 }
 
 async function startAudit(force) {
@@ -1344,7 +1566,7 @@ async function startAudit(force) {
   document.getElementById('auditSummaryCards').style.display = 'none';
   // 新一轮核算: 清掉上一轮的店铺行与客服明细, 未核算完的店铺不展示
   document.getElementById('auditShopBody').innerHTML =
-    `<tr><td colspan="6" class="empty">核算中, 已完成店铺将实时展示…</td></tr>`;
+    `<tr><td colspan="8" class="empty">核算中, 已完成店铺将实时展示…</td></tr>`;
   document.getElementById('auditStaffGrid').innerHTML = `<span class="empty">—</span>`;
   document.getElementById('staffCount').textContent = '';
   setAuditRunningUI(true);
@@ -1353,8 +1575,8 @@ async function startAudit(force) {
     if (r.status === 'done' && r.result) {
       renderAudit(r.result);
       statusEl.className = 'audit-status done';
-      statusEl.textContent = `核算完成 ✅ ${r.startDate} ~ ${r.endDate}`;
-      statusEl.innerHTML = `核算完成 ✅ ${r.startDate} ~ ${r.endDate}${liveBadgeHtml(r.result && r.result.live)}`;
+      const scopeTxt = auditSelMode ? ` · 所选 ${r.result.shopList.length} 家店铺` : '';
+      statusEl.innerHTML = `核算完成 ✅ ${r.startDate} ~ ${r.endDate}${scopeTxt}${liveBadgeHtml(r.result && r.result.live)}`;
       resetAuditUI();
     } else if (r.status === 'running') {
       pollAudit();
@@ -1409,11 +1631,15 @@ function pollAudit() {
           resetAuditUI();
           return;
         }
-        if (t.result) {
-          renderAudit(t.result);
-          document.getElementById('auditStatus').className = 'audit-status done';
-          document.getElementById('auditStatus').innerHTML =
-            `核算完成 ✅ ${t.result.startDate} ~ ${t.result.endDate} · 总条数 ${t.result.total.toLocaleString()} · 核算采纳率 ${t.result.rate.toFixed(2)}%${liveBadgeHtml(t.result.live)}`;
+        if (t.result || t.subsetResult) {
+          const res = auditSelMode ? (t.subsetResult || t.result) : t.result;
+          if (res) {
+            renderAudit(res);
+            document.getElementById('auditStatus').className = 'audit-status done';
+            const scopeTxt = auditSelMode ? ` · 所选 ${res.shopList.length} 家店铺` : '';
+            document.getElementById('auditStatus').innerHTML =
+              `核算完成 ✅ ${res.startDate} ~ ${res.endDate}${scopeTxt} · 总条数 ${res.total.toLocaleString()} · 核算采纳率 ${res.rate.toFixed(2)}%${liveBadgeHtml(res.live)}`;
+          }
         } else if (t.error) {
           document.getElementById('auditStatus').className = 'audit-status';
           document.getElementById('auditStatus').textContent = '核算失败: ' + t.error;
@@ -1500,12 +1726,23 @@ async function reloadCachedAudit() {
       return;
     }
     const r = await fetchJSON(`/api/trace/overview?${auditQueryParams()}&from_cache=1`);
-    const result = r.result || (r.status === 'idle' && r.latest) || null;
+    // 店铺子集核算结果在 subsetResult(不落盘, 仅内存); 全量结果在 result/磁盘缓存
+    let result = null;
+    if (auditSelMode) {
+      if (st && st.subsetResult) {
+        result = st.subsetResult;
+      } else if (r.result && auditSelShops.length) {
+        result = r.result;
+      }
+    } else {
+      result = r.result || (r.status === 'idle' && r.latest) || null;
+    }
     if (result && !(r.status === 'idle' && (r.startDate !== result.startDate || r.endDate !== result.endDate))) {
       // 命中与当前所选时间段一致的缓存才作为「完成」渲染
       renderAudit(result);
       statusEl.className = 'audit-status done';
-      statusEl.innerHTML = `核算完成 ✅ ${result.startDate} ~ ${result.endDate} · 总条数 ${result.total.toLocaleString()} · 核算采纳率 ${result.rate.toFixed(2)}%${liveBadgeHtml(result.live)}`;
+      const scopeTxt = auditSelMode ? ` · 所选 ${result.shopList.length} 家店铺` : '';
+      statusEl.innerHTML = `核算完成 ✅ ${result.startDate} ~ ${result.endDate}${scopeTxt} · 总条数 ${result.total.toLocaleString()} · 核算采纳率 ${result.rate.toFixed(2)}%${liveBadgeHtml(result.live)}`;
     } else if (result) {
       // 有缓存但时间段与当前选择不一致: 展示旧结果, 但明确提示这不是当前时间段
       renderAudit(result);
@@ -1514,12 +1751,14 @@ async function reloadCachedAudit() {
     } else {
       // 该时间段无缓存: 清空表格, 提示点击开始核算
       document.getElementById('auditShopBody').innerHTML =
-        `<tr><td colspan="6" class="empty">该时间段暂无核算结果 · 点击「开始核算」抓取</td></tr>`;
+        `<tr><td colspan="8" class="empty">该时间段暂无核算结果 · 点击「开始核算」抓取</td></tr>`;
       document.getElementById('auditStaffGrid').innerHTML = `<span class="empty">—</span>`;
       document.getElementById('staffCount').textContent = '';
       document.getElementById('auditSummaryCards').style.display = 'none';
       statusEl.className = 'audit-status';
-      statusEl.textContent = '尚未核算该时间段 · 点击「开始核算」遍历全部店铺消息记录';
+      statusEl.textContent = auditSelMode
+        ? `尚未核算所选店铺 · 点击「核算所选」遍历勾选店铺的消息记录`
+        : '尚未核算该时间段 · 点击「开始核算」遍历全部店铺消息记录';
     }
   } catch (e) {
     toast('核算缓存加载失败: ' + e.message);
@@ -1534,55 +1773,74 @@ function renderAudit(result) {
 
   renderShopRows(result.shopList || []);
 
-  const staff = result.byStaff || [];
-  document.getElementById('staffCount').textContent = staff.length ? `(${staff.length}人)` : '';
-  const gridEl = document.getElementById('auditStaffGrid');
-  if (!staff.length) {
-    gridEl.innerHTML = `<span class="empty">无数据</span>`;
-  } else {
-    const sorted = staff.slice().sort((a, b) => b.total - a.total);
-    const avatarColors = ['#22d3ee', '#a78bfa', '#fbbf24', '#f472b6', '#34d399', '#f87171', '#60a5fa', '#fb923c'];
-    gridEl.innerHTML = sorted.map((x, i) => {
-      const av = avatarColors[i % avatarColors.length];
-      const initial = (x.account || '?').charAt(0).toUpperCase();
-      const totalStr = (x.total || 0).toLocaleString();
-      return `<div class="staff-chip" onclick="toggleStaffChip(this)" title="点击展开占比明细">
-        <div class="staff-chip-top">
-          <span class="staff-avatar" style="background:${av}">${esc(initial)}</span>
-          <span class="staff-chip-name">${esc(x.account)}</span>
-          <span class="staff-chip-arrow">▾</span>
-        </div>
-        <div class="staff-chip-meta">
-          <span class="staff-chip-count">${totalStr} 条</span>
-          <span>${ratePill(x.rate)}</span>
-        </div>
-        <div class="staff-chip-detail">
-          <div class="drow"><span>消息总条数</span><b>${totalStr}</b></div>
-          <div class="drow"><span>采纳条数</span><b>${(x.adopted || 0).toLocaleString()}</b></div>
-          <div class="drow"><span>采纳占比</span><b>${(x.total / (result.total || 1) * 100).toFixed(1)}%</b></div>
-        </div>
-      </div>`;
-    }).join('');
+  // 客服面板: 默认展示本次核算期间的客服; 若用户手动选择了客服时间筛选则保留其独立数据
+  if (!staffFilterCustom) {
+    renderStaffGrid(result.byStaff || []);
   }
+}
+
+// 渲染客服账号池(真实名称大字 + 账号小字; 无名称时显示账号)
+function renderStaffGrid(staff) {
+  const gridEl = document.getElementById('auditStaffGrid');
+  document.getElementById('staffCount').textContent = (staff && staff.length) ? `(${staff.length}人)` : '';
+  if (!staff || !staff.length) {
+    gridEl.innerHTML = `<span class="empty">无数据</span>`;
+    return;
+  }
+  const sorted = staff.slice().sort((a, b) => b.total - a.total);
+  const avatarColors = ['#22d3ee', '#a78bfa', '#fbbf24', '#f472b6', '#34d399', '#f87171', '#60a5fa', '#fb923c'];
+  gridEl.innerHTML = sorted.map((x, i) => {
+    const av = avatarColors[i % avatarColors.length];
+    const displayName = x.name || x.accountShort || x.account || '?';
+    const subName = x.name ? (x.accountShort || x.account) : '';
+    const initial = (x.name || x.account || '?').charAt(0).toUpperCase();
+    const totalStr = (x.total || 0).toLocaleString();
+    return `<div class="staff-chip" onclick="toggleStaffChip(this)" title="点击展开占比明细">
+      <div class="staff-chip-top">
+        <span class="staff-avatar" style="background:${av}">${esc(initial)}</span>
+        <span class="staff-chip-name"><span class="staff-name">${esc(displayName)}</span><span class="staff-account-sub">${subName ? esc(subName) : ''}</span></span>
+        <span class="staff-chip-arrow">▾</span>
+      </div>
+      <div class="staff-chip-meta">
+        <span class="staff-chip-count">${totalStr} 条</span>
+        <span>${ratePill(x.rate)}</span>
+      </div>
+      <div class="staff-chip-detail">
+        <div class="drow"><span>消息总条数</span><b>${totalStr}</b></div>
+        <div class="drow"><span>采纳条数</span><b>${(x.adopted || 0).toLocaleString()}</b></div>
+        <div class="drow"><span>采纳占比</span><b>${(x.total / (x.total || 1) * 100).toFixed(1)}%</b></div>
+      </div>
+    </div>`;
+  }).join('');
 }
 
 // 渲染店铺核算表格(最终结果与实时进度共用; 空列表时显示空态)
 function renderShopRows(list) {
   const shopBody = document.getElementById('auditShopBody');
+  const selAll = document.getElementById('auditSelAll');
+  if (selAll) selAll.checked = (list && list.length > 0) && list.every(x => shopCheckboxStates[x.shop.thirdShopId]);
   if (!list || !list.length) {
-    shopBody.innerHTML = `<tr><td colspan="6" class="empty">等待核算…</td></tr>`;
+    shopBody.innerHTML = `<tr><td colspan="8" class="empty">等待核算…</td></tr>`;
   } else {
     shopBody.innerHTML = list
       .slice()
       .sort((a, b) => b.total - a.total)
-      .map(x => `<tr>
+      .map(x => {
+        const sid = x.shop.thirdShopId;
+        const checked = !!shopCheckboxStates[sid];
+        const dateRange = (x.startDate && x.endDate && x.startDate !== x.endDate)
+          ? `${x.startDate} ~ ${x.endDate}` : (x.startDate || '');
+        return `<tr>
+        <td><input type="checkbox" class="audit-shop-check" value="${sid}" ${checked ? 'checked' : ''} onchange="toggleAuditSel('${sid}', this.checked)"></td>
         <td><div class="shop-cell"><span class="name">${x.shop.shopName || '未知'}</span><span class="id">${x.shop.thirdShopId}</span></div></td>
         <td><span class="platform-tag">${x.shop.platformName || '-'}</span></td>
+        <td><span class="audit-shop-date">${dateRange}</span></td>
         <td>${x.total.toLocaleString()}</td>
         <td>${x.adopted.toLocaleString()}</td>
         <td>${ratePill(x.rate)}</td>
         <td><button class="btn btn-ghost" style="padding:2px 8px;font-size:11.5px" onclick="openTraceDrawer('${x.shop.thirdShopId}')">查看明细</button></td>
-      </tr>`).join('');
+      </tr>`;
+      }).join('');
   }
 }
 
@@ -1754,6 +2012,8 @@ function pollLogin() {
   checkRisk();
   // 先加载最近一次核算结果(只读缓存, 快路径: 不依赖店铺/集团, 秒开; 不触发新核算)
   await reloadCachedAudit();
+  // 客服账号池默认独立时间筛选(近7天)
+  loadStaffData();
   // 店铺列表异步加载, 不阻塞核算板块渲染
   loadShops();
 })();

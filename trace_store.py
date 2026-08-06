@@ -36,6 +36,14 @@ def _conn(write=False):
             c = sqlite3.connect(str(DB_FILE), timeout=15)
             c.row_factory = sqlite3.Row
             _local.conn = c
+        # 连接可能被个别函数(如 get_shops 的独立连接)之外的路径 close 掉:
+        # 复用前探测一次, 已关闭则重开, 避免同线程后续查询全部失败
+        try:
+            c.execute("SELECT 1")
+        except sqlite3.Error:
+            c = sqlite3.connect(str(DB_FILE), timeout=15)
+            c.row_factory = sqlite3.Row
+            _local.conn = c
         return c
     c = sqlite3.connect(str(DB_FILE), timeout=15)
     c.row_factory = sqlite3.Row
@@ -117,9 +125,10 @@ def get_shops(platform=None):
 
     与 main.load_shops(shops.json, 仅当前激活集团)不同: 这里覆盖三个集团的店铺,
     且 platform_name 已在本库归一(京东=7 等), 不会随激活集团变化。
+    使用独立连接(不触碰线程共享读连接), 否则 close 会污染后续查询。
     """
     _ensure()
-    c = _conn()
+    c = _conn(write=True)
     try:
         if platform is None:
             rows = c.execute(
@@ -393,27 +402,32 @@ def query_shop_aggregate(shop_id, start, end, from_ms, to_ms):
         return []
 
 
-def overview_aggregate(start, end, platform=None):
-    """跨店总览聚合(从 trace_daily 出发): 每店 total/adopted + 全量 byStaff 合并"""
+def overview_aggregate(start, end, platform=None, shop_filter=None):
+    """跨店总览聚合(从 trace_daily 出发): 每店 total/adopted + 全量 byStaff 合并
+
+    shop_filter: 可选店铺子集(集合), 只聚合勾选的店铺(账号池模式)。
+    """
     if not DB_FILE.exists():
         return {"shop_list": [], "staff_agg": {}}
     try:
         c = _conn()
-        if platform is None:
-            rows = c.execute(
-                """SELECT third_shop_id, day, total, adopted, by_staff_json
-                   FROM trace_daily WHERE day BETWEEN ? AND ? ORDER BY third_shop_id, day""",
-                (start, end),
-            ).fetchall()
-        else:
-            rows = c.execute(
-                """SELECT d.third_shop_id, d.day, d.total, d.adopted, d.by_staff_json
-                   FROM trace_daily d
-                   JOIN shops s ON s.third_shop_id = d.third_shop_id
-                   WHERE d.day BETWEEN ? AND ? AND s.platform = ?
-                   ORDER BY d.third_shop_id, d.day""",
-                (start, end, platform),
-            ).fetchall()
+        where = "d.day BETWEEN ? AND ?"
+        args = [start, end]
+        if platform is not None:
+            where += " AND s.platform = ?"
+            args.append(platform)
+        if shop_filter:
+            placeholders = ",".join("?" * len(shop_filter))
+            where += f" AND d.third_shop_id IN ({placeholders})"
+            args.extend(shop_filter)
+        rows = c.execute(
+            f"""SELECT d.third_shop_id, d.day, d.total, d.adopted, d.by_staff_json
+                FROM trace_daily d
+                JOIN shops s ON s.third_shop_id = d.third_shop_id
+                WHERE {where}
+                ORDER BY d.third_shop_id, d.day""",
+            args,
+        ).fetchall()
         shop_map = {}
         staff_agg = {}
         for r in rows:
@@ -432,6 +446,16 @@ def overview_aggregate(start, end, platform=None):
         return {"shop_list": list(shop_map.items()), "staff_agg": staff_agg}
     except Exception:
         return {"shop_list": [], "staff_agg": {}}
+
+
+def staff_aggregate(start, end, platform=None, shop_filter=None):
+    """按时间段聚合客服维度(从 trace_daily.by_staff_json 出发, 秒级)
+
+    用于客服账号池的独立时间筛选: 返回 {account: {total, adopted}},
+    跨店/跨平台合并。DB 未覆盖区间时返回空。
+    """
+    agg = overview_aggregate(start, end, platform, shop_filter)
+    return agg["staff_agg"]
 
 
 def repair_shop_platform(shop_id, platform):

@@ -181,7 +181,12 @@ def _interactive_cache_put(path, payload, data):
 
 
 def post_api_interactive(path, payload, timeout=20):
-    """交互式请求: 不排队, 限速繁忙时立即返回 503; 10s 内同参命中内存缓存零请求"""
+    """交互式请求: 不排队, 限速繁忙时立即返回 503; 10s 内同参命中内存缓存零请求
+
+    缓存与首次返回保持同一形状: 都返回 data.data(内层业务数据)。
+    注意: 绝不能把完整响应 {code,msg,data:{...}} 存进缓存——命中后返回完整响应,
+    调用方 `.get("items")/.get("dates")` 会取不到内层字段, 表现为"间歇性空数据"。
+    """
     cached = _interactive_cache_get(path, payload)
     if cached is not None:
         return cached
@@ -194,8 +199,9 @@ def post_api_interactive(path, payload, timeout=20):
         raise RuntimeError(f"风控/登录失效: {data.get('msg', resp.status_code)}")
     if data.get("code") != 0:
         raise RuntimeError(data.get("msg", "接口错误"))
-    _interactive_cache_put(path, payload, data)
-    return data.get("data")
+    inner = data.get("data") or {}
+    _interactive_cache_put(path, payload, inner)
+    return inner
 
 
 class BusyQueueError(RuntimeError):
@@ -704,6 +710,39 @@ def fetch_trace_page(shop_id, begin, end, page_index, page_size=TRACE_PAGE_SIZE)
     return d.get("total") or 0, d.get("results") or []
 
 
+def _split_staff(acct):
+    """拆解 sellerAccount 为账号与真实名称: '48653908:柯柯' -> 账号=48653908 名称=柯柯
+
+    抖音(5)/京东(7) 冒号后是真实客服名; 拼多多(1) 'cs_340410493:154573412'
+    冒号后是数字ID(接口不返回真实名), 此时无 name、账号显示完整串。
+    客服维度主键始终是完整 sellerAccount(同一个人名可对应多个账号)。
+    """
+    if not acct:
+        return {"account": acct or "", "name": None, "accountShort": acct or ""}
+    if ":" in acct:
+        a, b = acct.split(":", 1)
+        if b.strip().isdigit():
+            return {"account": acct, "name": None, "accountShort": a}
+        return {"account": acct, "name": b.strip(), "accountShort": a}
+    return {"account": acct, "name": None, "accountShort": acct}
+
+
+def _staff_list_from_agg(by_staff):
+    """把 {account: {total, adopted}} 聚合成 byStaff 列表(含拆出的真实名称), 按 total 降序"""
+    out = []
+    for acct, v in by_staff.items():
+        meta = _split_staff(acct)
+        out.append({
+            "account": meta["account"],
+            "name": meta["name"],
+            "accountShort": meta["accountShort"],
+            "total": v["total"],
+            "adopted": v["adopted"],
+            "rate": round(v["adopted"] / v["total"] * 100, 2) if v["total"] else 0,
+        })
+    return sorted(out, key=lambda x: -x["total"])
+
+
 def stat_trace(shop_id, begin, end, on_progress=None):
     """遍历指定店铺时间段内的全部消息轨迹, 统计发送状态分布
 
@@ -748,14 +787,7 @@ def stat_trace(shop_id, begin, end, on_progress=None):
          "rate": round(v["adopted"] / v["total"] * 100, 2) if v["total"] else 0}
         for d, v in sorted(daily.items())
     ]
-    staff_list = sorted(
-        (
-            {"account": acct, "total": v["total"], "adopted": v["adopted"],
-             "rate": (v["adopted"] / v["total"] * 100) if v["total"] else 0}
-            for acct, v in by_staff.items()
-        ),
-        key=lambda x: -x["total"],
-    )
+    staff_list = _staff_list_from_agg(by_staff)
     # 原始消息列表(最近的最前, 便于核对)
     raw_messages = [
         {
@@ -973,14 +1005,7 @@ def stat_trace_daily(shop_id, start, end, force=False):
          "rate": round(v["adopted"] / v["total"] * 100, 2) if v["total"] else 0}
         for d, v in sorted(daily.items())
     ]
-    staff_list = sorted(
-        (
-            {"account": acct, "total": v["total"], "adopted": v["adopted"],
-             "rate": (v["adopted"] / v["total"] * 100) if v["total"] else 0}
-            for acct, v in by_staff.items()
-        ),
-        key=lambda x: -x["total"],
-    )
+    staff_list = _staff_list_from_agg(by_staff)
     raw_messages = [
         {
             "time": r.get("createTime") or r.get("createAt") or r.get("time") or "",
@@ -1229,7 +1254,8 @@ TRACE_OVERVIEW_CACHE_FILE = DATA_DIR / "trace_overview_result.json"
 _trace_state = {
     "running": False,
     "progress": {"done": 0, "total": 0, "current": ""},
-    "result": None,  # 最近一次完成的结果
+    "result": None,  # 最近一次完成的全量核算结果
+    "subset_result": None,  # 最近一次店铺子集核算结果(不覆盖全量视图, 不落盘)
     "start_date": None,
     "end_date": None,
     "platform": None,
@@ -1238,6 +1264,7 @@ _trace_state = {
     "paused": False,       # 核算暂停标志(worker 在每店边界阻塞等待恢复)
     "canceled": False,     # 取消核算标志(worker 中断后续店铺)
     "partial_list": [],    # 运行中已完成店铺的统计(浅拷贝), 供前端边算边展示
+    "shop_filter": None,   # 本次核算的店铺子集(账号池勾选), None=全部店铺
 }
 _trace_resume_evt = threading.Event()
 
@@ -1365,14 +1392,7 @@ def _aggregate_stat_rows(results, start, end):
          "rate": round(v["adopted"] / v["total"] * 100, 2) if v["total"] else 0}
         for d, v in sorted(daily.items())
     ]
-    staff_list = sorted(
-        (
-            {"account": acct, "total": v["total"], "adopted": v["adopted"],
-             "rate": (v["adopted"] / v["total"] * 100) if v["total"] else 0}
-            for acct, v in by_staff.items()
-        ),
-        key=lambda x: -x["total"],
-    )
+    staff_list = _staff_list_from_agg(by_staff)
     raw_messages = [
         {
             "time": r.get("createTime") or r.get("createAt") or r.get("time") or "",
@@ -1397,32 +1417,36 @@ def _aggregate_stat_rows(results, start, end):
     }
 
 
-def _trace_overview_from_db(start, end, platform=None):
-    """从 SQLite trace_daily 聚合核算总览(与在线 worker 输出结构完全一致)"""
-    agg = trace_store.overview_aggregate(start, end, platform)
-    if not agg["shop_list"]:
-        return None
-    # 用跨集团店铺表(全部 109 家)解析店铺元数据, 而非当前激活集团的 shops.json,
-    # 否则非当前集团的店铺在 shopList 里 platform 为 None、无法正确展示平台标签
+def _trace_overview_from_db(start, end, platform=None, shop_filter=None):
+    """从 SQLite trace_daily 聚合核算总览(与在线 worker 输出结构完全一致)
+
+    shop_filter: 可选店铺子集(集合), 只聚合勾选的店铺。
+    店铺池 = 跨集团店铺表(全部店铺)按 platform/shop_filter 过滤后的全集:
+    零消息店铺(total=0)也保留在 shopList 里, 与在线 worker 口径一致。
+    """
+    agg = trace_store.overview_aggregate(start, end, platform, shop_filter)
+    # 用跨集团店铺表(全部 118 家)解析店铺元数据并枚举店铺全集, 而非当前激活
+    # 集团的 shops.json(否则非当前集团店铺 platform 为 None、无法展示平台标签)
     shop_map = {s["thirdShopId"]: s for s in trace_store.get_shops()}
+    scope = [s for s in shop_map.values() if s.get("platform") in FETCH_PLATFORMS]
+    if platform is not None:
+        scope = [s for s in scope if s.get("platform") == platform]
+    if shop_filter:
+        scope = [s for s in scope if s["thirdShopId"] in shop_filter]
+    if not scope:
+        return None
+    data = {sid: v for sid, v in agg["shop_list"]}
     shop_list = []
     agg_total = agg_adopted = 0
-    for sid, v in agg["shop_list"]:
-        shop = shop_map.get(sid, {"thirdShopId": sid, "shopName": sid,
-                                  "platform": None, "platformName": ""})
+    for shop in scope:
+        v = data.get(shop["thirdShopId"], {"total": 0, "adopted": 0})
         shop_list.append({"shop": shop, "total": v["total"],
                           "adopted": v["adopted"],
-                          "rate": round(v["adopted"] / v["total"] * 100, 2) if v["total"] else 0})
+                          "rate": round(v["adopted"] / v["total"] * 100, 2) if v["total"] else 0,
+                          "startDate": start, "endDate": end})
         agg_total += v["total"]
         agg_adopted += v["adopted"]
-    staff_list = sorted(
-        (
-            {"account": a, "total": v["total"], "adopted": v["adopted"],
-             "rate": (v["adopted"] / v["total"] * 100) if v["total"] else 0}
-            for a, v in agg["staff_agg"].items()
-        ),
-        key=lambda x: -x["total"],
-    )
+    staff_list = _staff_list_from_agg(agg["staff_agg"])
     return {
         "startDate": start,
         "endDate": end,
@@ -1439,15 +1463,22 @@ def _trace_overview_from_db(start, end, platform=None):
 @app.get("/api/trace/overview")
 def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
                    start: str | None = None, end: str | None = None,
-                   from_cache: int = 0):
-    """核算总览(异步): 遍历全部抓取店铺统计核算采纳率
+                   from_cache: int = 0, shop_ids: str | None = None):
+    """核算总览(异步): 遍历抓取店铺统计核算采纳率
 
     支持自定义时间段(start/end, YYYY-MM-DD); 不传则用近 N 天。
+    platform: 平台筛选(只核算该平台店铺)。
+    shop_ids: 逗号分隔的店铺 ID 子集(账号池勾选后只核算勾选店铺)。
+    has_shop_filter: 勾选了店铺子集时强制走在线路径(不命中全平台缓存)。
     有缓存直接返回; 否则触发后台任务, 返回任务状态,
     前端轮询 /api/trace/overview/status 获取进度, 完成后取 result。
     from_cache=1: 只查内存+磁盘缓存, 未命中直接返回空(不触发任务)
     """
     global _trace_state
+    # 店铺子集: 解析 shop_ids 参数(逗号分隔)
+    shop_filter = None
+    if shop_ids and shop_ids.strip():
+        shop_filter = {s for s in shop_ids.split(",") if s.strip()}
     # 任务互斥: 核算与数据刷新不能同时跑(避免叠加请求量)
     if not from_cache:
         try:
@@ -1455,9 +1486,11 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
         except RuntimeError as e:
             raise HTTPException(409, str(e))
     start, end = date_range(days, end) if not start else (start, end or (datetime.date.today() - datetime.timedelta(days=1)).isoformat())
+    # 店铺子集核算不复用全量缓存(勾选不同店铺结果不同)
+    no_subset_cache = bool(shop_filter)
     # 内存缓存命中(需平台一致 + 未过期 + 结果自身时间段与请求一致, 防止跨范围误命中)
     mem_result = _trace_state.get("result")
-    if (not force and mem_result
+    if (not force and not no_subset_cache and mem_result
             and _trace_state["start_date"] == start and _trace_state["end_date"] == end
             and _trace_state["platform"] == platform
             and mem_result.get("startDate") == start and mem_result.get("endDate") == end
@@ -1465,7 +1498,7 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
             and time.time() - _trace_state["last_run"] < TRACE_OVERVIEW_CACHE_TTL):
         return {"status": "done", "startDate": start, "endDate": end, "result": mem_result}
     # 磁盘缓存命中(服务重启后同时间段重复核算零请求)
-    disk = load_trace_overview_cache(start, end, platform) if not force else None
+    disk = load_trace_overview_cache(start, end, platform) if not force and not no_subset_cache else None
     if disk:
         _trace_state["result"] = disk
         _trace_state["start_date"] = start
@@ -1475,15 +1508,21 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
         print(f"[trace] 命中磁盘缓存 {start}~{end}, 跳过抓取 (共{disk.get('total', 0)}条)")
         return {"status": "done", "startDate": start, "endDate": end, "result": disk}
     # SQLite 快路径: 数据库已覆盖该区间 => 纯本地聚合, 零上游请求(核算提速主因)
+    # 店铺子集/跨平台核算同样走 DB 快路径(预抓已把三集团数据都入库, 无需切集团)
     if (not force and _use_sqlite_trace()
             and trace_store.db_window_covers(start, end)):
         try:
-            result = _trace_overview_from_db(start, end, platform)
+            result = _trace_overview_from_db(start, end, platform, shop_filter)
             if result:
-                _trace_state["result"] = result
+                if shop_filter:
+                    # 店铺子集结果单独存, 不覆盖全量核算视图
+                    _trace_state["subset_result"] = result
+                else:
+                    _trace_state["result"] = result
                 _trace_state["start_date"] = start
                 _trace_state["end_date"] = end
                 _trace_state["platform"] = platform
+                _trace_state["shop_filter"] = shop_filter
                 _trace_state["last_run"] = time.time()
                 print(f"[trace] SQLite 快路径 {start}~{end} (共{result['total']}条)")
                 return {"status": "done", "startDate": start, "endDate": end, "result": result}
@@ -1503,6 +1542,7 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
     _trace_state["start_date"] = start
     _trace_state["end_date"] = end
     _trace_state["platform"] = platform
+    _trace_state["shop_filter"] = shop_filter
     _trace_state["error"] = None
     _trace_state["paused"] = False
     _trace_state["canceled"] = False
@@ -1510,9 +1550,10 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
     # 新一轮核算开始: 内存中的上一次完成结果作废(取消/中断后不能再把旧结果当本次结果,
     # 且避免跨范围误命中); 磁盘缓存仅当同范围时才删除(不同范围旧结果保留供切换后加载)。
     _trace_state["result"] = None
+    _trace_state["subset_result"] = None
     _trace_state["last_run"] = None
     _trace_state["progress"] = {"done": 0, "total": 0, "current": "准备中"}
-    if load_trace_overview_cache(start, end, platform):
+    if not no_subset_cache and load_trace_overview_cache(start, end, platform):
         try:
             if TRACE_OVERVIEW_CACHE_FILE.exists():
                 TRACE_OVERVIEW_CACHE_FILE.unlink()
@@ -1524,6 +1565,9 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
             shops = [s for s in load_shops() if s.get("platform") in FETCH_PLATFORMS]
             if platform is not None:
                 shops = [s for s in shops if s.get("platform") == platform]
+            if shop_filter is not None:
+                # 店铺子集: 只核算勾选的店铺(账号池模式)
+                shops = [s for s in shops if s["thirdShopId"] in shop_filter]
             total = len(shops)
             begin, end_t = f"{start} 00:00:00", f"{end} 23:59:59"
             today_str = datetime.date.today().isoformat()
@@ -1551,12 +1595,20 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
                         # 含今天: 历史(库)+今天(实时) 合并, 不写库
                         merged = _trace_shop_merged(shop["thirdShopId"], start, end)
                         if not merged or not merged[0]:
+                            # 零消息店铺也保留在池中(total=0), 展示"无消息"
+                            shop_list.append(
+                                {"shop": shop, "total": 0, "adopted": 0, "rate": 0,
+                                 "startDate": start, "endDate": end}
+                            )
+                            _trace_state["progress"]["done"] = i
                             continue
                         stat = merged[0]
                     else:
                         stat = stat_trace_daily(shop["thirdShopId"], start, end)
                     shop_list.append(
-                        {"shop": shop, "total": stat["total"], "adopted": stat["adopted"], "rate": stat["rate"]}
+                        {"shop": shop, "total": stat["total"], "adopted": stat["adopted"],
+                         "rate": stat["rate"],
+                         "startDate": start, "endDate": end}
                     )
                     agg_total += stat["total"]
                     agg_adopted += stat["adopted"]
@@ -1581,15 +1633,8 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
             if _trace_state["canceled"] or _trace_state["error"]:
                 print(f"[trace] 中断不写缓存: canceled={_trace_state['canceled']} error={_trace_state['error']}")
                 return
-            staff_list = sorted(
-                (
-                    {"account": a, "total": v["total"], "adopted": v["adopted"],
-                     "rate": (v["adopted"] / v["total"] * 100) if v["total"] else 0}
-                    for a, v in staff_agg.items()
-                ),
-                key=lambda x: -x["total"],
-            )
-            _trace_state["result"] = {
+            staff_list = _staff_list_from_agg(staff_agg)
+            completed = {
                 "startDate": start,
                 "endDate": end,
                 "platform": platform,
@@ -1602,8 +1647,16 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
                 # 区间含今天时标记实时(前端显示"实时"徽标)
                 "live": start <= datetime.date.today().isoformat() <= end,
             }
+            if shop_filter:
+                # 店铺子集结果单独存, 不覆盖全量核算视图, 也不落盘
+                _trace_state["subset_result"] = completed
+            else:
+                _trace_state["result"] = completed
             _trace_state["last_run"] = time.time()
-            save_trace_overview_cache(_trace_state["result"])
+            # 店铺子集核算结果不落盘: 磁盘缓存按(时间段,平台)为键、不分店铺子集,
+            # 写入子集结果会让后续同时间段的全量查询命中错误的子集数据
+            if not shop_filter:
+                save_trace_overview_cache(completed)
         except Exception as e:
             _trace_state["error"] = str(e)
         finally:
@@ -1615,6 +1668,29 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
     threading.Thread(target=worker, daemon=True).start()
     return {"status": "running", "startDate": start, "endDate": end,
             "progress": _trace_state["progress"]}
+
+
+@app.get("/api/trace/staff")
+def trace_staff(days: int = 7, start: str | None = None, end: str | None = None,
+                platform: int | None = None, shop_ids: str | None = None):
+    """客服账号池独立时间筛选: 返回该时间段内各客服的总消息/采纳条数/采纳率
+
+    从 SQLite trace_daily 聚合(跨集团全量), 与核算口径一致(adopted=send_type IN 1,2,3)。
+    任意平台/店铺子集/时间段均可查询, 不依赖当前激活集团。
+    DB 未覆盖该区间时返回空 byStaff(前端提示数据未抓取)。
+    """
+    start, end = date_range(days, end) if not start else (start, end or (datetime.date.today() - datetime.timedelta(days=1)).isoformat())
+    shop_filter = {s for s in shop_ids.split(",") if s.strip()} if shop_ids else None
+    result = {"startDate": start, "endDate": end, "platform": platform,
+              "total": 0, "adopted": 0, "rate": 0, "byStaff": []}
+    if trace_store.db_window_covers(start, end):
+        staff_agg = trace_store.staff_aggregate(start, end, platform, shop_filter)
+        staff_list = _staff_list_from_agg(staff_agg)
+        result["byStaff"] = staff_list
+        result["total"] = sum(s["total"] for s in staff_list)
+        result["adopted"] = sum(s["adopted"] for s in staff_list)
+        result["rate"] = round(result["adopted"] / result["total"] * 100, 2) if result["total"] else 0
+    return result
 
 
 @app.get("/api/trace/overview/status")
@@ -1630,8 +1706,10 @@ def trace_overview_status():
             "lastRun": _trace_state["last_run"],
             "error": _trace_state["error"],
             "result": _trace_state["result"],
+            "subsetResult": _trace_state["subset_result"],
             "paused": _trace_state["paused"],
             "canceled": _trace_state["canceled"],
+            "shopFilter": _trace_state["shop_filter"],
             "shopList": _trace_state["partial_list"],  # 运行中已完成店铺(边算边展示)
         }
 
