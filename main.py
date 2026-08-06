@@ -53,9 +53,9 @@ API_BASE = "https://agent.tanyuai.com/api/data-service/business/compass"
 # 平台枚举(与探域接口一致): 0=淘宝 1=拼多多 2=京东 4=快手 5=抖音 7=天猫
 PLATFORM_NAMES = {0: "淘宝", 1: "拼多多", 2: "京东", 4: "快手", 5: "抖音", 7: "天猫"}
 
-# 抓取配置: 拼多多(1)/抖音(5)/京东(2)抓取; 淘宝(0)/天猫(7)保留接口但不抓取
-FETCH_PLATFORMS = [1, 2, 5]
-KEEP_PLATFORMS = [0, 7]  # 保留接口, 不抓取不统计
+# 抓取配置: 拼多多(1)/京东(2)/抖音(5)/天猫(7, 京东店铺)抓取; 淘宝(0)/快手(4)保留接口但不抓取
+FETCH_PLATFORMS = [1, 2, 5, 7]
+KEEP_PLATFORMS = [0, 4]  # 保留接口, 不抓取不统计
 
 # 汇总指标定义(标题 / 格式化 / 排序权重)
 METRICS = [
@@ -93,6 +93,12 @@ def default_config():
             "tanyu-group-id": "1901419852011174006",
         },
         "groups": [],  # 已发现的集团列表(来自微信扫码登录 localStorage.groupList)
+        # 夜间预抓多集团配置: 平台顺序(1拼多多 2京东 5抖音 7天猫)、
+        # 默认窗口天数(未在 prefetch_windows 列出的平台用此值)、
+        # 各平台窗口覆盖: 抖音已抓满30天保留30天, PDD/JD 等其余平台抓近7天
+        "prefetch_platforms": [1, 2, 5, 7],
+        "prefetch_days": 7,
+        "prefetch_windows": {5: 30},
     }
 
 
@@ -1859,6 +1865,9 @@ def index():
 
 
 # ---------- SQLite 预抓 / 回填 ----------
+_last_prefetch_duration = None  # 最近一次夜间预抓耗时(秒), 供 /api/db/status 展示
+
+
 def _use_sqlite_trace():
     """config.json 开关: use_sqlite_trace(默认 true)"""
     try:
@@ -1902,44 +1911,157 @@ def backfill_trace_db():
     print(f"[backfill] 完成: {total_shops} 家 / {total_rows} 条 / {time.time() - t0:.0f}s")
 
 
-def prefetch_trace_window(days=30):
-    """夜间预抓: 抓近 days 天(截至昨天, 整日窗口)的缺失/过期天, 并滚动裁剪
+def _prefetch_group(gid, start, end):
+    """切换集团→同步店铺→抓该集团全部店铺 trace, 返回 (店铺总数, 失败数)
 
-    每天 00:00 由计划任务 TanyuDashboardTracePrefetch 触发:
-    零点一过, 昨天才真正定型, 这里把"昨天"整体抓取入库(当天数据当天实时展示,
-    不进库); 完成后 prune_window 按整日边界裁剪, 窗口恒为最近 days 个完整日。
-    用现有 stat_trace_daily 逻辑(逐日缓存 + TTL), 命中缓存的天零请求;
-    风控触发立即停止。完成后调用 prune_window 裁剪最旧一天。
+    依赖 switch_group 内部自动 sync_shops_from_tanyu(写 shops.json + SQLite 店铺表),
+    切换后 load_shops 即读当前集团店铺。任一店铺 RiskTriggered 向上传播(整个预抓停止)。
     """
-    trace_store.init_db()
+    cfg = load_config()
+    g = next((x for x in cfg.get("groups", []) if x.get("groupId") == gid), None)
+    if not g:
+        print(f"[prefetch] ⚠️ 集团 {gid} 不在 config.groups 中, 跳过")
+        return 0, 0
+    if not g.get("accountId"):
+        print(f"[prefetch] ⚠️ 集团「{g.get('groupName')}」缺少 accountId, 无法切换, 跳过")
+        return 0, 0
+    switch_group(gid)  # 内部会 _assert_no_risk + _rate_limit + sync_shops_from_tanyu
     shops = load_shops()
-    trace_store.upsert_shops(shops)
-    start, end = date_range(days)
-    print(f"[prefetch] 窗口 {start} ~ {end} ({days} 天), 店铺 {len(shops)} 家")
+    print(f"[prefetch] 集团「{g.get('groupName')}」({gid}) 店铺 {len(shops)} 家, "
+          f"窗口 {start} ~ {end}")
     failed = []
-    t0 = time.time()
     for i, shop in enumerate(shops, 1):
         if _risk_state.get("triggered"):
-            print(f"[prefetch] ⛔ 风控/登录失效, 停止于 {i - 1}/{len(shops)} 家")
-            break
+            print(f"[prefetch] ⛔ 风控/登录失效, 集团内停止于 {i - 1}/{len(shops)} 家")
+            raise RiskTriggered(_risk_state.get("reason") or "风控触发")
         sid = shop["thirdShopId"]
         try:
             stat = stat_trace_daily(sid, start, end)
-            print(f"[prefetch] {i}/{len(shops)} {shop.get('platformName','')}·{shop.get('shopName','')} "
+            print(f"[prefetch]   {i}/{len(shops)} {shop.get('platformName','')}·{shop.get('shopName','')} "
                   f"total={stat['total']} adopted={stat['adopted']}")
         except RiskTriggered:
             print(f"[prefetch] ⛔ 风控触发于 {shop.get('shopName','')}")
-            break
+            raise
         except Exception as e:
-            print(f"[prefetch] {shop.get('shopName','')} 失败: {e}")
+            print(f"[prefetch]   {shop.get('shopName','')} 失败: {e}")
             failed.append(sid)
+    return len(shops), len(failed)
+
+
+def repair_platform_attribution():
+    """按 SQLite 店铺表把历史 platform=0 的消息纠正为正确平台(按 shop_id 映射)
+
+    早期全量回填时无平台信息, 359K 条消息 platform=0。三集团同步后 shops 表已含
+    各集团店铺的正确平台, 这里做一次兜底修复: 逐店 UPDATE 该店仍为 0 的行,
+    并重建受影响店的按日聚合。shop_id 不在 shops 表的孤儿消息保持原样。
+    """
+    import sqlite3
     try:
-        deleted = trace_store.prune_window(keep_days=days)
-        print(f"[prefetch] 裁剪完成: 删除 {deleted} 条过期消息")
+        c = sqlite3.connect(trace_store.db_path())
+        rows = c.execute(
+            "SELECT third_shop_id, platform FROM shops WHERE third_shop_id IN "
+            "(SELECT DISTINCT third_shop_id FROM messages WHERE platform = 0)"
+        ).fetchall()
+        c.close()
     except Exception as e:
-        print(f"[prefetch] 裁剪失败: {e}")
-    print(f"[prefetch] 完成: {len(shops) - len(failed)} 家成功, {len(failed)} 家失败, "
-          f"{time.time() - t0:.0f}s")
+        print(f"[repair] 读取映射失败: {e}")
+        return 0
+    if not rows:
+        return 0
+    fixed = 0
+    for sid, platform in rows:
+        try:
+            import trace_store as _ts
+            _ts.repair_shop_platform(sid, platform)
+            fixed += 1
+        except Exception as e:
+            print(f"[repair] {sid} 修复失败: {e}")
+    print(f"[repair] 平台归属修复完成: {fixed} 家店铺(shop 表映射)已归位")
+    return fixed
+
+
+def prefetch_trace_window(days=None):
+    """夜间预抓: 轮询拼多多→京东→抖音三集团, 按集团窗口抓缺失/过期天, 并滚动裁剪
+
+    每天 00:00 由计划任务 TanyuDashboardTracePrefetch 触发:
+      零点一过, 昨天才真正定型, 这里把"昨天"整体抓取入库(当天数据当天实时展示,
+      不进库); 完成后 prune_window 按整日边界裁剪。
+    trace API 以激活集团(cookie tanyu-group-id)为作用域, 所以多平台预抓逐集团:
+      switch_group → sync_shops_from_tanyu → stat_trace_daily(该集团店铺) → 下一个。
+    窗口: 已抓满 30 天的平台(抖音)保留 30 天; 其余平台(拼多多/京东)抓近 7 天。
+      集团窗口取 config.prefetch_windows{platform: days}, 未配置的集团用
+      config.prefetch_days(默认 7)。已抓的天命中缓存零请求(增量)。
+    结束后恢复原激活集团, 让常驻看板继续服务原集团。风控/登录失效立即整体停止。
+    """
+    t_all = time.time()
+    trace_store.init_db()
+    cfg = load_config()
+    days = days or int(cfg.get("prefetch_days", 7))
+    # prefetch_windows 的 key 可能是 JSON 字符串("5")或数字(5), 统一归一化为 int
+    window_map = {int(k): int(v) for k, v in (cfg.get("prefetch_windows") or {}).items()}
+    platform_order = cfg.get("prefetch_platforms") or [1, 2, 5]
+    groups = cfg.get("groups") or []
+    # 按平台排序优先级(1 拼多多, 2 京东, 5 抖音), 未标注平台的集团放最后
+    plat_rank = {p: i for i, p in enumerate(platform_order)}
+    ordered = sorted(
+        [g for g in groups if g.get("groupId")],
+        key=lambda g: plat_rank.get(g.get("platform"), 99),
+    )
+    if not ordered:
+        print("[prefetch] ⚠️ config.groups 为空, 无可预抓集团")
+        return
+    # 记录进入前的激活集团, 预抓结束后切回
+    orig_gid = cfg.get("cookies", {}).get("tanyu-group-id")
+    kept_days = days  # 最终裁剪窗口天数(取各集团窗口最大值)
+    try:
+        g_total = g_failed = 0
+        for g in ordered:
+            if _risk_state.get("triggered"):
+                print("[prefetch] ⛔ 风控/登录失效, 整体停止")
+                raise RiskTriggered(_risk_state.get("reason") or "风控触发")
+            # 集团窗口: 优先按平台映射(PDD/JD=7 天), 未映射的集团用默认 days
+            gid = g["groupId"]
+            g_days = int(window_map.get(g.get("platform"), days))
+            kept_days = max(kept_days, g_days)
+            start, end = date_range(g_days)
+            print(f"[prefetch] ===== 集团「{g.get('groupName')}」窗口 {g_days} 天 "
+                  f"({start} ~ {end}) =====")
+            try:
+                n, f = _prefetch_group(gid, start, end)
+                g_total += n
+                g_failed += f
+            except RiskTriggered:
+                print("[prefetch] ⛔ 风控触发, 整体停止")
+                raise
+        print(f"[prefetch] 全部集团完成: {g_total} 家店铺, {g_failed} 家失败, "
+              f"耗时 {time.time() - t_all:.0f}s")
+    except RiskTriggered:
+        # 风控触发: 以已抓数据为准(kept_days 保持已处理集团的最大窗口)
+        print("[prefetch] ⛔ 风控触发, 停止轮询")
+    finally:
+        # 兜底修复历史 platform=0 消息(依赖 shops 表, 各集团已同步)
+        try:
+            repair_platform_attribution()
+        except Exception as e:
+            print(f"[repair] 兜底修复异常: {e}")
+        # 裁剪窗口到已抓数据的最大集团窗口(抖音 30 天, PDD/JD 7 天)
+        try:
+            deleted = trace_store.prune_window(keep_days=kept_days)
+            print(f"[prefetch] 裁剪完成(保留 {kept_days} 天): 删除 {deleted} 条过期消息")
+        except Exception as e:
+            print(f"[prefetch] 裁剪失败: {e}")
+        # 恢复原激活集团(常驻看板继续服务原集团); 风控时不强行切换, 仅告警
+        if orig_gid and not _risk_state.get("triggered"):
+            try:
+                if orig_gid != load_config().get("cookies", {}).get("tanyu-group-id"):
+                    switch_group(orig_gid)
+                    print(f"[prefetch] 已恢复原激活集团 {orig_gid}")
+            except Exception as e:
+                print(f"[prefetch] ⚠️ 恢复原集团失败: {e}")
+        elif _risk_state.get("triggered"):
+            print("[prefetch] ⚠️ 风控触发, 未恢复原集团(需重新登录后手工切换)")
+    _last_prefetch_duration = time.time() - t_all
+    print(f"[prefetch] 完成: 窗口 {kept_days} 天, 总耗时 {_last_prefetch_duration:.0f}s")
 
 
 @app.get("/api/db/status")
@@ -1953,11 +2075,23 @@ def db_status():
         info["messages"] = c.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
         info["shops"] = c.execute("SELECT COUNT(DISTINCT third_shop_id) FROM messages").fetchone()[0]
         info["daily"] = c.execute("SELECT COUNT(*) FROM trace_daily").fetchone()[0]
+        info["platform0_count"] = c.execute(
+            "SELECT COUNT(*) FROM messages WHERE platform = 0"
+        ).fetchone()[0]
         lo, hi = c.execute("SELECT MIN(day), MAX(day) FROM trace_daily").fetchone()
         info["window"] = [lo, hi]
         c.close()
     except Exception as e:
         info["error"] = str(e)
+    # 预抓配置与最近一次耗时
+    try:
+        cfg = load_config()
+        info["prefetch_days"] = cfg.get("prefetch_days", 7)
+        info["prefetch_platforms"] = cfg.get("prefetch_platforms", [1, 2, 5, 7])
+        info["prefetch_windows"] = cfg.get("prefetch_windows", {5: 30})
+    except Exception:
+        pass
+    info["prefetch_duration"] = _last_prefetch_duration
     return info
 
 

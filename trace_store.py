@@ -400,6 +400,29 @@ def overview_aggregate(start, end, platform=None):
         return {"shop_list": [], "staff_agg": {}}
 
 
+def repair_shop_platform(shop_id, platform):
+    """把某店 platform=0 的历史消息纠正为正确平台, 并重建该店按日聚合
+
+    早期回填无平台信息, 大量消息 platform=0; 集团店铺表同步后据此归位。
+    仅更新仍为 0 的行(避免覆盖已归位的实时抓取), 返回更新行数。
+    """
+    _ensure()
+    with _write_lock:
+        c = _conn(write=True)
+        try:
+            cur = c.execute(
+                "UPDATE messages SET platform = ? WHERE third_shop_id = ? AND platform = 0",
+                (platform, shop_id),
+            )
+            updated = cur.rowcount
+            c.commit()
+        finally:
+            c.close()
+    if updated:
+        rebuild_daily(shop_id)
+    return updated
+
+
 def prune_window(keep_days=30):
     """滚动裁剪: 保留最近 keep_days 个完整本地日历日(删除更早), 返回删除的消息行数
 
