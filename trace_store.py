@@ -112,6 +112,40 @@ def db_path():
     return str(DB_FILE)
 
 
+def get_shops(platform=None):
+    """读店铺维度表(跨集团全部店铺), 可按平台过滤; 用于核算/总览展示店铺归属
+
+    与 main.load_shops(shops.json, 仅当前激活集团)不同: 这里覆盖三个集团的店铺,
+    且 platform_name 已在本库归一(京东=7 等), 不会随激活集团变化。
+    """
+    _ensure()
+    c = _conn()
+    try:
+        if platform is None:
+            rows = c.execute(
+                "SELECT third_shop_id, shop_name, platform, platform_name, seller_id "
+                "FROM shops ORDER BY third_shop_id"
+            ).fetchall()
+        else:
+            rows = c.execute(
+                "SELECT third_shop_id, shop_name, platform, platform_name, seller_id "
+                "FROM shops WHERE platform = ? ORDER BY third_shop_id",
+                (platform,),
+            ).fetchall()
+        return [
+            {
+                "thirdShopId": r["third_shop_id"],
+                "shopName": r["shop_name"],
+                "platform": r["platform"],
+                "platformName": r["platform_name"] or str(r["platform"]),
+                "sellerId": r["seller_id"],
+            }
+            for r in rows
+        ]
+    finally:
+        c.close()
+
+
 def init_db():
     """启动时调用: 建表 + 幂等"""
     if not DB_FILE.exists():

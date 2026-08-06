@@ -50,11 +50,13 @@ SHOPS_FILE = BASE_DIR / "shops.json"
 
 API_BASE = "https://agent.tanyuai.com/api/data-service/business/compass"
 
-# 平台枚举(与探域接口一致): 0=淘宝 1=拼多多 2=京东 4=快手 5=抖音 7=天猫
-PLATFORM_NAMES = {0: "淘宝", 1: "拼多多", 2: "京东", 4: "快手", 5: "抖音", 7: "天猫"}
+# 平台枚举(与探域前端源码一致): 0=淘宝 1=拼多多 2=有赞 4=快手 5=抖店 7=京东 8=视频号 9=得物 10=1688
+# 本账号只用到 1/5/7; 7=京东(集团"京东"的店铺, 非枚举字面上的天猫), 2=有赞无店铺
+PLATFORM_NAMES = {0: "淘宝", 1: "拼多多", 2: "有赞", 4: "快手", 5: "抖音", 7: "京东"}
 
-# 抓取配置: 拼多多(1)/京东(2)/抖音(5)/天猫(7, 京东店铺)抓取; 淘宝(0)/快手(4)保留接口但不抓取
-FETCH_PLATFORMS = [1, 2, 5, 7]
+# 抓取配置: 拼多多(1)/京东(7, "京东"集团店铺)/抖音(5)抓取; 淘宝(0)/快手(4)保留接口但不抓取
+# 注: 本账号店铺只涉及 1/5/7, 故 fetch 列表不含 2(有赞)等未用到平台
+FETCH_PLATFORMS = [1, 5, 7]
 KEEP_PLATFORMS = [0, 4]  # 保留接口, 不抓取不统计
 
 # 汇总指标定义(标题 / 格式化 / 排序权重)
@@ -93,10 +95,10 @@ def default_config():
             "tanyu-group-id": "1901419852011174006",
         },
         "groups": [],  # 已发现的集团列表(来自微信扫码登录 localStorage.groupList)
-        # 夜间预抓多集团配置: 平台顺序(1拼多多 2京东 5抖音 7天猫)、
+        # 夜间预抓多集团配置: 平台顺序(1拼多多 5抖音 7京东)、
         # 默认窗口天数(未在 prefetch_windows 列出的平台用此值)、
         # 各平台窗口覆盖: 抖音已抓满30天保留30天, PDD/JD 等其余平台抓近7天
-        "prefetch_platforms": [1, 2, 5, 7],
+        "prefetch_platforms": [1, 5, 7],
         "prefetch_days": 7,
         "prefetch_windows": {5: 30},
     }
@@ -1400,7 +1402,9 @@ def _trace_overview_from_db(start, end, platform=None):
     agg = trace_store.overview_aggregate(start, end, platform)
     if not agg["shop_list"]:
         return None
-    shop_map = {s.get("thirdShopId"): s for s in load_shops()}
+    # 用跨集团店铺表(全部 109 家)解析店铺元数据, 而非当前激活集团的 shops.json,
+    # 否则非当前集团的店铺在 shopList 里 platform 为 None、无法正确展示平台标签
+    shop_map = {s["thirdShopId"]: s for s in trace_store.get_shops()}
     shop_list = []
     agg_total = agg_adopted = 0
     for sid, v in agg["shop_list"]:
@@ -1999,9 +2003,9 @@ def prefetch_trace_window(days=None):
     days = days or int(cfg.get("prefetch_days", 7))
     # prefetch_windows 的 key 可能是 JSON 字符串("5")或数字(5), 统一归一化为 int
     window_map = {int(k): int(v) for k, v in (cfg.get("prefetch_windows") or {}).items()}
-    platform_order = cfg.get("prefetch_platforms") or [1, 2, 5]
+    platform_order = cfg.get("prefetch_platforms") or [1, 5, 7]
     groups = cfg.get("groups") or []
-    # 按平台排序优先级(1 拼多多, 2 京东, 5 抖音), 未标注平台的集团放最后
+    # 按平台排序优先级(1 拼多多, 5 抖音, 7 京东), 未标注平台的集团放最后
     plat_rank = {p: i for i, p in enumerate(platform_order)}
     ordered = sorted(
         [g for g in groups if g.get("groupId")],
@@ -2087,7 +2091,7 @@ def db_status():
     try:
         cfg = load_config()
         info["prefetch_days"] = cfg.get("prefetch_days", 7)
-        info["prefetch_platforms"] = cfg.get("prefetch_platforms", [1, 2, 5, 7])
+        info["prefetch_platforms"] = cfg.get("prefetch_platforms", [1, 5, 7])
         info["prefetch_windows"] = cfg.get("prefetch_windows", {5: 30})
     except Exception:
         pass
