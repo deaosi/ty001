@@ -463,6 +463,25 @@ def switch_group(group_id):
     return {"ok": True, "group": get_current_group(), "updated": True}
 
 
+def _invalidate_audit_caches():
+    """店铺列表变化后清空核算相关缓存(总览磁盘缓存 + 内存态), 防止跨集团串数据"""
+    global _trace_state
+    try:
+        if TRACE_OVERVIEW_CACHE_FILE.exists():
+            TRACE_OVERVIEW_CACHE_FILE.unlink()
+    except Exception:
+        pass
+    with _lock:
+        _trace_state["result"] = None
+        _trace_state["start_date"] = None
+        _trace_state["end_date"] = None
+        _trace_state["platform"] = None
+        _trace_state["last_run"] = None
+        _trace_state["error"] = None
+    # 进程内共享的 trace_days 解析缓存按 shop_id 存, 新集团店铺 ID 不冲突, 无需清空;
+    # 但旧集团文件留在磁盘无害(不会被新店铺 ID 读到)。如需回收可删 trace_days 目录。
+
+
 def sync_shops_from_tanyu():
     """从探域 brief 接口抓取当前集团的全部店铺, 写入 shops.json"""
     try:
@@ -493,6 +512,8 @@ def sync_shops_from_tanyu():
         for s in shops:
             s["platformName"] = PLATFORM_NAMES.get(s.get("platform"), str(s.get("platform")))
         SHOPS_FILE.write_text(json.dumps({"data": shops}, ensure_ascii=False, indent=2), encoding="utf-8")
+        # 店铺集合已变: 清掉核算缓存, 避免旧集团结果串到新集团
+        _invalidate_audit_caches()
         return {"count": len(shops), "platforms": {p: sum(1 for s in shops if s["platform"] == p) for p in set(s["platform"] for s in shops)}}
     except Exception as e:
         raise RuntimeError(f"同步店铺失败: {e}")
@@ -600,8 +621,12 @@ SEND_TYPES = {1: "自动发送", 2: "侧边栏点击发送", 3: "编辑后发送
 ADOPTED_SEND_TYPES = (1, 2, 3)
 
 # 请求间隔(秒): 随机区间抖动, 打散节奏接近人工, 降低触发平台风控的概率
-TRACE_PAGE_INTERVAL = (0.4, 1.2)   # 分页之间
+TRACE_PAGE_INTERVAL = (0.2, 0.6)   # 分页之间(大分页后页数极少, 间隔可收紧)
 TRACE_SHOP_INTERVAL = (0.8, 2.5)   # 店铺之间
+TRACE_PAGE_SIZE = 2000             # 单页消息数: 实测 paginateV2 支持到 5000+,
+                                   # 大分页把页数从 N/100 降到 N/2000(20倍), 核算快一个数量级
+TRACE_QUERY_CAP = 10000            # 接口单次核算区间最多返回 10000 条(实测硬上限),
+                                   # 超出部分翻页也拿不到(results 为 None)
 
 
 def sleep_trace_page():
@@ -614,8 +639,11 @@ def sleep_trace_shop():
     _sleep_random(*TRACE_SHOP_INTERVAL)
 
 
-def fetch_trace_page(shop_id, begin, end, page_index, page_size=100):
-    """拉取一页消息轨迹; 带限速+风控检测"""
+def fetch_trace_page(shop_id, begin, end, page_index, page_size=TRACE_PAGE_SIZE):
+    """拉取一页消息轨迹; 带限速+风控检测. 返回 (total, results)
+
+    total 为区间消息总数(用于判断是否超 1 万上限), results 为当前页列表
+    """
     payload = {
         "thirdShopId": shop_id,
         "pageIndex": page_index,
@@ -631,7 +659,8 @@ def fetch_trace_page(shop_id, begin, end, page_index, page_size=100):
         raise RuntimeError(f"风控/登录失效: {data.get('msg', resp.status_code)}")
     if data.get("success") is False:
         raise RuntimeError(data.get("msg", "接口错误"))
-    return data.get("data")
+    d = data.get("data") or {}
+    return d.get("total") or 0, d.get("results") or []
 
 
 def stat_trace(shop_id, begin, end, on_progress=None):
@@ -645,23 +674,8 @@ def stat_trace(shop_id, begin, end, on_progress=None):
       byStaff  - 按人工客服(sellerAccount)维度统计
       staffList- 出现过的客服账号列表
     """
-    first = fetch_trace_page(shop_id, begin, end, 1)
-    total = first.get("total", 0)
-    results = first.get("results", [])
-    if total > 100:
-        pages = (total + 99) // 100
-        for p in range(2, pages + 1):
-            sleep_trace_page()  # 随机间隔, 放缓分页请求节奏
-            try:
-                d = fetch_trace_page(shop_id, begin, end, p)
-                results.extend(d.get("results", []))
-            except RiskTriggered:
-                raise  # 风控信号直接上抛, 由调用方停止任务
-            except Exception as e:
-                print(f"[trace] {shop_id} page={p} 失败: {e}")
-                break
-            if on_progress:
-                on_progress(len(results), total)
+    results = _fetch_trace_range(shop_id, begin, end)
+    total = len(results)
 
     counts = {1: 0, 2: 0, 3: 0, None: 0}
     by_staff = {}  # sellerAccount -> {"total": n, "adopted": n}
@@ -742,6 +756,60 @@ def _trim_trace_msg(r):
     return m
 
 
+def _fetch_trace_range(shop_id, begin, end):
+    """抓取指定时间区间内的全部消息轨迹
+
+    接口单次核算区间最多返回 TRACE_QUERY_CAP 条(实测硬上限), 超出部分翻页也拿不到。
+    若 total 触顶, 说明该区间消息数超上限, 自动按 4 小时细分为多个子区间,
+    每个子区间都低于上限, 从而完整拿到全部消息(如 1.4 万条的一天需 6 个 4 小时片)。
+    """
+    total, first_batch = fetch_trace_page(shop_id, begin, end, 1)
+    if total >= TRACE_QUERY_CAP:
+        # 触顶: 该区间超过 1 万条, 递归细分以保证完整
+        sub_results = []
+        try:
+            b = datetime.datetime.fromisoformat(begin)
+            e = datetime.datetime.fromisoformat(end)
+        except Exception:
+            b = e = None
+        if b and e and (e - b).total_seconds() > 4 * 3600:
+            for start in _time_slices(b, e, 4):
+                sleep_trace_page()
+                sub_results.extend(
+                    _fetch_trace_range(shop_id, start.strftime("%Y-%m-%d %H:%M:%S"),
+                                       (start + datetime.timedelta(hours=4) - datetime.timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S"))
+                )
+            return sub_results
+        return first_batch  # 已是 4 小时以内仍触顶: 接口极端限制, 接受截断
+    # 未触顶: 正常翻页补齐
+    results = first_batch
+    page = 2
+    while len(results) < total and len(results) < TRACE_QUERY_CAP:
+        sleep_trace_page()
+        try:
+            _, batch = fetch_trace_page(shop_id, begin, end, page)
+        except RiskTriggered:
+            raise
+        except Exception as e:
+            print(f"[trace] {shop_id} {begin[:10]} page={page} 失败: {e}")
+            break
+        if not batch:
+            break
+        results.extend(batch)
+        page += 1
+    return results
+
+
+def _time_slices(start, end, hours):
+    """把 [start, end) 按 hours 小时切成若干子区间(返回每个子区间的起点)"""
+    slices = []
+    cur = start
+    while cur < end:
+        slices.append(cur)
+        cur += datetime.timedelta(hours=hours)
+    return slices
+
+
 def _fetch_trace_day(shop_id, day_str):
     """抓取某一天的全部消息轨迹(按天遍历, 缓存可精确到天)
 
@@ -749,22 +817,7 @@ def _fetch_trace_day(shop_id, day_str):
     """
     begin = f"{day_str} 00:00:00"
     end = f"{day_str} 23:59:59"
-    first = fetch_trace_page(shop_id, begin, end, 1)
-    total = first.get("total", 0)
-    results = first.get("results", [])
-    if total > 100:
-        pages = (total + 99) // 100
-        for p in range(2, pages + 1):
-            sleep_trace_page()
-            try:
-                d = fetch_trace_page(shop_id, begin, end, p)
-                results.extend(d.get("results", []))
-            except RiskTriggered:
-                raise
-            except Exception as e:
-                print(f"[trace] {shop_id} {day_str} page={p} 失败: {e}")
-                break
-    return results
+    return _fetch_trace_range(shop_id, begin, end)
 
 
 def days_all_cached(shop_id, start, end):
