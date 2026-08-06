@@ -84,15 +84,22 @@ def load_config():
     if CONFIG_FILE.exists():
         try:
             return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+        except Exception as e:
+            # 文件存在但解析失败: 绝不静默覆盖真实配置, 先备份到 .bak 再重建默认
+            print(f"[config] config.json 解析失败({e}), 已备份为 config.json.bak")
+            try:
+                bak = CONFIG_FILE.with_name("config.json.bak")
+                os.replace(CONFIG_FILE, bak)
+            except Exception:
+                pass
     cfg = default_config()
     save_config(cfg)
     return cfg
 
 
 def save_config(cfg):
-    CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 原子写入: 先写临时文件再 os.replace, 读取方不会读到半截 JSON
+    _atomic_write_text(CONFIG_FILE, json.dumps(cfg, ensure_ascii=False, indent=2))
 
 
 # ---------- 数据访问 ----------
@@ -229,6 +236,65 @@ def cache_path(kind, target_id):
     return d / f"{target_id}.json"
 
 
+TRACE_DAYS_CACHE_TTL = 60          # 内存里已解析的 trace_days 缓存秒数
+_trace_days_cache = {}             # {shop_id: (ts, parsed_cache)}, 跨请求共享避免重复读盘+json 解析
+
+# 按日缓存有效期(探域数据每日更新, 已抓取的天不能永久复用)
+#   今天/昨天: 6 小时 TTL(当天数据随时可能更新, 短期窗口内也是新口径)
+#   更早的天:  7 天 TTL(历史天数据已定型, 隔周刷新一次即可)
+DAY_TTL = 6 * 3600          # 最近两天(含昨天)的有效期
+HISTORY_DAY_TTL = 7 * 24 * 3600   # 更早历史天的有效期
+
+
+def _day_cache_ttl(day_str):
+    """按天返回缓存有效期秒数: 今天/昨天用短 TTL, 更早的历史用长 TTL"""
+    try:
+        d = datetime.date.fromisoformat(day_str)
+        today = datetime.date.today()
+        days_ago = (today - d).days
+    except Exception:
+        days_ago = 999
+    return DAY_TTL if days_ago <= 1 else HISTORY_DAY_TTL
+
+
+def _load_trace_days_cache(shop_id, force=False):
+    """读取店铺按日缓存(带进程内共享缓存), force=True 时跳过内存缓存直接读盘"""
+    _prune_trace_days_cache()
+    if not force:
+        hit = _trace_days_cache.get(shop_id)
+        if hit and time.time() - hit[0] < TRACE_DAYS_CACHE_TTL:
+            return hit[1]
+    data = load_cache("trace_days", shop_id, max_age=HISTORY_DAY_TTL)
+    _trace_days_cache[shop_id] = (time.time(), data)
+    return data
+
+
+def _cached_days_usable(cache, day_str):
+    """判断某一天是否可直接复用: 在该天自己的有效期内则命中, 过期则视为缺失
+
+    TTL 按天龄分级; 存量文件未按日记录抓取时间时, 回退到文件级 fetched_at。
+    空天(0 条消息)只要在有效期内同样复用, 避免每次都重复抓取。
+    """
+    if not cache or not cache.get("days"):
+        return False
+    if day_str not in cache["days"]:
+        return False
+    fetched = (cache.get("day_fetched_at") or {}).get(day_str)
+    if fetched is None:
+        fetched = cache.get("fetched_at")
+    if not fetched:
+        return False
+    return (time.time() - fetched) < _day_cache_ttl(day_str)
+
+
+def _prune_trace_days_cache():
+    """清理进程内共享缓存中超过 TTL 的条目(防无限增长)"""
+    now = time.time()
+    for shop_id, (ts, _) in list(_trace_days_cache.items()):
+        if now - ts > TRACE_DAYS_CACHE_TTL:
+            _trace_days_cache.pop(shop_id, None)
+
+
 def load_cache(kind, target_id, max_age=21600):
     # 默认 TTL 6 小时: 平台/店铺汇总与明细是"自然日"数据, 一天内基本不变。
     # 之前的 30 分钟 TTL 导致切换平台时几乎必然全部缓存过期、重新抓取, 是卡顿主因。
@@ -245,7 +311,21 @@ def load_cache(kind, target_id, max_age=21600):
 
 def save_cache(kind, target_id, data):
     p = cache_path(kind, target_id)
-    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _atomic_write_text(p, json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+
+
+def _atomic_write_text(path: Path, text: str):
+    """原子写入: 先写临时文件再 os.replace, 崩溃/并发时不会留下半截文件"""
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 # ---------- 批量刷新 ----------
@@ -646,6 +726,22 @@ def stat_trace(shop_id, begin, end, on_progress=None):
     }
 
 
+# 聚合/原始消息仅用到这些字段, 抓取落盘时裁剪, 缓存体积可缩小 10 倍+
+TRACE_KEEP_KEYS = (
+    "time", "createTime", "createAt",
+    "sendType", "sellerAccount", "staffName",
+    "type", "buyerNick", "customerName", "userName",
+    "traceId", "id",
+)
+
+
+def _trim_trace_msg(r):
+    """把单条原始消息裁剪成下游聚合需要的字段"""
+    m = {k: r.get(k) for k in TRACE_KEEP_KEYS if k in r}
+    m["content"] = (r.get("content") or r.get("replyContent") or r.get("question") or "")[:200]
+    return m
+
+
 def _fetch_trace_day(shop_id, day_str):
     """抓取某一天的全部消息轨迹(按天遍历, 缓存可精确到天)
 
@@ -672,16 +768,15 @@ def _fetch_trace_day(shop_id, day_str):
 
 
 def days_all_cached(shop_id, start, end):
-    """判断区间内所有天是否已按日缓存(纯聚合, 可跳过限速停顿)"""
-    cache = load_cache("trace_days", shop_id, max_age=21600)
+    """判断区间内所有天是否已缓存且未过期(纯聚合, 可跳过限速停顿)"""
+    cache = _load_trace_days_cache(shop_id)
     if not cache or not cache.get("days"):
         return False
-    cached = set(cache["days"].keys())
     start_d = datetime.date.fromisoformat(start)
     end_d = datetime.date.fromisoformat(end)
     need = {(start_d + datetime.timedelta(days=i)).isoformat()
             for i in range((end_d - start_d).days + 1)}
-    return need.issubset(cached)
+    return all(_cached_days_usable(cache, ds) for ds in need)
 
 
 def stat_trace_daily(shop_id, start, end, force=False):
@@ -698,25 +793,36 @@ def stat_trace_daily(shop_id, start, end, force=False):
     days = [start_d + datetime.timedelta(days=i) for i in range((end_d - start_d).days + 1)]
     day_strs = [d.isoformat() for d in days]
 
-    cache = {} if force else (load_cache("trace_days", shop_id, max_age=21600) or {})
+    cache = {} if force else (_load_trace_days_cache(shop_id) or {})
     cached_days = cache.get("days") or {}  # {day_str: [messages...]}
+    day_fetched_at = cache.get("day_fetched_at") or {}  # {day_str: fetched_ts}
     total_results = []
 
     for ds in day_strs:
-        if not force and ds in cached_days:
+        if not force and _cached_days_usable(cache, ds):
             total_results.extend(cached_days[ds])
             continue
         try:
-            res = _fetch_trace_day(shop_id, ds)
+            res = [_trim_trace_msg(r) for r in _fetch_trace_day(shop_id, ds)]
         except RiskTriggered:
             raise
         except Exception as e:
             print(f"[trace] {shop_id} {ds} 抓取失败: {e}")
             continue
         cached_days[ds] = res
+        day_fetched_at[ds] = time.time()
         total_results.extend(res)
         # 每天抓完立即落盘, 中途失败也不丢已抓数据
-        save_cache("trace_days", shop_id, {"fetched_at": time.time(), "days": cached_days})
+        save_cache("trace_days", shop_id, {
+            "fetched_at": time.time(),
+            "day_fetched_at": day_fetched_at,
+            "days": cached_days,
+        })
+        _trace_days_cache[shop_id] = (time.time(), {
+            "fetched_at": time.time(),
+            "day_fetched_at": day_fetched_at,
+            "days": cached_days,
+        })
         print(f"[trace] {shop_id} {ds} 抓取完成 {len(res)} 条")
 
     # 聚合成与 stat_trace 相同的结构
@@ -959,15 +1065,14 @@ def trace_shop(shop_id: str, days: int = 7, force: int = 0, start: str | None = 
     if not shop:
         raise HTTPException(404, "店铺不存在")
     start, end = date_range(days, end) if not start else (start, end or (datetime.date.today() - datetime.timedelta(days=1)).isoformat())
-    # 新式按日缓存: 全部天都命中则零请求
-    cache = load_cache("trace_days", shop_id, max_age=21600)
-    if cache and cache.get("days"):
-        cached_days = set(cache["days"].keys())
+    # 新式按日缓存: 全部天都命中(且未过期)则零请求
+    cache = _load_trace_days_cache(shop_id) if not force else None
+    if cache and cache.get("days") and not force:
         start_d = datetime.date.fromisoformat(start)
         end_d = datetime.date.fromisoformat(end)
-        need = { (start_d + datetime.timedelta(days=i)).isoformat()
-                 for i in range((end_d - start_d).days + 1) }
-        if need.issubset(cached_days):
+        need = {(start_d + datetime.timedelta(days=i)).isoformat()
+                for i in range((end_d - start_d).days + 1)}
+        if all(_cached_days_usable(cache, ds) for ds in need):
             stat = stat_trace_daily(shop_id, start, end)  # 全命中: 纯聚合零请求
             return {"shop": shop, "startDate": start, "endDate": end,
                     "fetchedAt": time.time(), "stat": stat}
@@ -992,8 +1097,11 @@ _trace_state = {
 }
 
 
+TRACE_OVERVIEW_CACHE_TTL = 6 * 3600   # 总览磁盘缓存有效期(探域数据每日更新)
+
+
 def load_trace_overview_cache(start, end, platform=None):
-    """从磁盘读核算总览结果(同时间段重复核算零请求)"""
+    """从磁盘读核算总览结果(同时间段重复核算零请求, 且未过期)"""
     if not TRACE_OVERVIEW_CACHE_FILE.exists():
         return None
     try:
@@ -1001,6 +1109,15 @@ def load_trace_overview_cache(start, end, platform=None):
     except Exception:
         return None
     if c.get("startDate") == start and c.get("endDate") == end and c.get("platform") == platform:
+        cached_at = c.get("fetched_at") or c.get("last_run")
+        if not cached_at:
+            # 旧格式缓存没有时间戳: 用文件 mtime 兜底, 避免永久缓存
+            try:
+                cached_at = TRACE_OVERVIEW_CACHE_FILE.stat().st_mtime
+            except Exception:
+                cached_at = None
+        if cached_at and time.time() - cached_at > TRACE_OVERVIEW_CACHE_TTL:
+            return None
         return c  # 保存的本身就是 result 字典(含 startDate/endDate/platform 字段)
     return None
 
@@ -1018,9 +1135,8 @@ def load_latest_trace_overview_cache():
 
 def save_trace_overview_cache(result):
     try:
-        TRACE_OVERVIEW_CACHE_FILE.write_text(
-            json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        _atomic_write_text(TRACE_OVERVIEW_CACHE_FILE,
+                           json.dumps(result, ensure_ascii=False, separators=(",", ":")))
     except Exception:
         pass
 
@@ -1044,8 +1160,12 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
         except RuntimeError as e:
             raise HTTPException(409, str(e))
     start, end = date_range(days, end) if not start else (start, end or (datetime.date.today() - datetime.timedelta(days=1)).isoformat())
-    # 内存缓存命中
-    if not force and _trace_state.get("result") and _trace_state["start_date"] == start and _trace_state["end_date"] == end:
+    # 内存缓存命中(需平台一致 + 未过期)
+    if (not force and _trace_state.get("result")
+            and _trace_state["start_date"] == start and _trace_state["end_date"] == end
+            and _trace_state["platform"] == platform
+            and _trace_state.get("last_run")
+            and time.time() - _trace_state["last_run"] < TRACE_OVERVIEW_CACHE_TTL):
         return {"status": "done", "startDate": start, "endDate": end, "result": _trace_state["result"]}
     # 磁盘缓存命中(服务重启后同时间段重复核算零请求)
     disk = load_trace_overview_cache(start, end, platform) if not force else None
@@ -1123,6 +1243,7 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
                 "startDate": start,
                 "endDate": end,
                 "platform": platform,
+                "fetched_at": time.time(),
                 "total": agg_total,
                 "adopted": agg_adopted,
                 "rate": round(agg_adopted / agg_total * 100, 2) if agg_total else 0,
@@ -1170,14 +1291,13 @@ def trace_messages(shop_id: str, days: int = 7, force: int = 0,
     if not shop:
         raise HTTPException(404, "店铺不存在")
     start, end = date_range(days, end) if not start else (start, end or (datetime.date.today() - datetime.timedelta(days=1)).isoformat())
-    cache = load_cache("trace_days", shop_id, max_age=21600)
+    cache = _load_trace_days_cache(shop_id) if not force else None
     if cache and cache.get("days") and not force:
-        cached_days = set(cache["days"].keys())
         start_d = datetime.date.fromisoformat(start)
         end_d = datetime.date.fromisoformat(end)
-        need = { (start_d + datetime.timedelta(days=i)).isoformat()
-                 for i in range((end_d - start_d).days + 1) }
-        if need.issubset(cached_days):
+        need = {(start_d + datetime.timedelta(days=i)).isoformat()
+                for i in range((end_d - start_d).days + 1)}
+        if all(_cached_days_usable(cache, ds) for ds in need):
             stat = stat_trace_daily(shop_id, start, end)
             return {"shop": shop, "startDate": start, "endDate": end,
                     "total": stat["total"], "daily": stat.get("daily", []),
