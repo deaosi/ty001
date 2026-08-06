@@ -98,9 +98,12 @@ def default_config():
         # 夜间预抓多集团配置: 平台顺序(1拼多多 5抖音 7京东)、
         # 默认窗口天数(未在 prefetch_windows 列出的平台用此值)、
         # 各平台窗口覆盖: 抖音已抓满30天保留30天, PDD/JD 等其余平台抓近7天
+        # prefetch_force_days: 预抓时窗口最近 N 天强制重抓(默认1=昨天),
+        #   防 tanyu 回溯更新 sendType 造成的采纳口径漂移; 0=关闭
         "prefetch_platforms": [1, 5, 7],
         "prefetch_days": 7,
         "prefetch_windows": {5: 30},
+        "prefetch_force_days": 1,
     }
 
 
@@ -922,14 +925,17 @@ def _upsert_shop_day_db(shop_id, day_str, msgs):
     trace_store.upsert_shop_day(shop_id, platform, day_str, msgs)
 
 
-def stat_trace_daily(shop_id, start, end, force=False):
+def stat_trace_daily(shop_id, start, end, force=False, force_days=None):
     """按天遍历消息轨迹, 逐日缓存, 支持增量更新
 
     - 已缓存的天直接复用(零请求)
     - 未缓存的天按天抓取
-    - force=True 时忽略缓存重新抓取(用于"重新抓取"按钮)
+    - force=True 时忽略缓存重新抓取全部天(用于"重新抓取"按钮)
+    - force_days: 这些天即使缓存有效也强制重抓(如"昨天"防采纳口径漂移:
+      tanyu 会对已抓消息回溯更新 sendType, 不重抓则昨天采纳数停在预抓时刻)
     - 返回聚合 stat(messages/daily 齐全, 供折线图/核算/原始消息)
     """
+    force_days = force_days or set()
     # 按天拆分区间
     start_d = datetime.date.fromisoformat(start)
     end_d = datetime.date.fromisoformat(end)
@@ -942,7 +948,7 @@ def stat_trace_daily(shop_id, start, end, force=False):
     total_results = []
 
     for ds in day_strs:
-        if not force and _cached_days_usable(cache, ds):
+        if not force and ds not in force_days and _cached_days_usable(cache, ds):
             total_results.extend(cached_days[ds])
             continue
         try:
@@ -1993,11 +1999,13 @@ def backfill_trace_db():
     print(f"[backfill] 完成: {total_shops} 家 / {total_rows} 条 / {time.time() - t0:.0f}s")
 
 
-def _prefetch_group(gid, start, end):
+def _prefetch_group(gid, start, end, force_days=None):
     """切换集团→同步店铺→抓该集团全部店铺 trace, 返回 (店铺总数, 失败数)
 
     依赖 switch_group 内部自动 sync_shops_from_tanyu(写 shops.json + SQLite 店铺表),
     切换后 load_shops 即读当前集团店铺。任一店铺 RiskTriggered 向上传播(整个预抓停止)。
+    force_days: 窗口内这些天强制重抓(默认最近一天=昨天, 防 tanyu 回溯更新 sendType
+    造成的采纳口径漂移), 由 config.prefetch_force_days 控制(0=关闭)。
     """
     cfg = load_config()
     g = next((x for x in cfg.get("groups", []) if x.get("groupId") == gid), None)
@@ -2010,7 +2018,7 @@ def _prefetch_group(gid, start, end):
     switch_group(gid)  # 内部会 _assert_no_risk + _rate_limit + sync_shops_from_tanyu
     shops = load_shops()
     print(f"[prefetch] 集团「{g.get('groupName')}」({gid}) 店铺 {len(shops)} 家, "
-          f"窗口 {start} ~ {end}")
+          f"窗口 {start} ~ {end}" + (f", 强制重抓最近 {len(force_days)} 天" if force_days else ""))
     failed = []
     for i, shop in enumerate(shops, 1):
         if _risk_state.get("triggered"):
@@ -2018,7 +2026,7 @@ def _prefetch_group(gid, start, end):
             raise RiskTriggered(_risk_state.get("reason") or "风控触发")
         sid = shop["thirdShopId"]
         try:
-            stat = stat_trace_daily(sid, start, end)
+            stat = stat_trace_daily(sid, start, end, force_days=force_days)
             print(f"[prefetch]   {i}/{len(shops)} {shop.get('platformName','')}·{shop.get('shopName','')} "
                   f"total={stat['total']} adopted={stat['adopted']}")
         except RiskTriggered:
@@ -2073,6 +2081,9 @@ def prefetch_trace_window(days=None):
     窗口: 已抓满 30 天的平台(抖音)保留 30 天; 其余平台(拼多多/京东)抓近 7 天。
       集团窗口取 config.prefetch_windows{platform: days}, 未配置的集团用
       config.prefetch_days(默认 7)。已抓的天命中缓存零请求(增量)。
+    强制重抓: config.prefetch_force_days(默认 1)指定窗口最近 N 天即使缓存有效也
+      强制重抓(默认最近一天=昨天)。tanyu 会对已抓消息回溯更新 sendType(草稿→已发送),
+      不重抓则昨天采纳数停在预抓时刻、看板采纳率与 tanyu 后台不一致。
     结束后恢复原激活集团, 让常驻看板继续服务原集团。风控/登录失效立即整体停止。
     """
     t_all = time.time()
@@ -2081,6 +2092,7 @@ def prefetch_trace_window(days=None):
     days = days or int(cfg.get("prefetch_days", 7))
     # prefetch_windows 的 key 可能是 JSON 字符串("5")或数字(5), 统一归一化为 int
     window_map = {int(k): int(v) for k, v in (cfg.get("prefetch_windows") or {}).items()}
+    force_days = int(cfg.get("prefetch_force_days", 1) or 0)
     platform_order = cfg.get("prefetch_platforms") or [1, 5, 7]
     groups = cfg.get("groups") or []
     # 按平台排序优先级(1 拼多多, 5 抖音, 7 京东), 未标注平台的集团放最后
@@ -2106,10 +2118,16 @@ def prefetch_trace_window(days=None):
             g_days = int(window_map.get(g.get("platform"), days))
             kept_days = max(kept_days, g_days)
             start, end = date_range(g_days)
+            # 强制重抓"昨天"等最近 N 天(防 tanyu 回溯更新 sendType 造成的采纳漂移)
+            fset = set()
+            if force_days > 0:
+                from datetime import timedelta as _td
+                end_d = datetime.date.fromisoformat(end)
+                fset = {(end_d - _td(days=i)).isoformat() for i in range(min(force_days, g_days))}
             print(f"[prefetch] ===== 集团「{g.get('groupName')}」窗口 {g_days} 天 "
-                  f"({start} ~ {end}) =====")
+                  f"({start} ~ {end}) =====" + (f" 强制重抓: {sorted(fset)}" if fset else ""))
             try:
-                n, f = _prefetch_group(gid, start, end)
+                n, f = _prefetch_group(gid, start, end, force_days=fset)
                 g_total += n
                 g_failed += f
             except RiskTriggered:
@@ -2171,6 +2189,7 @@ def db_status():
         info["prefetch_days"] = cfg.get("prefetch_days", 7)
         info["prefetch_platforms"] = cfg.get("prefetch_platforms", [1, 5, 7])
         info["prefetch_windows"] = cfg.get("prefetch_windows", {5: 30})
+        info["prefetch_force_days"] = cfg.get("prefetch_force_days", 1)
     except Exception:
         pass
     info["prefetch_duration"] = _last_prefetch_duration
