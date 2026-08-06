@@ -646,6 +646,143 @@ def stat_trace(shop_id, begin, end, on_progress=None):
     }
 
 
+def _fetch_trace_day(shop_id, day_str):
+    """抓取某一天的全部消息轨迹(按天遍历, 缓存可精确到天)
+
+    返回该天所有消息的 results 列表; 失败返回 None(调用方决定是否跳过)
+    """
+    begin = f"{day_str} 00:00:00"
+    end = f"{day_str} 23:59:59"
+    first = fetch_trace_page(shop_id, begin, end, 1)
+    total = first.get("total", 0)
+    results = first.get("results", [])
+    if total > 100:
+        pages = (total + 99) // 100
+        for p in range(2, pages + 1):
+            sleep_trace_page()
+            try:
+                d = fetch_trace_page(shop_id, begin, end, p)
+                results.extend(d.get("results", []))
+            except RiskTriggered:
+                raise
+            except Exception as e:
+                print(f"[trace] {shop_id} {day_str} page={p} 失败: {e}")
+                break
+    return results
+
+
+def days_all_cached(shop_id, start, end):
+    """判断区间内所有天是否已按日缓存(纯聚合, 可跳过限速停顿)"""
+    cache = load_cache("trace_days", shop_id, max_age=21600)
+    if not cache or not cache.get("days"):
+        return False
+    cached = set(cache["days"].keys())
+    start_d = datetime.date.fromisoformat(start)
+    end_d = datetime.date.fromisoformat(end)
+    need = {(start_d + datetime.timedelta(days=i)).isoformat()
+            for i in range((end_d - start_d).days + 1)}
+    return need.issubset(cached)
+
+
+def stat_trace_daily(shop_id, start, end, force=False):
+    """按天遍历消息轨迹, 逐日缓存, 支持增量更新
+
+    - 已缓存的天直接复用(零请求)
+    - 未缓存的天按天抓取
+    - force=True 时忽略缓存重新抓取(用于"重新抓取"按钮)
+    - 返回聚合 stat(messages/daily 齐全, 供折线图/核算/原始消息)
+    """
+    # 按天拆分区间
+    start_d = datetime.date.fromisoformat(start)
+    end_d = datetime.date.fromisoformat(end)
+    days = [start_d + datetime.timedelta(days=i) for i in range((end_d - start_d).days + 1)]
+    day_strs = [d.isoformat() for d in days]
+
+    cache = {} if force else (load_cache("trace_days", shop_id, max_age=21600) or {})
+    cached_days = cache.get("days") or {}  # {day_str: [messages...]}
+    total_results = []
+
+    for ds in day_strs:
+        if not force and ds in cached_days:
+            total_results.extend(cached_days[ds])
+            continue
+        try:
+            res = _fetch_trace_day(shop_id, ds)
+        except RiskTriggered:
+            raise
+        except Exception as e:
+            print(f"[trace] {shop_id} {ds} 抓取失败: {e}")
+            continue
+        cached_days[ds] = res
+        total_results.extend(res)
+        # 每天抓完立即落盘, 中途失败也不丢已抓数据
+        save_cache("trace_days", shop_id, {"fetched_at": time.time(), "days": cached_days})
+        print(f"[trace] {shop_id} {ds} 抓取完成 {len(res)} 条")
+
+    # 聚合成与 stat_trace 相同的结构
+    counts = {1: 0, 2: 0, 3: 0, None: 0}
+    by_staff = {}
+    by_type = {}
+    daily = {}
+    total = 0
+    for r in total_results:
+        st = r.get("sendType")
+        counts[st] = counts.get(st, 0) + 1
+        staff = r.get("sellerAccount") or "未知"
+        entry = by_staff.setdefault(staff, {"total": 0, "adopted": 0})
+        entry["total"] += 1
+        if st in ADOPTED_SEND_TYPES:
+            entry["adopted"] += 1
+        t = r.get("type") or "OTHER"
+        by_type[t] = by_type.get(t, 0) + 1
+        ts = r.get("time")
+        if isinstance(ts, (int, float)):
+            day = datetime.datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d")
+            de = daily.setdefault(day, {"total": 0, "adopted": 0})
+            de["total"] += 1
+            if st in ADOPTED_SEND_TYPES:
+                de["adopted"] += 1
+        total += 1
+
+    adopted = sum(counts.get(s, 0) for s in ADOPTED_SEND_TYPES)
+    rate = (adopted / total * 100) if total else 0
+    daily_list = [
+        {"date": d, "total": v["total"], "adopted": v["adopted"],
+         "rate": round(v["adopted"] / v["total"] * 100, 2) if v["total"] else 0}
+        for d, v in sorted(daily.items())
+    ]
+    staff_list = sorted(
+        (
+            {"account": acct, "total": v["total"], "adopted": v["adopted"],
+             "rate": (v["adopted"] / v["total"] * 100) if v["total"] else 0}
+            for acct, v in by_staff.items()
+        ),
+        key=lambda x: -x["total"],
+    )
+    raw_messages = [
+        {
+            "time": r.get("createTime") or r.get("createAt") or r.get("time") or "",
+            "buyer": (r.get("buyerNick") or r.get("customerName") or r.get("userName") or ""),
+            "sendType": r.get("sendType"),
+            "content": (r.get("content") or r.get("replyContent") or r.get("question") or "")[:200],
+            "staff": r.get("sellerAccount") or r.get("staffName") or "",
+            "type": r.get("type") or "OTHER",
+            "traceId": r.get("traceId") or r.get("id") or "",
+        }
+        for r in reversed(total_results)
+    ]
+    return {
+        "total": total,
+        "counts": counts,
+        "adopted": adopted,
+        "rate": round(rate, 2),
+        "byStaff": staff_list,
+        "byType": by_type,
+        "daily": daily_list,
+        "messages": raw_messages,
+    }
+
+
 # ---------- 接口 ----------
 class CookieUpdate(BaseModel):
     cookies: dict
@@ -812,27 +949,32 @@ def refresh():
 
 @app.get("/api/trace/shop/{shop_id}")
 def trace_shop(shop_id: str, days: int = 7, force: int = 0, start: str | None = None, end: str | None = None):
-    """单店核算: 遍历消息轨迹统计核算采纳率(带缓存)
+    """单店核算: 遍历消息轨迹统计核算采纳率(带按日缓存)
 
     start/end 可选: 自定义起止日期(YYYY-MM-DD), 不传则用近 N 天
+    按日增量缓存: 已抓取的天零请求, 只补抓缺失的天
     """
     shops = {s["thirdShopId"]: s for s in load_shops()}
     shop = shops.get(shop_id)
     if not shop:
         raise HTTPException(404, "店铺不存在")
     start, end = date_range(days, end) if not start else (start, end or (datetime.date.today() - datetime.timedelta(days=1)).isoformat())
-    if not force:
-        cache = load_cache("trace", shop_id, max_age=3600)
-        if cache and cache.get("stat") and "daily" in cache["stat"] \
-                and cache.get("start") == start and cache.get("end") == end:
-            cache["shop"] = shop
-            cache["startDate"], cache["endDate"] = start, end
-            return cache
+    # 新式按日缓存: 全部天都命中则零请求
+    cache = load_cache("trace_days", shop_id, max_age=21600)
+    if cache and cache.get("days"):
+        cached_days = set(cache["days"].keys())
+        start_d = datetime.date.fromisoformat(start)
+        end_d = datetime.date.fromisoformat(end)
+        need = { (start_d + datetime.timedelta(days=i)).isoformat()
+                 for i in range((end_d - start_d).days + 1) }
+        if need.issubset(cached_days):
+            stat = stat_trace_daily(shop_id, start, end)  # 全命中: 纯聚合零请求
+            return {"shop": shop, "startDate": start, "endDate": end,
+                    "fetchedAt": time.time(), "stat": stat}
     try:
-        stat = stat_trace(shop_id, f"{start} 00:00:00", f"{end} 23:59:59")
+        stat = stat_trace_daily(shop_id, start, end, force=bool(force))
     except RuntimeError as e:
         raise HTTPException(502, str(e))
-    save_cache("trace", shop_id, {"fetched_at": time.time(), "stat": stat, "start": start, "end": end})
     return {"shop": shop, "startDate": start, "endDate": end, "fetchedAt": time.time(), "stat": stat}
 
 
@@ -946,11 +1088,11 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
             staff_agg = {}
             for i, shop in enumerate(shops, 1):
                 _trace_state["progress"]["current"] = f"{shop['platformName']} · {shop['shopName']} ({i}/{total})"
-                if i > 1:
+                # 该店在区间内天数全部已缓存 => 纯聚合零请求, 无需限速停顿
+                if i > 1 and not days_all_cached(shop["thirdShopId"], start, end):
                     sleep_trace_shop()
                 try:
-                    stat = stat_trace(shop["thirdShopId"], begin, end_t)
-                    save_cache("trace", shop["thirdShopId"], {"fetched_at": time.time(), "stat": stat, "start": start, "end": end})
+                    stat = stat_trace_daily(shop["thirdShopId"], start, end)
                     shop_list.append(
                         {"shop": shop, "total": stat["total"], "adopted": stat["adopted"], "rate": stat["rate"]}
                     )
@@ -1021,25 +1163,29 @@ def trace_messages(shop_id: str, days: int = 7, force: int = 0,
     """单店原始消息记录(用于与探域后台核对)
 
     返回逐条消息: 时间/买家/发送状态/人工客服/内容
+    按日增量缓存: 已抓取的天零请求, 只补抓缺失的天
     """
     shops = {s["thirdShopId"]: s for s in load_shops()}
     shop = shops.get(shop_id)
     if not shop:
         raise HTTPException(404, "店铺不存在")
     start, end = date_range(days, end) if not start else (start, end or (datetime.date.today() - datetime.timedelta(days=1)).isoformat())
-    if not force:
-        cache = load_cache("trace", shop_id, max_age=3600)
-        if cache and cache.get("stat") and "daily" in cache["stat"] \
-                and cache.get("start") == start and cache.get("end") == end:
-            stat = cache["stat"]
+    cache = load_cache("trace_days", shop_id, max_age=21600)
+    if cache and cache.get("days") and not force:
+        cached_days = set(cache["days"].keys())
+        start_d = datetime.date.fromisoformat(start)
+        end_d = datetime.date.fromisoformat(end)
+        need = { (start_d + datetime.timedelta(days=i)).isoformat()
+                 for i in range((end_d - start_d).days + 1) }
+        if need.issubset(cached_days):
+            stat = stat_trace_daily(shop_id, start, end)
             return {"shop": shop, "startDate": start, "endDate": end,
                     "total": stat["total"], "daily": stat.get("daily", []),
                     "messages": stat.get("messages", [])}
     try:
-        stat = stat_trace(shop_id, f"{start} 00:00:00", f"{end} 23:59:59")
+        stat = stat_trace_daily(shop_id, start, end, force=bool(force))
     except RuntimeError as e:
         raise HTTPException(502, str(e))
-    save_cache("trace", shop_id, {"fetched_at": time.time(), "stat": stat, "start": start, "end": end})
     return {"shop": shop, "startDate": start, "endDate": end,
             "total": stat["total"], "daily": stat.get("daily", []),
             "messages": stat.get("messages", [])}
