@@ -41,6 +41,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+import trace_store  # SQLite 消息轨迹存储层(30 天滚动窗口)
+
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 CONFIG_FILE = BASE_DIR / "config.json"
@@ -539,7 +541,11 @@ def sync_shops_from_tanyu():
         for s in shops:
             s["platformName"] = PLATFORM_NAMES.get(s.get("platform"), str(s.get("platform")))
         SHOPS_FILE.write_text(json.dumps({"data": shops}, ensure_ascii=False, indent=2), encoding="utf-8")
-        # 店铺集合已变: 清掉核算缓存, 避免旧集团结果串到新集团
+        # 店铺集合已变: 同步 SQLite 店铺维度表, 并清掉核算缓存, 避免旧集团结果串到新集团
+        try:
+            trace_store.upsert_shops(shops)
+        except Exception as e:
+            print(f"[db] shops 同步失败: {e}")
         _invalidate_audit_caches()
         return {"count": len(shops), "platforms": {p: sum(1 for s in shops if s["platform"] == p) for p in set(s["platform"] for s in shops)}}
     except Exception as e:
@@ -859,6 +865,23 @@ def days_all_cached(shop_id, start, end):
     return all(_cached_days_usable(cache, ds) for ds in need)
 
 
+def _shop_platform(shop_id):
+    """查店铺平台: 先看当前 shops 列表, 找不到回退 shop_seller 缓存"""
+    try:
+        for s in load_shops():
+            if s.get("thirdShopId") == shop_id:
+                return s.get("platform", 0)
+    except Exception:
+        pass
+    return 0
+
+
+def _upsert_shop_day_db(shop_id, day_str, msgs):
+    """抓取成功后把该店当天消息同步进 SQLite(平台从店铺列表取)"""
+    platform = _shop_platform(shop_id)
+    trace_store.upsert_shop_day(shop_id, platform, day_str, msgs)
+
+
 def stat_trace_daily(shop_id, start, end, force=False):
     """按天遍历消息轨迹, 逐日缓存, 支持增量更新
 
@@ -898,6 +921,11 @@ def stat_trace_daily(shop_id, start, end, force=False):
             "day_fetched_at": day_fetched_at,
             "days": cached_days,
         })
+        # 同步写入 SQLite(30 天滚动窗口), 供核算/展示纯本地聚合
+        try:
+            _upsert_shop_day_db(shop_id, ds, res)
+        except Exception as e:
+            print(f"[db] {shop_id} {ds} 写入失败: {e}")
         _trace_days_cache[shop_id] = (time.time(), {
             "fetched_at": time.time(),
             "day_fetched_at": day_fetched_at,
@@ -1145,6 +1173,16 @@ def trace_shop(shop_id: str, days: int = 7, force: int = 0, start: str | None = 
     if not shop:
         raise HTTPException(404, "店铺不存在")
     start, end = date_range(days, end) if not start else (start, end or (datetime.date.today() - datetime.timedelta(days=1)).isoformat())
+    # SQLite 快路径: 数据库已覆盖该区间 => 纯本地聚合(核算提速主因)
+    if (not force and _use_sqlite_trace()
+            and trace_store.db_window_covers(start, end)):
+        try:
+            stat = _trace_shop_from_db(shop_id, start, end)
+            if stat:
+                return {"shop": shop, "startDate": start, "endDate": end,
+                        "fetchedAt": time.time(), "stat": stat}
+        except Exception as e:
+            print(f"[trace] SQLite 单店快路径失败, 回退在线抓取: {e}")
     # 新式按日缓存: 全部天都命中(且未过期)则零请求
     cache = _load_trace_days_cache(shop_id) if not force else None
     if cache and cache.get("days") and not force:
@@ -1225,6 +1263,120 @@ def save_trace_overview_cache(result):
         pass
 
 
+def _trace_shop_from_db(shop_id, start, end):
+    """从 SQLite 聚合单店 stat(与 stat_trace_daily 输出结构完全一致)"""
+    start_ms = int(datetime.datetime.fromisoformat(start).timestamp() * 1000)
+    # end 23:59:59.999 转毫秒
+    end_d = datetime.datetime.fromisoformat(end)
+    end_ms = int((end_d + datetime.timedelta(days=1)).timestamp() * 1000) - 1
+    rows = trace_store.query_shop_aggregate(shop_id, start, end, start_ms, end_ms)
+    if not rows and not trace_store.query_daily(shop_id, start, end):
+        return None
+    # 复用 stat_trace_daily 的聚合逻辑(保证口径一致)
+    return _aggregate_stat_rows(rows, start, end)
+
+
+def _aggregate_stat_rows(results, start, end):
+    """按 stat_trace_daily 完全相同的口径聚合(独立函数, 供 JSON/SQLite 两路共用)"""
+    counts = {1: 0, 2: 0, 3: 0, None: 0}
+    by_staff = {}
+    by_type = {}
+    daily = {}
+    total = 0
+    for r in results:
+        st = r.get("sendType")
+        counts[st] = counts.get(st, 0) + 1
+        staff = r.get("sellerAccount") or "未知"
+        entry = by_staff.setdefault(staff, {"total": 0, "adopted": 0})
+        entry["total"] += 1
+        if st in ADOPTED_SEND_TYPES:
+            entry["adopted"] += 1
+        t = r.get("type") or "OTHER"
+        by_type[t] = by_type.get(t, 0) + 1
+        ts = r.get("time")
+        if isinstance(ts, (int, float)):
+            day = datetime.datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d")
+            de = daily.setdefault(day, {"total": 0, "adopted": 0})
+            de["total"] += 1
+            if st in ADOPTED_SEND_TYPES:
+                de["adopted"] += 1
+        total += 1
+    adopted = sum(counts.get(s, 0) for s in ADOPTED_SEND_TYPES)
+    rate = (adopted / total * 100) if total else 0
+    daily_list = [
+        {"date": d, "total": v["total"], "adopted": v["adopted"],
+         "rate": round(v["adopted"] / v["total"] * 100, 2) if v["total"] else 0}
+        for d, v in sorted(daily.items())
+    ]
+    staff_list = sorted(
+        (
+            {"account": acct, "total": v["total"], "adopted": v["adopted"],
+             "rate": (v["adopted"] / v["total"] * 100) if v["total"] else 0}
+            for acct, v in by_staff.items()
+        ),
+        key=lambda x: -x["total"],
+    )
+    raw_messages = [
+        {
+            "time": r.get("createTime") or r.get("createAt") or r.get("time") or "",
+            "buyer": (r.get("buyerNick") or r.get("customerName") or r.get("userName") or ""),
+            "sendType": r.get("sendType"),
+            "content": (r.get("content") or r.get("replyContent") or r.get("question") or "")[:200],
+            "staff": r.get("sellerAccount") or r.get("staffName") or "",
+            "type": r.get("type") or "OTHER",
+            "traceId": r.get("traceId") or r.get("id") or "",
+        }
+        for r in reversed(results)
+    ]
+    return {
+        "total": total,
+        "counts": counts,
+        "adopted": adopted,
+        "rate": round(rate, 2),
+        "byStaff": staff_list,
+        "byType": by_type,
+        "daily": daily_list,
+        "messages": raw_messages,
+    }
+
+
+def _trace_overview_from_db(start, end, platform=None):
+    """从 SQLite trace_daily 聚合核算总览(与在线 worker 输出结构完全一致)"""
+    agg = trace_store.overview_aggregate(start, end, platform)
+    if not agg["shop_list"]:
+        return None
+    shop_map = {s.get("thirdShopId"): s for s in load_shops()}
+    shop_list = []
+    agg_total = agg_adopted = 0
+    for sid, v in agg["shop_list"]:
+        shop = shop_map.get(sid, {"thirdShopId": sid, "shopName": sid,
+                                  "platform": None, "platformName": ""})
+        shop_list.append({"shop": shop, "total": v["total"],
+                          "adopted": v["adopted"],
+                          "rate": round(v["adopted"] / v["total"] * 100, 2) if v["total"] else 0})
+        agg_total += v["total"]
+        agg_adopted += v["adopted"]
+    staff_list = sorted(
+        (
+            {"account": a, "total": v["total"], "adopted": v["adopted"],
+             "rate": (v["adopted"] / v["total"] * 100) if v["total"] else 0}
+            for a, v in agg["staff_agg"].items()
+        ),
+        key=lambda x: -x["total"],
+    )
+    return {
+        "startDate": start,
+        "endDate": end,
+        "platform": platform,
+        "fetched_at": time.time(),
+        "total": agg_total,
+        "adopted": agg_adopted,
+        "rate": round(agg_adopted / agg_total * 100, 2) if agg_total else 0,
+        "shopList": shop_list,
+        "byStaff": staff_list,
+    }
+
+
 @app.get("/api/trace/overview")
 def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
                    start: str | None = None, end: str | None = None,
@@ -1263,6 +1415,21 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
         _trace_state["last_run"] = time.time()
         print(f"[trace] 命中磁盘缓存 {start}~{end}, 跳过抓取 (共{disk.get('total', 0)}条)")
         return {"status": "done", "startDate": start, "endDate": end, "result": disk}
+    # SQLite 快路径: 数据库已覆盖该区间 => 纯本地聚合, 零上游请求(核算提速主因)
+    if (not force and _use_sqlite_trace()
+            and trace_store.db_window_covers(start, end)):
+        try:
+            result = _trace_overview_from_db(start, end, platform)
+            if result:
+                _trace_state["result"] = result
+                _trace_state["start_date"] = start
+                _trace_state["end_date"] = end
+                _trace_state["platform"] = platform
+                _trace_state["last_run"] = time.time()
+                print(f"[trace] SQLite 快路径 {start}~{end} (共{result['total']}条)")
+                return {"status": "done", "startDate": start, "endDate": end, "result": result}
+        except Exception as e:
+            print(f"[trace] SQLite 快路径失败, 回退在线抓取: {e}")
     if from_cache:
         # 只读模式: 未命中缓存不触发任务; 有最近结果则带回展示
         latest = load_latest_trace_overview_cache()
@@ -1615,6 +1782,117 @@ def index():
     return FileResponse(BASE_DIR / "static" / "index.html")
 
 
+# ---------- SQLite 预抓 / 回填 ----------
+def _use_sqlite_trace():
+    """config.json 开关: use_sqlite_trace(默认 true)"""
+    try:
+        cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        return cfg.get("use_sqlite_trace", True)
+    except Exception:
+        return True
+
+
+def backfill_trace_db():
+    """一次性回填: 把现有 data/trace_days 逐日 JSON 全量投影进 SQLite(幂等可重跑)"""
+    import glob
+
+    trace_store.init_db()
+    shops = load_shops()
+    trace_store.upsert_shops(shops)
+    shop_map = {s.get("thirdShopId"): s.get("platform", 0) for s in shops}
+    files = sorted(glob.glob(str(DATA_DIR / "trace_days" / "*.json")))
+    total_rows = total_shops = 0
+    t0 = time.time()
+    for i, f in enumerate(files, 1):
+        shop_id = Path(f).stem
+        try:
+            cache = json.loads(Path(f).read_text(encoding="utf-8"))
+        except Exception as e:
+            print(f"[backfill] 读取失败 {f}: {e}")
+            continue
+        days = cache.get("days") or {}
+        platform = shop_map.get(shop_id, 0)
+        for day_str, msgs in days.items():
+            try:
+                trace_store.upsert_shop_day(shop_id, platform, day_str, msgs)
+            except Exception as e:
+                print(f"[backfill] {shop_id} {day_str} 失败: {e}")
+        n = sum(len(v) for v in days.values())
+        total_rows += n
+        total_shops += 1
+        if i % 20 == 0 or i == len(files):
+            print(f"[backfill] {i}/{len(files)} 家, 已入库 {total_rows} 条, "
+                  f"{time.time() - t0:.0f}s")
+    print(f"[backfill] 完成: {total_shops} 家 / {total_rows} 条 / {time.time() - t0:.0f}s")
+
+
+def prefetch_trace_window(days=30):
+    """夜间预抓: 抓近 days 天(截至昨天)的缺失/过期天, 并滚动裁剪到 days 天窗口
+
+    用现有 stat_trace_daily 逻辑(逐日缓存 + TTL), 命中缓存的天零请求;
+    风控触发立即停止。完成后调用 prune_window 裁剪最旧一天。
+    """
+    trace_store.init_db()
+    shops = load_shops()
+    trace_store.upsert_shops(shops)
+    start, end = date_range(days)
+    print(f"[prefetch] 窗口 {start} ~ {end} ({days} 天), 店铺 {len(shops)} 家")
+    failed = []
+    t0 = time.time()
+    for i, shop in enumerate(shops, 1):
+        if _risk_state.get("triggered"):
+            print(f"[prefetch] ⛔ 风控/登录失效, 停止于 {i - 1}/{len(shops)} 家")
+            break
+        sid = shop["thirdShopId"]
+        try:
+            stat = stat_trace_daily(sid, start, end)
+            print(f"[prefetch] {i}/{len(shops)} {shop.get('platformName','')}·{shop.get('shopName','')} "
+                  f"total={stat['total']} adopted={stat['adopted']}")
+        except RiskTriggered:
+            print(f"[prefetch] ⛔ 风控触发于 {shop.get('shopName','')}")
+            break
+        except Exception as e:
+            print(f"[prefetch] {shop.get('shopName','')} 失败: {e}")
+            failed.append(sid)
+    try:
+        deleted = trace_store.prune_window(keep_days=days)
+        print(f"[prefetch] 裁剪完成: 删除 {deleted} 条过期消息")
+    except Exception as e:
+        print(f"[prefetch] 裁剪失败: {e}")
+    print(f"[prefetch] 完成: {len(shops) - len(failed)} 家成功, {len(failed)} 家失败, "
+          f"{time.time() - t0:.0f}s")
+
+
+@app.get("/api/db/status")
+def db_status():
+    """SQLite 存储状态(供前端/运维确认预抓进度)"""
+    import sqlite3
+
+    info = {"enabled": _use_sqlite_trace(), "path": trace_store.db_path()}
+    try:
+        c = sqlite3.connect(trace_store.db_path())
+        info["messages"] = c.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        info["shops"] = c.execute("SELECT COUNT(DISTINCT third_shop_id) FROM messages").fetchone()[0]
+        info["daily"] = c.execute("SELECT COUNT(*) FROM trace_daily").fetchone()[0]
+        lo, hi = c.execute("SELECT MIN(day), MAX(day) FROM trace_daily").fetchone()
+        info["window"] = [lo, hi]
+        c.close()
+    except Exception as e:
+        info["error"] = str(e)
+    return info
+
+
 if __name__ == "__main__":
+    if "--backfill" in sys.argv:
+        backfill_trace_db()
+        sys.exit(0)
+    if "--prefetch" in sys.argv:
+        prefetch_trace_window()
+        sys.exit(0)
+    # 常驻服务启动时初始化 SQLite 表结构
+    try:
+        trace_store.init_db()
+    except Exception as e:
+        print(f"[db] 初始化失败: {e}")
     port = int(os.environ.get("PORT", "8080"))
     uvicorn.run(app, host="127.0.0.1", port=port)
