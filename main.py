@@ -16,9 +16,23 @@ import asyncio
 import datetime
 import json
 import os
+import sys
 import threading
 import time
 from pathlib import Path
+
+# Windows 控制台默认 GBK, 打印 emoji/生僻字符会抛 UnicodeEncodeError 打崩请求线程。
+# 重配 stdout/stderr 为 UTF-8 并 errors=replace, 日志乱码可接受但绝不崩。
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 import requests
 import uvicorn
@@ -478,12 +492,25 @@ def _invalidate_audit_caches():
         _trace_state["platform"] = None
         _trace_state["last_run"] = None
         _trace_state["error"] = None
+        _trace_state["partial_list"] = []
+    # 注意: 不重置 paused/canceled。若 sync 已把运行中的核算置为 canceled=True,
+    # 这里保留该标志, 让旧 worker 在下个店铺边界退出(取消是终态, 下次开始核算时复位);
+    # paused 由 worker 的 finally 清掉。event.set() 唤醒阻塞在暂停等待中的 worker 使其退出。
+    _trace_resume_evt.set()
     # 进程内共享的 trace_days 解析缓存按 shop_id 存, 新集团店铺 ID 不冲突, 无需清空;
     # 但旧集团文件留在磁盘无害(不会被新店铺 ID 读到)。如需回收可删 trace_days 目录。
 
 
 def sync_shops_from_tanyu():
     """从探域 brief 接口抓取当前集团的全部店铺, 写入 shops.json"""
+    # 集团/店铺集合将变化: 先取消进行中的核算(店铺数据即将失效, 旧 worker 结果会串组),
+    # 避免旧 worker 继续抓取旧集团店铺。取消保留已完成店铺的部分结果供前端展示。
+    with _lock:
+        if _trace_state["running"]:
+            _trace_state["canceled"] = True
+            _trace_state["paused"] = False
+    if _trace_state.get("canceled"):
+        _trace_resume_evt.set()  # 若 worker 阻塞在暂停等待中, 唤醒使其退出
     try:
         _assert_no_risk()
         _rate_limit()
@@ -1147,7 +1174,11 @@ _trace_state = {
     "platform": None,
     "last_run": None,
     "error": None,
+    "paused": False,       # 核算暂停标志(worker 在每店边界阻塞等待恢复)
+    "canceled": False,     # 取消核算标志(worker 中断后续店铺)
+    "partial_list": [],    # 运行中已完成店铺的统计(浅拷贝), 供前端边算边展示
 }
+_trace_resume_evt = threading.Event()
 
 
 TRACE_OVERVIEW_CACHE_TTL = 6 * 3600   # 总览磁盘缓存有效期(探域数据每日更新)
@@ -1213,13 +1244,15 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
         except RuntimeError as e:
             raise HTTPException(409, str(e))
     start, end = date_range(days, end) if not start else (start, end or (datetime.date.today() - datetime.timedelta(days=1)).isoformat())
-    # 内存缓存命中(需平台一致 + 未过期)
-    if (not force and _trace_state.get("result")
+    # 内存缓存命中(需平台一致 + 未过期 + 结果自身时间段与请求一致, 防止跨范围误命中)
+    mem_result = _trace_state.get("result")
+    if (not force and mem_result
             and _trace_state["start_date"] == start and _trace_state["end_date"] == end
             and _trace_state["platform"] == platform
+            and mem_result.get("startDate") == start and mem_result.get("endDate") == end
             and _trace_state.get("last_run")
             and time.time() - _trace_state["last_run"] < TRACE_OVERVIEW_CACHE_TTL):
-        return {"status": "done", "startDate": start, "endDate": end, "result": _trace_state["result"]}
+        return {"status": "done", "startDate": start, "endDate": end, "result": mem_result}
     # 磁盘缓存命中(服务重启后同时间段重复核算零请求)
     disk = load_trace_overview_cache(start, end, platform) if not force else None
     if disk:
@@ -1245,8 +1278,20 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
     _trace_state["end_date"] = end
     _trace_state["platform"] = platform
     _trace_state["error"] = None
+    _trace_state["paused"] = False
+    _trace_state["canceled"] = False
+    _trace_state["partial_list"] = []
+    # 新一轮核算开始: 内存中的上一次完成结果作废(取消/中断后不能再把旧结果当本次结果,
+    # 且避免跨范围误命中); 磁盘缓存仅当同范围时才删除(不同范围旧结果保留供切换后加载)。
     _trace_state["result"] = None
+    _trace_state["last_run"] = None
     _trace_state["progress"] = {"done": 0, "total": 0, "current": "准备中"}
+    if load_trace_overview_cache(start, end, platform):
+        try:
+            if TRACE_OVERVIEW_CACHE_FILE.exists():
+                TRACE_OVERVIEW_CACHE_FILE.unlink()
+        except Exception:
+            pass
 
     def worker():
         try:
@@ -1260,6 +1305,14 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
             agg_total = agg_adopted = 0
             staff_agg = {}
             for i, shop in enumerate(shops, 1):
+                # 暂停/取消检查(在店铺边界, 请求间隙)
+                while _trace_state["paused"] and not _trace_state["canceled"]:
+                    _trace_state["progress"]["current"] = "已暂停, 等待恢复…"
+                    _trace_resume_evt.wait(timeout=1.0)
+                    _trace_resume_evt.clear()  # 事件用完即清, 防止残留置位导致 wait() 忙等
+                if _trace_state["canceled"]:
+                    print(f"[trace] ⏹ 已取消, 已核算 {i - 1}/{total} 家")
+                    break
                 _trace_state["progress"]["current"] = f"{shop['platformName']} · {shop['shopName']} ({i}/{total})"
                 # 该店在区间内天数全部已缓存 => 纯聚合零请求, 无需限速停顿
                 if i > 1 and not days_all_cached(shop["thirdShopId"], start, end):
@@ -1284,6 +1337,14 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
                 except Exception as e:
                     print(f"[trace] {shop['shopName']} 失败: {e}")
                 _trace_state["progress"]["done"] = i
+                # 边算边展示: 每完成一店就发布部分结果, 前端实时渲染
+                with _lock:
+                    _trace_state["partial_list"] = list(shop_list)
+            # 被取消/风控中断时: 不写磁盘缓存, 不覆盖 result(保持部分结果可查)
+            # 仅风控(非取消)允许 partial_list 作为部分结果供前端展示, 但绝不落盘
+            if _trace_state["canceled"] or _trace_state["error"]:
+                print(f"[trace] 中断不写缓存: canceled={_trace_state['canceled']} error={_trace_state['error']}")
+                return
             staff_list = sorted(
                 (
                     {"account": a, "total": v["total"], "adopted": v["adopted"],
@@ -1309,6 +1370,9 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
             _trace_state["error"] = str(e)
         finally:
             _trace_state["running"] = False
+            # 运行已结束: 清掉暂停标记, 避免下次查询/再核算时遗留 paused=True
+            _trace_state["paused"] = False
+            _trace_resume_evt.clear()  # 清事件, 避免后续暂停 wait() 立即返回造成忙等
 
     threading.Thread(target=worker, daemon=True).start()
     return {"status": "running", "startDate": start, "endDate": end,
@@ -1328,7 +1392,50 @@ def trace_overview_status():
             "lastRun": _trace_state["last_run"],
             "error": _trace_state["error"],
             "result": _trace_state["result"],
+            "paused": _trace_state["paused"],
+            "canceled": _trace_state["canceled"],
+            "shopList": _trace_state["partial_list"],  # 运行中已完成店铺(边算边展示)
         }
+
+
+@app.post("/api/trace/overview/pause")
+def trace_overview_pause():
+    """暂停核算: 置暂停标志, worker 在当前店铺完成后阻塞, 不再请求剩余店铺"""
+    with _lock:
+        if not _trace_state["running"]:
+            return {"ok": False, "reason": "无进行中的核算任务"}
+        if _trace_state["canceled"]:
+            # 已取消的运行不响应暂停(worker 即将退出); 避免遗留 paused=True 误导前端
+            return {"ok": False, "reason": "核算已取消"}
+        _trace_state["paused"] = True
+        _trace_state["progress"]["current"] = "已暂停, 等待恢复…"
+    print("[trace] paused")
+    return {"ok": True, "paused": True}
+
+
+@app.post("/api/trace/overview/resume")
+def trace_overview_resume():
+    """恢复核算: 清除暂停标志并唤醒 worker"""
+    with _lock:
+        if not _trace_state["running"]:
+            return {"ok": False, "reason": "无进行中的核算任务"}
+        _trace_state["paused"] = False
+    _trace_resume_evt.set()  # 唤醒阻塞中的 worker
+    print("[trace] resumed")
+    return {"ok": True, "paused": False}
+
+
+@app.post("/api/trace/overview/cancel")
+def trace_overview_cancel():
+    """取消核算: 停止后续店铺, 保留已完成店铺的部分结果(不写磁盘缓存)"""
+    with _lock:
+        if not _trace_state["running"]:
+            return {"ok": False, "reason": "无进行中的核算任务"}
+        _trace_state["canceled"] = True
+        _trace_state["paused"] = False
+    _trace_resume_evt.set()  # 若 worker 正阻塞在暂停等待中, 唤醒使其退出
+    print("[trace] canceled")
+    return {"ok": True, "canceled": True}
 
 
 @app.get("/api/trace/messages/{shop_id}")

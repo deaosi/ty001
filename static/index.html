@@ -563,11 +563,13 @@
           <option value="custom">自定义</option>
         </select>
         <div class="date-range" id="auditDateRange" style="display:none">
-          <input type="date" id="auditStart" value="">
+          <input type="date" id="auditStart" value="" onchange="onAuditDateInput()">
           <span class="sep">~</span>
-          <input type="date" id="auditEnd" value="">
+          <input type="date" id="auditEnd" value="" onchange="onAuditDateInput()">
         </div>
         <button class="btn btn-primary" id="btnAudit" onclick="startAudit(true)">▶ 开始核算</button>
+        <button class="btn btn-ghost" id="btnAuditPause" onclick="toggleAuditPause()" style="display:none">⏸ 暂停</button>
+        <button class="btn btn-ghost" id="btnAuditCancel" onclick="cancelAudit()" style="display:none;color:var(--red,#f87171)">⏹ 取消</button>
         <div class="progress-bar audit-progress" id="auditProgress" style="margin-top:0"><div class="fill" id="auditProgressFill"></div></div>
       </div>
     </div>
@@ -811,10 +813,11 @@ async function switchGroup(groupId) {
       body: JSON.stringify({ group_id: groupId }),
     });
     toast(`已切换到 ${(r.group && r.group.name) || g.groupName || '新集团'} ✅ 正在加载店铺…`);
+    stopAuditPolling();  // 后端已取消旧集团核算: 停掉旧轮询, 避免把旧组结果渲染到新组下
     await loadGroups();
     await loadShops();
     loadOverview();
-    startAudit(false);
+    reloadCachedAudit();  // 组切换后缓存已失效, 只加载缓存, 不自动核算
   } catch (e) {
     toast('切换集团失败: ' + e.message);
   }
@@ -1230,6 +1233,7 @@ function openTraceDrawer(shopId) {
 
 // ---------- 核算板块 ----------
 let auditPolling = false;
+let auditTimer = null;  // pollAudit 的定时器句柄, 供组切换等场景主动停止轮询
 
 function auditQueryParams() {
   const days = document.getElementById('auditDays').value;
@@ -1254,7 +1258,15 @@ function onAuditDaysChange() {
       document.getElementById('auditEnd').value = end.toISOString().slice(0, 10);
     }
   }
-  startAudit(false);
+  // 只加载缓存结果, 不自动开始核算(核算由「开始核算」按钮显式触发)
+  reloadCachedAudit();
+}
+
+// 自定义日期输入变化: 同样只加载缓存, 不自动触发核算
+function onAuditDateInput() {
+  const s = document.getElementById('auditStart').value;
+  const e = document.getElementById('auditEnd').value;
+  if (s && e) reloadCachedAudit();
 }
 
 async function startAudit(force) {
@@ -1281,14 +1293,25 @@ async function startAudit(force) {
   document.getElementById('btnAudit').disabled = true;
   document.getElementById('auditProgress').classList.add('show');
   document.getElementById('auditSummaryCards').style.display = 'none';
+  // 新一轮核算: 清掉上一轮的店铺行与客服明细, 未核算完的店铺不展示
+  document.getElementById('auditShopBody').innerHTML =
+    `<tr><td colspan="6" class="empty">核算中, 已完成店铺将实时展示…</td></tr>`;
+  document.getElementById('auditStaffGrid').innerHTML = `<span class="empty">—</span>`;
+  document.getElementById('staffCount').textContent = '';
+  setAuditRunningUI(true);
   try {
     const r = await fetchJSON(`/api/trace/overview?${auditQueryParams()}${force ? '&force=1' : ''}`);
     if (r.status === 'done' && r.result) {
       renderAudit(r.result);
       statusEl.className = 'audit-status done';
       statusEl.textContent = `核算完成 ✅ ${r.startDate} ~ ${r.endDate}`;
+      resetAuditUI();
     } else if (r.status === 'running') {
       pollAudit();
+    } else {
+      // idle(从缓存只读路径不应出现; 防御)
+      resetAuditUI();
+      statusEl.textContent = '未开始核算(无缓存)';
     }
   } catch (e) {
     statusEl.className = 'audit-status';
@@ -1300,19 +1323,42 @@ async function startAudit(force) {
 
 function pollAudit() {
   auditPolling = true;
-  const timer = setInterval(async () => {
+  setAuditRunningUI(true);
+  if (auditTimer) clearInterval(auditTimer);
+  auditTimer = setInterval(async () => {
     try {
       const t = await fetchJSON('/api/trace/overview/status');
       const p = t.progress || {};
       if (p.total > 0) {
         document.getElementById('auditProgressFill').style.width = Math.round(p.done / p.total * 100) + '%';
-        const cur = t.error ? '错误: ' + t.error : (p.current || '');
-        document.getElementById('auditStatus').textContent =
-          `核算中: ${p.done}/${p.total} 家店铺 · ${cur}`;
       }
+      // 边算边展示: 已完成店铺实时渲染, 未完成店铺不展示
+      if (t.shopList && t.shopList.length) {
+        renderShopRows(t.shopList);
+      }
+      if (t.paused) {
+        document.getElementById('auditStatus').textContent =
+          `已暂停: ${p.done}/${p.total} 家店铺 · 点击「继续」恢复核算`;
+        return;  // 保持轮询, 等待恢复/取消
+      }
+      const cur = t.error ? '错误: ' + t.error : (p.current || '');
+      document.getElementById('auditStatus').textContent =
+        `核算中: ${p.done}/${p.total} 家店铺 · ${cur}`;
       if (!t.running) {
-        clearInterval(timer);
+        clearInterval(auditTimer);
+        auditTimer = null;
         auditPolling = false;
+        if (t.canceled) {
+          setAuditRunningUI(false);
+          document.getElementById('auditStatus').className = 'audit-status';
+          const n = t.shopList ? t.shopList.length : 0;
+          document.getElementById('auditStatus').textContent =
+            `核算已取消 ⏹ 已核算 ${n} 家店铺`;
+          // 无条件渲染(空列表时显示空态, 不残留上一轮/上一范围的店铺行)
+          renderShopRows(t.shopList || []);
+          resetAuditUI();
+          return;
+        }
         if (t.result) {
           renderAudit(t.result);
           document.getElementById('auditStatus').className = 'audit-status done';
@@ -1321,21 +1367,113 @@ function pollAudit() {
         } else if (t.error) {
           document.getElementById('auditStatus').className = 'audit-status';
           document.getElementById('auditStatus').textContent = '核算失败: ' + t.error;
+          // 风控/中断时保留已完成店铺的部分结果; 空列表显示空态, 不残留旧行
+          renderShopRows(t.shopList || []);
+        } else {
+          document.getElementById('auditStatus').className = 'audit-status';
+          document.getElementById('auditStatus').textContent = '核算已结束(无结果)';
         }
+        setAuditRunningUI(false);
         resetAuditUI();
       }
     } catch (e) {
-      clearInterval(timer);
+      clearInterval(auditTimer);
+      auditTimer = null;
       auditPolling = false;
+      setAuditRunningUI(false);
       resetAuditUI();
       toast('核算状态获取失败');
     }
   }, 2000);
 }
 
+// 主动停止核算轮询(组切换时调用): 后端取消后旧定时器仍会轮询并可能把旧组结果渲染到新组下
+function stopAuditPolling() {
+  if (auditTimer) { clearInterval(auditTimer); auditTimer = null; }
+  auditPolling = false;
+}
+
 function resetAuditUI() {
   document.getElementById('btnAudit').disabled = false;
+  setAuditRunningUI(false);
   setTimeout(() => document.getElementById('auditProgress').classList.remove('show'), 800);
+}
+
+// 核算运行中 UI: 显示暂停/取消按钮, 隐藏开始按钮
+function setAuditRunningUI(running) {
+  document.getElementById('btnAudit').style.display = running ? 'none' : '';
+  document.getElementById('btnAuditPause').style.display = running ? '' : 'none';
+  document.getElementById('btnAuditCancel').style.display = running ? '' : 'none';
+  const pauseBtn = document.getElementById('btnAuditPause');
+  if (running) pauseBtn.textContent = '⏸ 暂停';
+}
+
+// 暂停/恢复切换
+async function toggleAuditPause() {
+  const pauseBtn = document.getElementById('btnAuditPause');
+  try {
+    if (pauseBtn.textContent.includes('暂停')) {
+      const r = await fetchJSON('/api/trace/overview/pause', { method: 'POST' });
+      if (r.ok) pauseBtn.textContent = '▶ 继续';
+    } else {
+      const r = await fetchJSON('/api/trace/overview/resume', { method: 'POST' });
+      if (r.ok) pauseBtn.textContent = '⏸ 暂停';
+    }
+  } catch (e) {
+    toast('暂停/恢复失败: ' + e.message);
+  }
+}
+
+// 取消核算
+async function cancelAudit() {
+  if (!confirm('确定取消本次核算? 已完成店铺的结果会保留展示。')) return;
+  try {
+    await fetchJSON('/api/trace/overview/cancel', { method: 'POST' });
+    toast('正在取消核算…');
+  } catch (e) {
+    toast('取消失败: ' + e.message);
+  }
+}
+
+// 仅加载缓存结果(时间切换/组切换后), 不触发新核算
+async function reloadCachedAudit() {
+  if (auditPolling) return;  // 运行中由 pollAudit 负责展示
+  const statusEl = document.getElementById('auditStatus');
+  try {
+    // 先查任务状态: 后台核算若仍在进行(如页面刷新/切组后), 接管轮询并展示实时进度, 不渲染陈旧缓存
+    // 已取消的运行是终态(如切组触发的取消), 不接管轮询, 直接走缓存/空态
+    let st = null;
+    try { st = await fetchJSON('/api/trace/overview/status'); } catch (e) { /* 忽略, 走缓存路径 */ }
+    if (st && st.running && !st.canceled) {
+      setAuditRunningUI(true);
+      pollAudit();
+      return;
+    }
+    const r = await fetchJSON(`/api/trace/overview?${auditQueryParams()}&from_cache=1`);
+    const result = r.result || (r.status === 'idle' && r.latest) || null;
+    if (result && !(r.status === 'idle' && (r.startDate !== result.startDate || r.endDate !== result.endDate))) {
+      // 命中与当前所选时间段一致的缓存才作为「完成」渲染
+      renderAudit(result);
+      statusEl.className = 'audit-status done';
+      statusEl.textContent = `核算完成 ✅ ${result.startDate} ~ ${result.endDate} · 总条数 ${result.total.toLocaleString()} · 核算采纳率 ${result.rate.toFixed(2)}%`;
+    } else if (result) {
+      // 有缓存但时间段与当前选择不一致: 展示旧结果, 但明确提示这不是当前时间段
+      renderAudit(result);
+      statusEl.className = 'audit-status';
+      statusEl.textContent = `已加载缓存 ${result.startDate} ~ ${result.endDate} · 点击「开始核算」抓取当前时间段`;
+    } else {
+      // 该时间段无缓存: 清空表格, 提示点击开始核算
+      document.getElementById('auditShopBody').innerHTML =
+        `<tr><td colspan="6" class="empty">该时间段暂无核算结果 · 点击「开始核算」抓取</td></tr>`;
+      document.getElementById('auditStaffGrid').innerHTML = `<span class="empty">—</span>`;
+      document.getElementById('staffCount').textContent = '';
+      document.getElementById('auditSummaryCards').style.display = 'none';
+      statusEl.className = 'audit-status';
+      statusEl.textContent = '尚未核算该时间段 · 点击「开始核算」遍历全部店铺消息记录';
+    }
+  } catch (e) {
+    toast('核算缓存加载失败: ' + e.message);
+  }
 }
 
 function renderAudit(result) {
@@ -1344,23 +1482,7 @@ function renderAudit(result) {
   document.getElementById('aAdopted').textContent = (result.adopted || 0).toLocaleString();
   document.getElementById('aRate').textContent = (result.rate || 0).toFixed(2) + '%';
 
-  const shopBody = document.getElementById('auditShopBody');
-  const list = result.shopList || [];
-  if (!list.length) {
-    shopBody.innerHTML = `<tr><td colspan="6" class="empty">无数据</td></tr>`;
-  } else {
-    shopBody.innerHTML = list
-      .slice()
-      .sort((a, b) => b.total - a.total)
-      .map(x => `<tr>
-        <td><div class="shop-cell"><span class="name">${x.shop.shopName || '未知'}</span><span class="id">${x.shop.thirdShopId}</span></div></td>
-        <td><span class="platform-tag">${x.shop.platformName || '-'}</span></td>
-        <td>${x.total.toLocaleString()}</td>
-        <td>${x.adopted.toLocaleString()}</td>
-        <td>${ratePill(x.rate)}</td>
-        <td><button class="btn btn-ghost" style="padding:2px 8px;font-size:11.5px" onclick="openTraceDrawer('${x.shop.thirdShopId}')">查看明细</button></td>
-      </tr>`).join('');
-  }
+  renderShopRows(result.shopList || []);
 
   const staff = result.byStaff || [];
   document.getElementById('staffCount').textContent = staff.length ? `(${staff.length}人)` : '';
@@ -1391,6 +1513,26 @@ function renderAudit(result) {
         </div>
       </div>`;
     }).join('');
+  }
+}
+
+// 渲染店铺核算表格(最终结果与实时进度共用; 空列表时显示空态)
+function renderShopRows(list) {
+  const shopBody = document.getElementById('auditShopBody');
+  if (!list || !list.length) {
+    shopBody.innerHTML = `<tr><td colspan="6" class="empty">等待核算…</td></tr>`;
+  } else {
+    shopBody.innerHTML = list
+      .slice()
+      .sort((a, b) => b.total - a.total)
+      .map(x => `<tr>
+        <td><div class="shop-cell"><span class="name">${x.shop.shopName || '未知'}</span><span class="id">${x.shop.thirdShopId}</span></div></td>
+        <td><span class="platform-tag">${x.shop.platformName || '-'}</span></td>
+        <td>${x.total.toLocaleString()}</td>
+        <td>${x.adopted.toLocaleString()}</td>
+        <td>${ratePill(x.rate)}</td>
+        <td><button class="btn btn-ghost" style="padding:2px 8px;font-size:11.5px" onclick="openTraceDrawer('${x.shop.thirdShopId}')">查看明细</button></td>
+      </tr>`).join('');
   }
 }
 
@@ -1560,19 +1702,8 @@ function pollLogin() {
   loadGroups();  // 异步: 集团下拉后台加载
   loadOverview();
   checkRisk();
-  // 先加载最近一次核算结果(只读缓存, 快路径: 不依赖店铺/集团, 秒开)
-  try {
-    const r = await fetchJSON(`/api/trace/overview?${auditQueryParams()}&from_cache=1`);
-    const result = r.result || (r.status === 'idle' && r.latest) || null;
-    if (result) {
-      renderAudit(result);
-      document.getElementById('auditStatus').className = 'audit-status done';
-      document.getElementById('auditStatus').textContent =
-        `核算完成 ✅ ${result.startDate} ~ ${result.endDate} · 总条数 ${result.total.toLocaleString()} · 核算采纳率 ${result.rate.toFixed(2)}%`;
-    }
-  } catch (e) {
-    console.error('核算结果加载失败', e);
-  }
+  // 先加载最近一次核算结果(只读缓存, 快路径: 不依赖店铺/集团, 秒开; 不触发新核算)
+  await reloadCachedAudit();
   // 店铺列表异步加载, 不阻塞核算板块渲染
   loadShops();
 })();

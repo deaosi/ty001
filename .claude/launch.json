@@ -4,9 +4,14 @@
     {
       "name": "tanyu-dashboard",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["main.py"],
+      "runtimeArgs": ["D:\\test\\test01\\main.py"],
       "port": 8080,
       "autoPort": true
+    },
+    {
+      "name": "tanyu-dashboard-attach",
+      "url": "http://127.0.0.1:8080",
+      "port": 8080
     }
   ]
 }
