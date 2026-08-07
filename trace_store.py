@@ -458,6 +458,55 @@ def staff_aggregate(start, end, platform=None, shop_filter=None):
     return agg["staff_agg"]
 
 
+def staff_aggregate_per_shop(start, end, platform=None, shop_filter=None):
+    """按 (店铺, 客服) 组合聚合客服维度(不去重/不跨店合并)
+
+    用于客服账号池"按店铺区分客服": 同一客服账号在不同店铺各自成行,
+    (店铺,客服) 组合数才是该口径下的客服总数。返回:
+      {"by_shop": {shop_id: {account: {total, adopted}}}, "combos": N}
+    shop_filter: 可选店铺子集(集合)。DB 未覆盖区间时返回空结构。
+    """
+    if not DB_FILE.exists():
+        return {"by_shop": {}, "combos": 0}
+    try:
+        c = _conn()
+        where = "d.day BETWEEN ? AND ?"
+        args = [start, end]
+        if platform is not None:
+            where += " AND s.platform = ?"
+            args.append(platform)
+        if shop_filter:
+            placeholders = ",".join("?" * len(shop_filter))
+            where += f" AND d.third_shop_id IN ({placeholders})"
+            args.extend(shop_filter)
+        rows = c.execute(
+            f"""SELECT d.third_shop_id, d.by_staff_json
+                FROM trace_daily d
+                JOIN shops s ON s.third_shop_id = d.third_shop_id
+                WHERE {where}
+                ORDER BY d.third_shop_id, d.day""",
+            args,
+        ).fetchall()
+        by_shop = {}
+        combos = 0
+        for r in rows:
+            sid = r["third_shop_id"]
+            shop_agg = by_shop.setdefault(sid, {})
+            try:
+                staff_rows = json.loads(r["by_staff_json"])
+            except Exception:
+                staff_rows = []
+            for acct, v in staff_rows:
+                e = shop_agg.setdefault(acct, {"total": 0, "adopted": 0})
+                e["total"] += v["total"]
+                e["adopted"] += v["adopted"]
+        for shop_agg in by_shop.values():
+            combos += len(shop_agg)
+        return {"by_shop": by_shop, "combos": combos}
+    except Exception:
+        return {"by_shop": {}, "combos": 0}
+
+
 def repair_shop_platform(shop_id, platform):
     """把某店 platform=0 的历史消息纠正为正确平台, 并重建该店按日聚合
 

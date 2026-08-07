@@ -409,6 +409,20 @@
   }
   .staff-sync-btn { font-size: 11.5px; padding: 3px 10px; }
   .staff-sync-btn:disabled { opacity: .6; cursor: not-allowed; }
+  /* 客服池按店铺分组 */
+  .staff-shop-group { margin-bottom: 12px; }
+  .staff-shop-group:last-child { margin-bottom: 0; }
+  .staff-shop-head {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 7px;
+    font-size: 11.5px; font-weight: 700; color: var(--text-sub);
+  }
+  .staff-shop-head .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .staff-shop-head .shop-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .staff-shop-head .shop-meta { font-size: 10.5px; font-weight: 500; color: var(--text-dim); margin-left: auto; flex-shrink: 0; }
+  .staff-shop-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
+  /* 窗口内无消息的在编客服: 弱化显示 */
+  .staff-chip-zero { opacity: .55; }
+  .staff-chip-zero .staff-name { font-weight: 500; }
   /* 顶部 Cookie 到期提示 */
   .cookie-expiry {
     font-size: 11px; color: var(--text-dim); white-space: nowrap;
@@ -2158,9 +2172,9 @@ function renderAudit(result) {
   }
 }
 
-// 渲染客服账号池(真实昵称大字 + 子账号小字; 无昵称时显示账号)
-// 昵称来源优先级: 1) staff_names 映射的 nick(拼多多真实名)  2) sellerAccount 冒号后(抖音/京东)
-// 小字 = 店铺名 + 子账号完整串(用户要求的「联想佳佑专卖店 · cs_476491162:186326920」样式)
+// 渲染客服账号池(按店铺分组; 每个客服按 (店铺,客服) 区分, 不去重)
+// 每组: 店铺名 + 平台 + 客服数 + 消息数; 组内: 真实昵称大字 + 子账号小字
+// 昵称来源优先级: 1) 后端给的 nick(拼多多真实名/抖音京东冒号后)  2) accountShort
 function renderStaffGrid(staff) {
   const gridEl = document.getElementById('auditStaffGrid');
   document.getElementById('staffCount').textContent = (staff && staff.length) ? `(${staff.length}人)` : '';
@@ -2168,39 +2182,70 @@ function renderStaffGrid(staff) {
     gridEl.innerHTML = `<span class="empty">无数据</span>`;
     return;
   }
-  const sorted = staff.slice().sort((a, b) => b.total - a.total);
+  // 按店铺分组(店铺展示名排序, 组内客服按消息量降序)
+  const groups = new Map();
+  for (const x of staff) {
+    const sid = x.shopId || '';
+    const key = sid || '__noShop__';
+    if (!groups.has(key)) {
+      groups.set(key, {
+        shopId: sid,
+        shopName: x.shopName || '未归属',
+        platformName: x.platformName || '',
+        items: [],
+      });
+    }
+    groups.get(key).items.push(x);
+  }
+  const sortedGroups = [...groups.values()].sort((a, b) =>
+    (a.shopName || '').localeCompare(b.shopName || '', 'zh'));
   const avatarColors = ['#22d3ee', '#a78bfa', '#fbbf24', '#f472b6', '#34d399', '#f87171', '#60a5fa', '#fb923c'];
-  gridEl.innerHTML = sorted.map((x, i) => {
-    const av = avatarColors[i % avatarColors.length];
-    // 昵称: 映射 nick 优先(拼多多), 兜底 sellerAccount 拆出的 name(抖音/京东), 再兜底账号
-    const sn = staffNames[x.account];
-    const nick = (sn && sn.nick) || x.name || '';
-    const displayName = nick || x.accountShort || x.account || '?';
-    // 子账号小字: 店铺名(映射 shopName/展示名) + 完整账号串
-    const shopLabel = (sn && sn.shopName) || '';
-    const subParts = [];
-    if (shopLabel) subParts.push(shopLabel);
-    if (x.account && x.account.indexOf(':') >= 0) subParts.push(x.account);
-    const subName = subParts.length ? subParts.join(' · ') : (x.accountShort || '');
-    const initial = (nick || x.account || '?').charAt(0).toUpperCase();
-    const totalStr = (x.total || 0).toLocaleString();
-    return `<div class="staff-chip" onclick="toggleStaffChip(this)" title="点击展开占比明细">
-      <div class="staff-chip-top">
-        <span class="staff-avatar" style="background:${av}">${esc(initial)}</span>
-        <span class="staff-chip-name"><span class="staff-name">${esc(displayName)}</span><span class="staff-account-sub">${subName ? esc(subName) : ''}</span></span>
-        <span class="staff-chip-arrow">▾</span>
+
+  gridEl.innerHTML = sortedGroups.map(g => {
+    const items = g.items.slice().sort((a, b) => b.total - a.total);
+    const groupTotal = items.reduce((s, x) => s + (x.total || 0), 0);
+    const dotColor = avatarColors[Math.abs(hashStr(g.shopName)) % avatarColors.length];
+    const chips = items.map((x, i) => {
+      const av = avatarColors[i % avatarColors.length];
+      const displayName = (x.nick || x.name) || x.accountShort || x.account || '?';
+      // 子账号小字: 组头已有店铺名, 组内只显示子账号完整串
+      const subName = (x.account && x.account.indexOf(':') >= 0) ? x.account : (x.accountShort || '');
+      const initial = (displayName || x.account || '?').charAt(0).toUpperCase();
+      const totalStr = (x.total || 0).toLocaleString();
+      const zeroCls = (x.total || 0) === 0 ? ' staff-chip-zero' : '';
+      return `<div class="staff-chip${zeroCls}" onclick="toggleStaffChip(this)" title="点击展开占比明细">
+        <div class="staff-chip-top">
+          <span class="staff-avatar" style="background:${av}">${esc(initial)}</span>
+          <span class="staff-chip-name"><span class="staff-name">${esc(displayName)}</span><span class="staff-account-sub">${subName ? esc(subName) : ''}</span></span>
+          <span class="staff-chip-arrow">▾</span>
+        </div>
+        <div class="staff-chip-meta">
+          <span class="staff-chip-count">${totalStr} 条</span>
+          <span>${ratePill(x.rate)}</span>
+        </div>
+        <div class="staff-chip-detail">
+          <div class="drow"><span>消息总条数</span><b>${totalStr}</b></div>
+          <div class="drow"><span>采纳条数</span><b>${(x.adopted || 0).toLocaleString()}</b></div>
+          <div class="drow"><span>采纳占比</span><b>${(x.total / (x.total || 1) * 100).toFixed(1)}%</b></div>
+        </div>
+      </div>`;
+    }).join('');
+    return `<div class="staff-shop-group">
+      <div class="staff-shop-head">
+        <span class="dot" style="background:${dotColor}"></span>
+        <span class="shop-name" title="${esc(g.shopName)}">${esc(g.shopName)}</span>
+        <span class="shop-meta">${g.platformName ? esc(g.platformName) + ' · ' : ''}${items.length}人 · ${groupTotal.toLocaleString()}条</span>
       </div>
-      <div class="staff-chip-meta">
-        <span class="staff-chip-count">${totalStr} 条</span>
-        <span>${ratePill(x.rate)}</span>
-      </div>
-      <div class="staff-chip-detail">
-        <div class="drow"><span>消息总条数</span><b>${totalStr}</b></div>
-        <div class="drow"><span>采纳条数</span><b>${(x.adopted || 0).toLocaleString()}</b></div>
-        <div class="drow"><span>采纳占比</span><b>${(x.total / (x.total || 1) * 100).toFixed(1)}%</b></div>
-      </div>
+      <div class="staff-shop-grid">${chips}</div>
     </div>`;
   }).join('');
+}
+
+// 简单字符串哈希(给店铺分组头选色)
+function hashStr(s) {
+  let h = 0;
+  for (let i = 0; i < (s || '').length; i++) { h = (h * 31 + s.charCodeAt(i)) | 0; }
+  return Math.abs(h);
 }
 
 // 渲染店铺核算表格(最终结果与实时进度共用; 空列表时显示空态)

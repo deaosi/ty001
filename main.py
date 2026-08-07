@@ -1201,6 +1201,80 @@ def _staff_list_from_agg(by_staff):
     return sorted(out, key=lambda x: -x["total"])
 
 
+def _staff_list_per_shop(by_shop, platform=None, shop_filter=None):
+    """按 (店铺,客服) 组合列出客服(不去重/不跨店合并), 每项带店铺归属
+
+    客服账号池"按店铺区分客服"的数据源: 同一客服账号在不同店铺各自成行。
+    以 staff_names(在编客服)为权威, 合并消息统计:
+      - 该店在编客服(含窗口内无消息)全部列出, total=消息统计(无则 0)
+      - 消息中出现但不在 staff_names 的客服(新客服/已离职)也列出
+    归属: 用 shops 表 seller_id 精确匹配 account 前缀(PDD 去 cs_), 而非
+    serviceName 前缀(PDD 大量 serviceName 只有昵称、无店铺名前缀)。
+    """
+    shop_map = {s["thirdShopId"]: s for s in trace_store.get_shops()}
+    # (seller_id, platform) → (shop_id, shop_name): 权威店铺归属表
+    seller_shop = {}
+    for sid, s in shop_map.items():
+        if s.get("sellerId"):
+            seller_shop.setdefault((str(s["sellerId"]), s.get("platform")),
+                                   (sid, s.get("shopName") or sid))
+    staff_names = _load_staff_names()
+    name_map = (staff_names or {}).get("map") or {}
+
+    def _acct_shop(acct, plat):
+        pre = acct.split(":", 1)[0]
+        if pre.startswith("cs_"):
+            pre = pre[3:]
+        return seller_shop.get((pre, plat))
+
+    # 消息侧统计: shop_id -> {acct: {total, adopted}}
+    msg_agg = {sid: dict(shop_agg) for sid, shop_agg in by_shop.items()}
+    # 在编客服(权威): staff_names 按 seller_id 归属到店, 同时按平台/子集过滤
+    roster = {}
+    for acct, rec in name_map.items():
+        plat = rec.get("platform")
+        if platform is not None and plat != platform:
+            continue
+        hit = _acct_shop(acct, plat)
+        if not hit:
+            continue
+        sid = hit[0]
+        if shop_filter and sid not in shop_filter:
+            continue
+        roster.setdefault(sid, {})[acct] = rec
+    combos = []
+    for sid in set(msg_agg) | set(roster):
+        shop = shop_map.get(sid, {})
+        sp = shop.get("platform")
+        if platform is not None and sp != platform:
+            continue
+        if shop_filter and sid not in shop_filter:
+            continue
+        for acct in set(msg_agg.get(sid, {})) | set(roster.get(sid, {})):
+            meta = _split_staff(acct)
+            v = msg_agg.get(sid, {}).get(acct, {"total": 0, "adopted": 0})
+            rec = roster.get(sid, {}).get(acct) or {}
+            combo = {
+                "shopId": sid,
+                "shopName": shop.get("shopName") or rec.get("shopName") or sid,
+                "shopPlatform": sp,
+                "platformName": PLATFORM_NAMES.get(sp, str(sp or "")),
+                "account": acct,
+                "name": meta["name"],
+                "accountShort": meta["accountShort"],
+                "accountId": meta["accountId"],
+                "total": v.get("total", 0),
+                "adopted": v.get("adopted", 0),
+                "rate": round(v.get("adopted", 0) / v.get("total", 0) * 100, 2) if v.get("total") else 0,
+            }
+            if rec:
+                combo["nick"] = rec.get("nick") or combo["name"]
+                combo["serviceName"] = rec.get("serviceName")
+            combos.append(combo)
+    combos.sort(key=lambda c: (c.get("shopName") or "", -(c.get("total") or 0)))
+    return combos
+
+
 def stat_trace(shop_id, begin, end, on_progress=None):
     """遍历指定店铺时间段内的全部消息轨迹, 统计发送状态分布
 
@@ -1922,7 +1996,9 @@ def _trace_overview_from_db(start, end, platform=None, shop_filter=None):
                           "startDate": start, "endDate": end})
         agg_total += v["total"]
         agg_adopted += v["adopted"]
-    staff_list = _staff_list_from_agg(agg["staff_agg"])
+    # 客服按 (店铺,客服) 组合区分(不去重), 用同一区间/店铺集的按店聚合
+    per_shop = trace_store.staff_aggregate_per_shop(start, end, platform, shop_filter)
+    staff_list = _staff_list_per_shop(per_shop["by_shop"], platform, shop_filter)
     return {
         "startDate": start,
         "endDate": end,
@@ -2052,7 +2128,7 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
             _trace_state["progress"] = {"done": 0, "total": total, "current": ""}
             shop_list = []
             agg_total = agg_adopted = 0
-            staff_agg = {}
+            staff_shop_agg = {}
             for i, shop in enumerate(shops, 1):
                 # 暂停/取消检查(在店铺边界, 请求间隙)
                 while _trace_state["paused"] and not _trace_state["canceled"]:
@@ -2089,7 +2165,8 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
                     agg_total += stat["total"]
                     agg_adopted += stat["adopted"]
                     for st in stat.get("byStaff", []):
-                        entry = staff_agg.setdefault(st["account"], {"total": 0, "adopted": 0})
+                        shop_agg = staff_shop_agg.setdefault(shop["thirdShopId"], {})
+                        entry = shop_agg.setdefault(st["account"], {"total": 0, "adopted": 0})
                         entry["total"] += st["total"]
                         entry["adopted"] += st["adopted"]
                 except RiskTriggered as e:
@@ -2109,7 +2186,7 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
             if _trace_state["canceled"] or _trace_state["error"]:
                 log_line("trace", f"中断不写缓存: canceled={_trace_state['canceled']} error={_trace_state['error']}")
                 return
-            staff_list = _staff_list_from_agg(staff_agg)
+            staff_list = _staff_list_per_shop(staff_shop_agg, platform, shop_filter)
             completed = {
                 "startDate": start,
                 "endDate": end,
@@ -2153,6 +2230,8 @@ def trace_staff(days: int = 7, start: str | None = None, end: str | None = None,
 
     从 SQLite trace_daily 聚合(跨集团全量), 与核算口径一致(adopted=send_type IN 1,2,3)。
     任意平台/店铺子集/时间段均可查询, 不依赖当前激活集团。
+    客服**按 (店铺,客服) 组合区分**(不去重/不跨店合并): 同一客服账号在不同店铺
+    各自成行, 并补入该店在编但窗口内无消息的客服(来自 staff_names)。
     DB 未覆盖该区间时返回空 byStaff(前端提示数据未抓取)。
     """
     start, end = date_range(days, end) if not start else (start, end or (datetime.date.today() - datetime.timedelta(days=1)).isoformat())
@@ -2160,8 +2239,8 @@ def trace_staff(days: int = 7, start: str | None = None, end: str | None = None,
     result = {"startDate": start, "endDate": end, "platform": platform,
               "total": 0, "adopted": 0, "rate": 0, "byStaff": []}
     if trace_store.db_window_covers(start, end):
-        staff_agg = trace_store.staff_aggregate(start, end, platform, shop_filter)
-        staff_list = _staff_list_from_agg(staff_agg)
+        per_shop = trace_store.staff_aggregate_per_shop(start, end, platform, shop_filter)
+        staff_list = _staff_list_per_shop(per_shop["by_shop"], platform, shop_filter)
         result["byStaff"] = staff_list
         result["total"] = sum(s["total"] for s in staff_list)
         result["adopted"] = sum(s["adopted"] for s in staff_list)
@@ -2261,7 +2340,7 @@ def trace_today(platform: int | None = None, shop_ids: str | None = None,
     def worker():
         try:
             shop_list = []
-            staff_agg = {}
+            staff_shop_agg = {}
             agg_total = agg_adopted = 0
             done = 0
             for gid, g, shops in groups_target:
@@ -2303,7 +2382,8 @@ def trace_today(platform: int | None = None, shop_ids: str | None = None,
                         agg_total += stat["total"]
                         agg_adopted += stat["adopted"]
                         for st in stat.get("byStaff", []):
-                            entry = staff_agg.setdefault(st["account"], {"total": 0, "adopted": 0})
+                            shop_agg = staff_shop_agg.setdefault(shop["thirdShopId"], {})
+                            entry = shop_agg.setdefault(st["account"], {"total": 0, "adopted": 0})
                             entry["total"] += st["total"]
                             entry["adopted"] += st["adopted"]
                         if stat["total"]:
@@ -2323,7 +2403,7 @@ def trace_today(platform: int | None = None, shop_ids: str | None = None,
                             "total": agg_total, "adopted": agg_adopted,
                             "rate": round(agg_adopted / agg_total * 100, 2) if agg_total else 0,
                             "shopList": list(shop_list),
-                            "byStaff": _staff_list_from_agg(staff_agg),
+                            "byStaff": _staff_list_per_shop(staff_shop_agg, platform, shop_filter),
                             "live": True,
                         }
             _today_state["last_run"] = time.time()
