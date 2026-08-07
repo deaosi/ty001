@@ -244,6 +244,23 @@ def load_shops(platform=None):
     return shops
 
 
+def load_all_shops(platform=None):
+    """加载跨集团全量店铺(SQLite 优先, shops.json 兜底), 可按平台过滤
+
+    与 load_shops(shops.json, 仅当前激活集团)不同: 这里覆盖三个集团的店铺,
+    平台切换后任何平台的店铺列表都有数据(客服池/总览同源)。SQLite 为空
+    (如首次运行未回填)时回退 shops.json, 保证不因新数据源引入空列表。
+    """
+    try:
+        shops = trace_store.get_shops(platform)
+        if shops:
+            return shops
+    except Exception:
+        pass
+    # 兜底: shops.json 仅有当前激活集团店铺, 过滤后可能为空(切平台场景)
+    return load_shops(platform)
+
+
 def date_range(days=7, end=None):
     """生成近 N 天日期区间(截至昨天)"""
     import datetime
@@ -1498,7 +1515,7 @@ def days_all_cached(shop_id, start, end):
 def _shop_platform(shop_id):
     """查店铺平台: 先看当前 shops 列表, 找不到回退 shop_seller 缓存"""
     try:
-        for s in load_shops():
+        for s in load_all_shops():
             if s.get("thirdShopId") == shop_id:
                 return s.get("platform", 0)
     except Exception:
@@ -1639,7 +1656,8 @@ def health():
 
 @app.get("/api/shops")
 def shops_list(platform: int | None = None):
-    return {"shops": load_shops(platform)}
+    """店铺列表: 跨集团全量(平台切换后任何平台都有数据)"""
+    return {"shops": load_all_shops(platform)}
 
 
 @app.get("/api/platforms")
@@ -1829,7 +1847,7 @@ def shop_detail(shop_id: str, stat_type: str = "natural_day", start: str | None 
     (source="history"), 返回该店该周消息量/采纳数/采纳率 + missing_days;
     tanyu 专属指标标记 unavailable。当前周不传/传当前周走 tanyu summary。
     """
-    shops = {s["thirdShopId"]: s for s in load_shops()}
+    shops = {s["thirdShopId"]: s for s in load_all_shops()}
     shop = shops.get(shop_id)
     if not shop:
         raise HTTPException(404, "店铺不存在")
@@ -1992,7 +2010,7 @@ def trace_shop(shop_id: str, days: int = 7, force: int = 0, start: str | None = 
     start/end 可选: 自定义起止日期(YYYY-MM-DD), 不传则用近 N 天
     按日增量缓存: 已抓取的天零请求, 只补抓缺失的天
     """
-    shops = {s["thirdShopId"]: s for s in load_shops()}
+    shops = {s["thirdShopId"]: s for s in load_all_shops()}
     shop = shops.get(shop_id)
     if not shop:
         raise HTTPException(404, "店铺不存在")
@@ -2761,7 +2779,7 @@ def trace_messages(shop_id: str, days: int = 7, force: int = 0,
     返回逐条消息: 时间/买家/发送状态/人工客服/内容
     按日增量缓存: 已抓取的天零请求, 只补抓缺失的天
     """
-    shops = {s["thirdShopId"]: s for s in load_shops()}
+    shops = {s["thirdShopId"]: s for s in load_all_shops()}
     shop = shops.get(shop_id)
     if not shop:
         raise HTTPException(404, "店铺不存在")

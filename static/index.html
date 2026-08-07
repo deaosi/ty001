@@ -1167,6 +1167,7 @@ function refreshHeaderSub() {
 let overviewReqId = 0;  // 防竞态: 只应用最新一次请求的结果
 let overviewRetryLeft = 3;  // 503 重试上限: 上游长时间限速时停止无限排队
 let shopSummariesGen = 0;  // 店铺汇总加载代际: 切口径/平台/集团时旧响应作废
+let shopReqId = 0;  // 店铺列表加载代际: 快速切平台时旧响应不得覆写 shops(竞态防护)
 
 function overviewQueryParams() {
   return statTypeQuery();
@@ -1333,13 +1334,16 @@ async function loadOverview() {
 
 // ---------- 店铺列表 ----------
 async function loadShops() {
+  const myId = ++shopReqId;  // 代际守卫: 快速切平台时旧响应不得覆写 shops/接管渲染
   try {
     const platformParam = currentPlatform ? `?platform=${currentPlatform}` : '';
     const data = await fetchJSON(`/api/shops${platformParam}`);
+    if (myId !== shopReqId) return;  // 已有更新的平台切换请求, 丢弃本次结果
     shops = data.shops || [];
     renderTable();
     await loadAllShopSummaries();
   } catch (e) {
+    if (myId !== shopReqId) return;
     document.getElementById('shopTableBody').innerHTML =
       `<tr><td colspan="5" class="empty">店铺列表加载失败: ${e.message}</td></tr>`;
   }

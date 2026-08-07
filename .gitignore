@@ -6,6 +6,9 @@ config.json.bak
 data/
 archive/
 
+# 运行时店铺快照(单集团当前状态, 随切集团/同步变化; 提交会被 checkout 回退成错误平台的店)
+shops.json
+
 # Python
 __pycache__/
 *.pyc
