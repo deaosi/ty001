@@ -1,84 +1,172 @@
 {
   "data": [
     {
-      "thirdShopId": "1901419852011174118",
-      "shopName": "ifkoo京东旗舰店",
-      "platform": 7,
-      "sellerId": "151039",
+      "thirdShopId": "1901419852011174224",
+      "shopName": "谦煜影音专营店",
+      "platform": 5,
+      "sellerId": "48653908",
       "ifAgentReceipt": true,
-      "platformName": "京东"
+      "platformName": "抖音"
     },
     {
-      "thirdShopId": "1901419852011174126",
-      "shopName": "联想安诺专卖店",
-      "platform": 7,
-      "sellerId": "12694482",
+      "thirdShopId": "1901419852011174237",
+      "shopName": "魔声伊酷尔影音专卖店",
+      "platform": 5,
+      "sellerId": "21399420",
       "ifAgentReceipt": true,
-      "platformName": "京东"
+      "platformName": "抖音"
     },
     {
-      "thirdShopId": "2391793431822696574",
-      "shopName": "联想聚源专卖店",
-      "platform": 7,
-      "sellerId": "18647082",
+      "thirdShopId": "1934146884461692629",
+      "shopName": "鸣天数码专营店",
+      "platform": 5,
+      "sellerId": "100549782",
       "ifAgentReceipt": true,
-      "platformName": "京东"
+      "platformName": "抖音"
     },
     {
-      "thirdShopId": "2472857762693960718",
-      "shopName": "联想音频专卖店",
-      "platform": 7,
-      "sellerId": "275027129",
+      "thirdShopId": "1934146884461692656",
+      "shopName": "龙跃数码专营",
+      "platform": 5,
+      "sellerId": "117381405",
       "ifAgentReceipt": true,
-      "platformName": "京东"
+      "platformName": "抖音"
     },
     {
-      "thirdShopId": "2472857762693960722",
-      "shopName": "联想数码影音专卖店",
-      "platform": 7,
-      "sellerId": "180200836",
+      "thirdShopId": "1934146884461692887",
+      "shopName": "万林数码专营店",
+      "platform": 5,
+      "sellerId": "17888069",
       "ifAgentReceipt": true,
-      "platformName": "京东"
+      "platformName": "抖音"
     },
     {
-      "thirdShopId": "2472857762693960726",
-      "shopName": "联想3C数码专卖店",
-      "platform": 7,
-      "sellerId": "22572692",
+      "thirdShopId": "2012643648117616688",
+      "shopName": "联想佳越专卖店",
+      "platform": 5,
+      "sellerId": "125190548",
       "ifAgentReceipt": true,
-      "platformName": "京东"
+      "platformName": "抖音"
     },
     {
-      "thirdShopId": "2472857762693960730",
-      "shopName": "联想影音专卖店",
-      "platform": 7,
-      "sellerId": "22532509",
+      "thirdShopId": "2023026654251566801",
+      "shopName": "飞利浦观兰专卖店",
+      "platform": 5,
+      "sellerId": "128487675",
       "ifAgentReceipt": true,
-      "platformName": "京东"
+      "platformName": "抖音"
     },
     {
-      "thirdShopId": "2605315182723927666",
-      "shopName": "魔声MONSTER影音旗舰店",
-      "platform": 7,
-      "sellerId": "12453031",
+      "thirdShopId": "2390412488158119146",
+      "shopName": "联想人杰专卖店",
+      "platform": 5,
+      "sellerId": "21047388",
       "ifAgentReceipt": true,
-      "platformName": "京东"
+      "platformName": "抖音"
     },
     {
-      "thirdShopId": "2605318189201723152",
-      "shopName": "联想3C音频专卖店",
-      "platform": 7,
-      "sellerId": "15975971",
+      "thirdShopId": "2390412488158119149",
+      "shopName": "联想争先专卖店",
+      "platform": 5,
+      "sellerId": "199917208",
       "ifAgentReceipt": true,
-      "platformName": "京东"
+      "platformName": "抖音"
     },
     {
-      "thirdShopId": "2643663099255718580",
-      "shopName": "联想（lenovo）办公旗舰店",
-      "platform": 7,
-      "sellerId": "177060231",
+      "thirdShopId": "2459294436127194430",
+      "shopName": "联想佳成",
+      "platform": 5,
+      "sellerId": "185713774",
       "ifAgentReceipt": true,
-      "platformName": "京东"
+      "platformName": "抖音"
+    },
+    {
+      "thirdShopId": "2459294436127194434",
+      "shopName": "联想淘乐坊专卖店",
+      "platform": 5,
+      "sellerId": "44090733",
+      "ifAgentReceipt": true,
+      "platformName": "抖音"
+    },
+    {
+      "thirdShopId": "2459294436127194438",
+      "shopName": "魔声MONSTER恒新专卖店",
+      "platform": 5,
+      "sellerId": "199855320",
+      "ifAgentReceipt": true,
+      "platformName": "抖音"
+    },
+    {
+      "thirdShopId": "2459294436127210665",
+      "shopName": "MONSTER魔声万星数码专卖店",
+      "platform": 5,
+      "sellerId": "170191105",
+      "ifAgentReceipt": true,
+      "platformName": "抖音"
+    },
+    {
+      "thirdShopId": "2605316058897522644",
+      "shopName": "联想聚顺专卖店",
+      "platform": 5,
+      "sellerId": "245513448",
+      "ifAgentReceipt": true,
+      "platformName": "抖音"
+    },
+    {
+      "thirdShopId": "2605316136207033553",
+      "shopName": "联想云听数码专卖店",
+      "platform": 5,
+      "sellerId": "26667982",
+      "ifAgentReceipt": true,
+      "platformName": "抖音"
+    },
+    {
+      "thirdShopId": "2605317055330059497",
+      "shopName": "联想云听影音专卖店",
+      "platform": 5,
+      "sellerId": "236993277",
+      "ifAgentReceipt": true,
+      "platformName": "抖音"
+    },
+    {
+      "thirdShopId": "2605317072510000690",
+      "shopName": "联想电子数码专卖店",
+      "platform": 5,
+      "sellerId": "202991488",
+      "ifAgentReceipt": true,
+      "platformName": "抖音"
+    },
+    {
+      "thirdShopId": "2605317072510000721",
+      "shopName": "HYUNDAI智听专卖店",
+      "platform": 5,
+      "sellerId": "44090701",
+      "ifAgentReceipt": true,
+      "platformName": "抖音"
+    },
+    {
+      "thirdShopId": "2605317098279869723",
+      "shopName": "福拓数码专营店",
+      "platform": 5,
+      "sellerId": "28924071",
+      "ifAgentReceipt": true,
+      "platformName": "抖音"
+    },
+    {
+      "thirdShopId": "2605317888553917541",
+      "shopName": "联想云听专卖店",
+      "platform": 5,
+      "sellerId": "238792420",
+      "ifAgentReceipt": true,
+      "platformName": "抖音"
+    },
+    {
+      "thirdShopId": "2605317888553951193",
+      "shopName": "联想玺悦专卖店",
+      "platform": 5,
+      "sellerId": "170442604",
+      "ifAgentReceipt": true,
+      "platformName": "抖音"
     }
   ]
 }

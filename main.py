@@ -382,6 +382,18 @@ def _atomic_write_text(path: Path, text: str):
                 pass
 
 
+# tanyu /summary 只支持三种统计口径, 全部忽略 startDate/endDate(已实测):
+#   natural_day   = 值=昨天, 环比=前天
+#   natural_week  = 值=本周, 环比=上周
+#   natural_month = 值=本月, 环比=上月
+# 店铺表现筛选因此按口径切换, 而非天数/自定义区间(那些对 summary 是空操作)。
+SUMMARY_STAT_TYPES = ("natural_day", "natural_week", "natural_month")
+
+
+def _valid_stat_type(stat_type):
+    return stat_type in SUMMARY_STAT_TYPES
+
+
 # ---------- 批量刷新 ----------
 def refresh_one(shop, start, end):
     """刷新单个店铺: summary + 3 个 section 明细, 返回汇总"""
@@ -1627,13 +1639,23 @@ def shops_cached_groups():
 
 
 @app.get("/api/overview")
-def overview(platform: int = 1, days: int = 7, start: str | None = None, end: str | None = None):
-    """平台维度汇总, 默认近7天; 支持自定义时间段(start/end, YYYY-MM-DD)"""
+def overview(platform: int = 1, stat_type: str = "natural_day", start: str | None = None, end: str | None = None):
+    """平台维度汇总, 按统计口径(自然日/自然周/自然月)。
+
+    tanyu summary 固定忽略 startDate/endDate: 三种口径分别返回 昨天vs前天 /
+    本周vs上周 / 本月vs上月。days 参数已废弃(曾误导为可调范围), 仅保留
+    start/end 透传给 tanyu(无实际作用, 但保接口兼容)。
+    """
     if platform not in PLATFORM_NAMES:
         raise HTTPException(400, f"不支持的平台: {platform}")
-    start, end = date_range(days, end) if not start else (start, end or (datetime.date.today() - datetime.timedelta(days=1)).isoformat())
+    if not _valid_stat_type(stat_type):
+        raise HTTPException(400, f"不支持的统计口径: {stat_type}")
+    today = datetime.date.today()
+    yest = (today - datetime.timedelta(days=1)).isoformat()
+    start = start or yest
+    end = end or yest
     payload = {
-        "statType": "natural_day",
+        "statType": stat_type,
         "startDate": start,
         "endDate": end,
         "platform": platform,
@@ -1648,6 +1670,7 @@ def overview(platform: int = 1, days: int = 7, start: str | None = None, end: st
     return {
         "startDate": start,
         "endDate": end,
+        "statType": stat_type,
         "platform": platform,
         "platformName": PLATFORM_NAMES.get(platform),
         "items": summary,
@@ -1655,22 +1678,36 @@ def overview(platform: int = 1, days: int = 7, start: str | None = None, end: st
 
 
 @app.get("/api/shop/{shop_id}")
-def shop_detail(shop_id: str, days: int = 7, start: str | None = None, end: str | None = None):
-    """单店汇总 + 明细(带本地缓存); 支持自定义时间段"""
+def shop_detail(shop_id: str, stat_type: str = "natural_day", start: str | None = None, end: str | None = None,
+                tables: int = 1):
+    """单店汇总 + 明细(带本地缓存); 按统计口径(自然日/自然周/自然月)。
+
+    tanyu summary 固定忽略 startDate/endDate(见 SUMMARY_STAT_TYPES 注释);
+    明细表(section/table)对日期敏感, natural_week/natural_month 时按传入的
+    周/月区间定位。days 参数已废弃, 保留 start/end 透传。
+    tables=0: 只返回 summary(店铺列表用, 跳过明细表请求, 省上游配额)。
+    """
     shops = {s["thirdShopId"]: s for s in load_shops()}
     shop = shops.get(shop_id)
     if not shop:
         raise HTTPException(404, "店铺不存在")
+    if not _valid_stat_type(stat_type):
+        raise HTTPException(400, f"不支持的统计口径: {stat_type}")
 
-    start, end = date_range(days, end) if not start else (start, end or (datetime.date.today() - datetime.timedelta(days=1)).isoformat())
+    today = datetime.date.today()
+    yest = (today - datetime.timedelta(days=1)).isoformat()
+    start = start or yest
+    end = end or yest
     # 平台/店铺自然日数据一天内基本不变, 缓存 6 小时; 页面加载/切平台走交互快通道, 不排队
-    cache = load_cache("summary", shop_id, max_age=21600)
+    # 缓存键按口径拆维度: natural_day 用 legacy 键(与 refresh_one 共用), 周/月用后缀键防串写
+    cache_key = shop_id if stat_type == "natural_day" else f"{shop_id}__{stat_type}"
+    cache = load_cache("summary", cache_key, max_age=21600)
     if cache and cache.get("data"):
         items = cache["data"]
         fetched_at = cache["fetched_at"]
     else:
         payload = {
-            "statType": "natural_day",
+            "statType": stat_type,
             "startDate": start,
             "endDate": end,
             "platform": shop.get("platform", 1),
@@ -1683,36 +1720,38 @@ def shop_detail(shop_id: str, days: int = 7, start: str | None = None, end: str 
             raise HTTPException(503, str(e))
         except RuntimeError as e:
             raise HTTPException(502, str(e))
-        save_cache("summary", shop_id, {"fetched_at": time.time(), "data": items})
+        save_cache("summary", cache_key, {"fetched_at": time.time(), "data": items})
         fetched_at = time.time()
 
-    tables = {}
-    for section in ["operations", "service", "ai"]:
-        c = load_cache("table", f"{shop_id}__{section}", max_age=21600)
-        if c and c.get("data"):
-            tables[section] = c["data"]
-        else:
-            payload = {
-                "statType": "natural_day",
-                "startDate": start,
-                "endDate": end,
-                "platform": shop.get("platform", 1),
-                "dimension": "shop",
-                "targetId": shop_id,
-                "section": section,
-            }
-            try:
-                tables[section] = fetch_section_table_interactive(payload)
-            except (BusyQueueError, RuntimeError):
-                tables[section] = {"dates": [], "rows": []}
+    tables_data = {}
+    if tables:
+        for section in ["operations", "service", "ai"]:
+            c = load_cache("table", f"{shop_id}__{stat_type}__{section}", max_age=21600)
+            if c and c.get("data"):
+                tables_data[section] = c["data"]
+            else:
+                payload = {
+                    "statType": stat_type,
+                    "startDate": start,
+                    "endDate": end,
+                    "platform": shop.get("platform", 1),
+                    "dimension": "shop",
+                    "targetId": shop_id,
+                    "section": section,
+                }
+                try:
+                    tables_data[section] = fetch_section_table_interactive(payload)
+                except (BusyQueueError, RuntimeError):
+                    tables_data[section] = {"dates": [], "rows": []}
 
     return {
         "shop": shop,
         "startDate": start,
         "endDate": end,
+        "statType": stat_type,
         "items": items,
         "fetchedAt": fetched_at,
-        "tables": tables,
+        "tables": tables_data,
     }
 
 
