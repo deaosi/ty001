@@ -402,6 +402,20 @@
   .staff-pool::-webkit-scrollbar-corner { background: transparent; }
   .staff-filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .staff-filter-hint { font-size: 11px; color: var(--text-dim); }
+  /* 客服池店铺筛选下拉 + 昵称同步按钮 */
+  .staff-shop-select {
+    font-size: 12px; padding: 3px 8px; border-radius: 6px; max-width: 240px;
+    color: var(--text); background: var(--bg-soft); border: 1px solid var(--border-soft);
+  }
+  .staff-sync-btn { font-size: 11.5px; padding: 3px 10px; }
+  .staff-sync-btn:disabled { opacity: .6; cursor: not-allowed; }
+  /* 顶部 Cookie 到期提示 */
+  .cookie-expiry {
+    font-size: 11px; color: var(--text-dim); white-space: nowrap;
+    padding: 3px 8px; border-radius: 6px; border: 1px solid transparent;
+  }
+  .cookie-expiry.warn { color: #fbbf24; border-color: rgba(251,191,36,.4); background: rgba(251,191,36,.08); }
+  .cookie-expiry.danger { color: #f87171; border-color: rgba(248,113,113,.5); background: rgba(248,113,113,.1); font-weight: 600; }
   .audit-sel-label { font-size: 12px; color: var(--blue); font-weight: 600; }
   .audit-sel-label b { font-variant-numeric: tabular-nums; }
   .audit-shop-check { width: 14px; height: 14px; accent-color: #22d3ee; cursor: pointer; }
@@ -518,6 +532,7 @@
       <option value="">全部平台</option>
     </select>
     <button class="btn btn-ghost" id="btnLogin" onclick="openLogin()">🔑 登录更新Cookie</button>
+    <span class="cookie-expiry" id="cookieExpiry" title="登录 Cookie 到期时间"></span>
     <button class="btn btn-primary" id="btnRefresh" onclick="startRefresh()">🔄 刷新数据</button>
   </div>
   <div class="progress-bar" id="progressBar"><div class="fill" id="progressFill"></div></div>
@@ -676,6 +691,11 @@
               <span class="sep">~</span>
               <input type="time" id="staffTodayEnd" class="time-input" title="今日抓取结束时刻">
               <button class="btn btn-primary" id="btnStaffToday" onclick="startStaffToday()">⚡ 抓取今日数据</button>
+              <span class="today-sep">┊</span>
+              <select id="staffShopFilter" class="staff-shop-select" onchange="onStaffShopFilterChange(this.value)" title="只显示该店铺的客服子账号">
+                <option value="">全部店铺</option>
+              </select>
+              <button class="btn btn-ghost staff-sync-btn" id="btnStaffNamesSync" onclick="syncStaffNames()">👥 同步客服昵称</button>
               <span class="staff-filter-hint" id="staffFilterHint"></span>
             </div>
             <div class="staff-pool table-wrap" style="border:1px solid var(--border-soft);border-radius:10px;padding:10px">
@@ -804,6 +824,10 @@ let auditSelMode = false;          // 是否处于"核算所选店铺"子集模�
 let staffFilter = { days: '7', start: '', end: '' };  // 客服账号池独立时间筛选
 let staffFilterCustom = false;   // 用户手动改过客服时间筛选(renderAudit 不再覆盖该视图)
 const shopCheckboxStates = {};     // thirdShopId -> checked, 跨渲染保留勾选
+let staffNames = {};            // serviceAccount -> {nick, shopName, ...} (GET /api/staff/names)
+let staffNamesFetchedAt = null; // 昵称映射抓取时间戳
+let staffShopFilter = '';       // 客服池店铺筛选(thirdShopId), '' = 全部店铺
+let staffSyncRunning = false;   // 客服昵称同步进行中
 
 const PLATFORM_NAMES = { 0: '淘宝', 1: '拼多多', 2: '有赞', 4: '快手', 5: '抖音', 7: '京东' };
 
@@ -869,6 +893,40 @@ async function loadPlatforms() {
     }
   } catch (e) {
     console.error('平台配置加载失败', e);
+  }
+}
+
+// ---------- Cookie 到期提示 ----------
+async function loadCookieExpiry() {
+  const el = document.getElementById('cookieExpiry');
+  if (!el) return;
+  try {
+    const d = await fetchJSON('/api/auth/cookie-expiry');
+    const exp = d.expires || {};
+    const daysLeft = d.daysLeft;
+    // 取最近到期的 cookie 名(仅展示最紧的一个)
+    let nearest = null, nearestDay = null;
+    for (const name in exp) {
+      const day = exp[name];
+      if (!nearestDay || day < nearestDay) { nearestDay = day; nearest = name; }
+    }
+    if (!nearestDay) {
+      el.textContent = '';
+      el.className = 'cookie-expiry';
+      return;
+    }
+    const nameMap = { 'tanyu-agent-account': 'agent', 'tanyu-group-account': 'group', 'tanyu-account-id': 'account', 'tanyu-group-id': 'group-id' };
+    const label = nameMap[nearest] || nearest;
+    let txt = `Cookie到期: ${nearestDay}`;
+    if (daysLeft !== null && daysLeft !== undefined) txt += ` 剩${Math.max(daysLeft, 0)}天`;
+    el.textContent = txt;
+    el.title = `最近到期: ${nearest} (${nearestDay})`;
+    // 剩≤3天红, ≤7天黄, 否则普通
+    if (daysLeft !== null && daysLeft <= 3) el.className = 'cookie-expiry danger';
+    else if (daysLeft !== null && daysLeft <= 7) el.className = 'cookie-expiry warn';
+    else el.className = 'cookie-expiry';
+  } catch (e) {
+    console.error('Cookie 到期时间加载失败', e);
   }
 }
 
@@ -1511,7 +1569,9 @@ function auditQueryParams() {
 // 核算平台筛选变化: 只加载缓存, 不自动触发核算
 function onAuditPlatformChange() {
   auditPlatform = document.getElementById('auditPlatform').value;
+  staffShopFilter = '';  // 平台切换后旧店铺可能不在该平台, 重置店铺筛选
   clearAuditSel();
+  renderStaffShopFilter();  // 客服池店铺下拉跟随平台刷新
   reloadCachedAudit();
   loadStaffData();
 }
@@ -1645,16 +1705,99 @@ async function loadStaffData() {
     ? `${document.getElementById('staffStart').value} ~ ${document.getElementById('staffEnd').value}`
     : (staffFilter.days === '1' ? '今天' : `近${staffFilter.days}天`);
   const scopeLabel = (auditPlatform ? PLATFORM_NAMES[auditPlatform] : '全部平台')
-    + (auditSelMode && auditSelShops.length ? ` · 所选${auditSelShops.length}店` : '');
+    + (auditSelMode && auditSelShops.length ? ` · 所选${auditSelShops.length}店` : '')
+    + (staffShopFilter ? ` · 店铺筛选` : '');
   if (hintEl) hintEl.textContent = `期间: ${periodLabel}${scopeLabel ? ' · ' + scopeLabel : ''}`;
   gridEl.innerHTML = `<span class="empty">加载中…</span>`;
   try {
-    const q = `${staffQueryParams()}${auditPlatform ? `&platform=${auditPlatform}` : ''}${auditSelMode && auditSelShops.length ? `&shop_ids=${auditSelShops.join(',')}` : ''}`;
+    let q = `${staffQueryParams()}${auditPlatform ? `&platform=${auditPlatform}` : ''}${auditSelMode && auditSelShops.length ? `&shop_ids=${auditSelShops.join(',')}` : ''}`;
+    if (staffShopFilter) q += `&shop_ids=${staffShopFilter}`;
     const d = await fetchJSON(`/api/trace/staff?${q}`);
     renderStaffGrid(d.byStaff || []);
   } catch (e) {
     gridEl.innerHTML = `<span class="empty">客服数据加载失败: ${e.message}</span>`;
   }
+}
+
+// ---------- 客服昵称同步 + 店铺筛选 ----------
+async function loadStaffNames() {
+  try {
+    const d = await fetchJSON('/api/staff/names');
+    staffNames = d.map || {};
+    staffNamesFetchedAt = d.fetched_at || null;
+  } catch (e) {
+    console.error('客服昵称加载失败', e);
+  }
+}
+
+// 客服池店铺筛选下拉: 选项 = 全部店铺 + 跨集团全量店铺(与客服池查询作用域一致)
+// 数据源 /api/staff/shops(SQLite 跨集团表), 不依赖当前激活集团; 按平台筛选
+async function renderStaffShopFilter() {
+  const sel = document.getElementById('staffShopFilter');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">加载中…</option>';
+  try {
+    const q = auditPlatform ? `?platform=${auditPlatform}` : '';
+    const d = await fetchJSON(`/api/staff/shops${q}`);
+    const scope = d.shops || [];
+    sel.innerHTML = `<option value="">全部店铺 (${scope.length}家)</option>` + scope.map(s =>
+      `<option value="${s.thirdShopId}" ${s.platformName ? `data-pf="${s.platformName}"` : ''}>${s.shopName || s.thirdShopId}</option>`
+    ).join('');
+    if (prev && scope.some(s => s.thirdShopId === prev)) sel.value = prev;
+  } catch (e) {
+    sel.innerHTML = '<option value="">全部店铺</option>';
+    console.error('客服池店铺列表加载失败', e);
+  }
+}
+
+function onStaffShopFilterChange(v) {
+  staffShopFilter = v || '';
+  loadStaffData();
+}
+
+// 手动同步客服昵称(逐集团逐店抓 tanyu 后台, 约几分钟)
+async function syncStaffNames() {
+  if (staffSyncRunning) {
+    toast('客服昵称同步进行中, 请稍候…');
+    return;
+  }
+  const btn = document.getElementById('btnStaffNamesSync');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ 同步中…'; }
+  staffSyncRunning = true;
+  toast('客服昵称同步已启动, 逐集团抓取中…');
+  try {
+    const r = await fetchJSON('/api/staff/names/sync', { method: 'POST' });
+    if (r && r.ok === false) toast(r.message || '同步启动失败');
+  } catch (e) {
+    toast('同步启动失败: ' + e.message);
+    staffSyncRunning = false;
+    if (btn) { btn.disabled = false; btn.textContent = '👥 同步客服昵称'; }
+    return;
+  }
+  // 轮询同步状态, 完成后刷新昵称映射与客服池
+  const timer = setInterval(async () => {
+    try {
+      const t = await fetchJSON('/api/staff/names/status');
+      if (!t.running) {
+        clearInterval(timer);
+        staffSyncRunning = false;
+        if (btn) { btn.disabled = false; btn.textContent = '👥 同步客服昵称'; }
+        if (t.error) {
+          toast('客服昵称同步失败: ' + t.error);
+          checkRisk();
+        } else {
+          await loadStaffNames();
+          loadStaffData();
+          toast('客服昵称同步完成 ✅');
+        }
+      }
+    } catch (e) {
+      clearInterval(timer);
+      staffSyncRunning = false;
+      if (btn) { btn.disabled = false; btn.textContent = '👥 同步客服昵称'; }
+    }
+  }, 3000);
 }
 
 // ---------- 抓取今日数据(核算板块 / 人工客服板块共用) ----------
@@ -2015,7 +2158,9 @@ function renderAudit(result) {
   }
 }
 
-// 渲染客服账号池(真实名称大字 + 账号小字; 无名称时显示账号)
+// 渲染客服账号池(真实昵称大字 + 子账号小字; 无昵称时显示账号)
+// 昵称来源优先级: 1) staff_names 映射的 nick(拼多多真实名)  2) sellerAccount 冒号后(抖音/京东)
+// 小字 = 店铺名 + 子账号完整串(用户要求的「联想佳佑专卖店 · cs_476491162:186326920」样式)
 function renderStaffGrid(staff) {
   const gridEl = document.getElementById('auditStaffGrid');
   document.getElementById('staffCount').textContent = (staff && staff.length) ? `(${staff.length}人)` : '';
@@ -2027,9 +2172,17 @@ function renderStaffGrid(staff) {
   const avatarColors = ['#22d3ee', '#a78bfa', '#fbbf24', '#f472b6', '#34d399', '#f87171', '#60a5fa', '#fb923c'];
   gridEl.innerHTML = sorted.map((x, i) => {
     const av = avatarColors[i % avatarColors.length];
-    const displayName = x.name || x.accountShort || x.account || '?';
-    const subName = x.name ? (x.accountShort || x.account) : '';
-    const initial = (x.name || x.account || '?').charAt(0).toUpperCase();
+    // 昵称: 映射 nick 优先(拼多多), 兜底 sellerAccount 拆出的 name(抖音/京东), 再兜底账号
+    const sn = staffNames[x.account];
+    const nick = (sn && sn.nick) || x.name || '';
+    const displayName = nick || x.accountShort || x.account || '?';
+    // 子账号小字: 店铺名(映射 shopName/展示名) + 完整账号串
+    const shopLabel = (sn && sn.shopName) || '';
+    const subParts = [];
+    if (shopLabel) subParts.push(shopLabel);
+    if (x.account && x.account.indexOf(':') >= 0) subParts.push(x.account);
+    const subName = subParts.length ? subParts.join(' · ') : (x.accountShort || '');
+    const initial = (nick || x.account || '?').charAt(0).toUpperCase();
     const totalStr = (x.total || 0).toLocaleString();
     return `<div class="staff-chip" onclick="toggleStaffChip(this)" title="点击展开占比明细">
       <div class="staff-chip-top">
@@ -2223,6 +2376,8 @@ function pollLogin() {
           closeLogin();
           toast('Cookie 已更新 ✅ 请刷新数据');
           loadGroups();
+          loadCookieExpiry();  // 新凭证的到期时间已捕获, 刷新顶部提示
+          loadStaffNames().then(() => { renderStaffGrid([]); loadStaffData(); });
           checkRisk();  // 新凭证已生效, 风控横幅应立即清除
         }, 2000);
       } else if (t.phase === 'failed') {
@@ -2251,9 +2406,12 @@ function pollLogin() {
   document.getElementById('staffTodayEnd').value = nowHm;
   loadOverview();
   checkRisk();
+  loadCookieExpiry();  // 顶部登录按钮旁的 Cookie 到期提示
   // 先加载最近一次核算结果(只读缓存, 快路径: 不依赖店铺/集团, 秒开; 不触发新核算)
   await reloadCachedAudit();
   // 客服账号池默认独立时间筛选(近7天)
+  await loadStaffNames();  // 昵称映射(供客服池渲染真实昵称)
+  renderStaffShopFilter();  // 客服池店铺筛选下拉(跨集团全量)
   loadStaffData();
   // 店铺列表异步加载, 不阻塞核算板块渲染
   loadShops();

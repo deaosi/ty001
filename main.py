@@ -579,6 +579,88 @@ def get_group_list():
     return {"groups": groups, "current": cur}
 
 
+def _parse_cookie_expiry_from_header(set_cookie_str, now_ts):
+    """从单条 Set-Cookie 头串解析 cookie 到期日
+
+    格式形如: 'tanyu-agent-account=xxx; Max-Age=2592000; Expires=Sun, 6 Sep 2026 11:27:42 +0800; ...'
+    优先取 Max-Age(相对当前时刻), 回退 Expires(RFC1123)。返回 (cookie名, 'YYYY-MM-DD') 或 None。
+    """
+    if not set_cookie_str:
+        return None
+    parts = set_cookie_str.split(";")
+    if not parts:
+        return None
+    first = parts[0].strip()
+    if "=" not in first:
+        return None
+    name = first.split("=", 1)[0].strip()
+    if not name.startswith("tanyu-"):
+        return None
+    max_age = None
+    expires = None
+    for p in parts[1:]:
+        p = p.strip()
+        if p.lower().startswith("max-age="):
+            try:
+                max_age = float(p.split("=", 1)[1].strip())
+            except Exception:
+                pass
+        elif p.lower().startswith("expires="):
+            expires = p.split("=", 1)[1].strip()
+    when = None
+    if max_age is not None:
+        when = now_ts + max_age
+    elif expires:
+        # RFC1123 / 变体(含时区偏移, 如 'Sun, 6 Sep 2026 11:27:42 +0800')
+        try:
+            import email.utils
+            parsed = email.utils.parsedate_to_datetime(expires)
+            when = parsed.timestamp()
+        except Exception:
+            try:
+                from datetime import datetime
+                parsed = datetime.strptime(expires, "%a, %d %b %Y %H:%M:%S GMT")
+                when = parsed.timestamp()
+            except Exception:
+                when = None
+    if when is None:
+        return None
+    import datetime as _dt
+    return name, _dt.date.fromtimestamp(when).isoformat()
+
+
+def _capture_cookie_expiry(resp):
+    """从 Set-Cookie 响应头解析各 cookie 到期日, 写入 config.cookie_expires(仅日期, 无 cookie 值)
+
+    switch-group-by-wx 对 tanyu-agent-account 带 Max-Age=2592000(30天), tanyu-account-id/
+    tanyu-group-id 是 SESSION(无 Max-Age/Expires)不记录。requests 的 cookie jar 会丢弃
+    Max-Age/Expires 属性, 故直接解析原始 Set-Cookie 响应头。
+    只存 'YYYY-MM-DD' 日期字符串, 绝不存 cookie 值/凭据。
+    """
+    try:
+        cfg = load_config()
+        expires_map = dict(cfg.get("cookie_expires") or {})
+        changed = False
+        now = time.time()
+        # 可能有多条 Set-Cookie 头: 用底层 getlist 逐个解析
+        try:
+            headers_list = resp.raw.headers.getlist("Set-Cookie")
+        except Exception:
+            headers_list = [resp.headers.get("Set-Cookie", "")] if resp.headers.get("Set-Cookie") else []
+        for sc in headers_list:
+            parsed = _parse_cookie_expiry_from_header(sc, now)
+            if parsed:
+                name, day = parsed
+                if expires_map.get(name) != day:
+                    expires_map[name] = day
+                    changed = True
+        if changed:
+            cfg["cookie_expires"] = expires_map
+            save_config(cfg)
+    except Exception as e:
+        log_line("auth", f"cookie 到期时间解析失败(不影响使用): {e}")
+
+
 def switch_group(group_id):
     """切换到指定集团: 调 switch-group-by-wx 捕获 Set-Cookie 更新 config"""
     cfg = load_config()
@@ -605,6 +687,8 @@ def switch_group(group_id):
         if name.startswith("tanyu-"):
             cfg["cookies"][name] = value
     save_config(cfg)
+    # 记录各 cookie 到期日(仅日期, 无 cookie 值)
+    _capture_cookie_expiry(resp)
     # 同步店铺列表
     sync_shops_from_tanyu()
     log_line("group", f"已切换集团「{g.get('groupName')}」")
@@ -683,6 +767,213 @@ def sync_shops_from_tanyu():
         return {"count": len(shops), "platforms": {p: sum(1 for s in shops if s["platform"] == p) for p in set(s["platform"] for s in shops)}}
     except Exception as e:
         raise RuntimeError(f"同步店铺失败: {e}")
+
+
+# ---------- 客服昵称同步 ----------
+def _sync_staff_names_worker(start_day, end_day):
+    """后台线程: 逐集团逐店抓 customer-service/table, 提取 serviceAccount → 昵称/店铺名
+
+    时序与 refresh_all_groups_async 相同: 逐集团 switch_group → 该集团店铺 →
+    逐店 POST customer-service/table(section=service) → 下一集团。结束后恢复进入前的
+    激活集团。风控/登录失效立即整体停止。结果写 data/staff_names.json(无 cookie 值)。
+    """
+    cfg = load_config()
+    platform_order = cfg.get("prefetch_platforms") or [1, 5, 7]
+    plat_rank = {p: i for i, p in enumerate(platform_order)}
+    ordered = sorted(
+        [g for g in cfg.get("groups", []) if g.get("groupId") and g.get("accountId")],
+        key=lambda g: plat_rank.get(g.get("platform"), 99),
+    )
+    if not ordered:
+        log_line("staff", "⚠️ config.groups 为空, 无可同步的客服昵称")
+        _staff_sync_state["error"] = "无可用集团"
+        _staff_sync_state["running"] = False
+        return
+    orig_gid = cfg.get("cookies", {}).get("tanyu-group-id")
+    name_map = {}
+    total_plan = 0
+    group_plan = []
+    try:
+        for g in ordered:
+            if _risk_state.get("triggered"):
+                log_line("staff", "⛔ 风控/登录失效, 客服昵称同步整体停止")
+                _staff_sync_state["error"] = _risk_state.get("reason") or "风控/登录失效"
+                return
+            try:
+                switch_group(g["groupId"])
+            except RiskTriggered:
+                log_line("staff", "⛔ 风控触发于切换集团, 整体停止")
+                _staff_sync_state["error"] = _risk_state.get("reason") or "风控/登录失效"
+                return
+            except Exception as e:
+                log_line("staff", f"⚠️ 集团「{g.get('groupName')}」切换失败, 跳过: {e}")
+                continue
+            # 该集团店铺(SQLite 表含全部集团店铺, 按集团平台过滤, 复用 _today_target_shops 修复逻辑)
+            try:
+                shops = [s for s in trace_store.get_shops() if s.get("platform") == g.get("platform")]
+            except Exception:
+                shops = []
+            if not shops:
+                log_line("staff", f"集团「{g.get('groupName')}」无抓取平台店铺, 跳过")
+                continue
+            group_plan.append((g, shops))
+            total_plan += len(shops)
+        if not group_plan:
+            log_line("staff", "⚠️ 无任何集团店铺可同步")
+            _staff_sync_state["error"] = "无店铺可同步"
+            return
+        _staff_sync_state["progress"] = {"done": 0, "total": total_plan, "current": ""}
+        done = 0
+        for g, shops in group_plan:
+            if _risk_state.get("triggered"):
+                log_line("staff", "⛔ 风控/登录失效, 同步停止")
+                _staff_sync_state["error"] = _risk_state.get("reason") or "风控/登录失效"
+                return
+            for i, shop in enumerate(shops, 1):
+                if _risk_state.get("triggered"):
+                    log_line("staff", "⛔ 风控/登录失效, 同步停止")
+                    _staff_sync_state["error"] = _risk_state.get("reason") or "风控/登录失效"
+                    return
+                _staff_sync_state["progress"]["current"] = (
+                    f"集团[{g.get('groupName')}] {shop.get('platformName', '')} · "
+                    f"{shop.get('shopName', '')} ({done + 1}/{total_plan})")
+                if done > 0 or i > 1:
+                    sleep_trace_shop()
+                try:
+                    rows = _fetch_staff_table_rows(shop, start_day, end_day)
+                    plat = shop.get("platform")
+                    for r in rows:
+                        acct = r.get("serviceAccount")
+                        # 跳过汇总行与无冒号的异常条目(客服账号必有 ':' 分隔,
+                        # 无冒号的 'cs_<sellerId>' 是接口返回的非客服行, 永不匹配 byStaff)
+                        if not acct or acct == "__SUMMARY__" or ":" not in acct:
+                            continue
+                        sv = r.get("serviceName") or ""
+                        nick, shop_nm = _parse_staff_service_name(sv, plat)
+                        name_map[acct] = {
+                            "nick": nick,
+                            "shopName": shop_nm,
+                            "serviceName": sv,
+                            "platform": plat,
+                        }
+                except RiskTriggered as e:
+                    log_line("staff", f"⛔ 风控触发于 {shop.get('shopName', '')}: {e}")
+                    _staff_sync_state["error"] = f"风控/登录失效, 已停止: {e}"
+                    return
+                except Exception as e:
+                    log_line("staff", f"{shop.get('shopName', '')} 客服昵称抓取失败: {e}")
+                done += 1
+                _staff_sync_state["progress"]["done"] = done
+        # 落盘(带抓取时间戳; 绝不写 cookie)
+        _atomic_write_text(STAFF_NAMES_FILE, json.dumps(
+            {"fetched_at": time.time(), "map": name_map}, ensure_ascii=False, indent=2))
+        _staff_sync_state["last_run"] = time.time()
+        log_line("staff", f"客服昵称同步完成: {len(name_map)} 个客服账号")
+    except Exception as e:
+        _staff_sync_state["error"] = str(e)
+    finally:
+        _staff_sync_state["running"] = False
+        # 恢复原激活集团(风控时不强行切换)
+        if orig_gid and not _risk_state.get("triggered"):
+            try:
+                if orig_gid != load_config().get("cookies", {}).get("tanyu-group-id"):
+                    switch_group(orig_gid)
+                    log_line("staff", f"已恢复原激活集团 {orig_gid}")
+            except Exception as e:
+                log_line("staff", f"⚠️ 恢复原集团失败: {e}")
+
+
+def _fetch_staff_table_rows(shop, start_day, end_day):
+    """拉单个店铺的客服表(section=service, 实际客服数据; operations 全 0 无数据)"""
+    payload = {
+        "startDate": start_day,
+        "endDate": end_day,
+        "platform": shop.get("platform"),
+        "shopId": shop["thirdShopId"],
+        "section": "service",
+        "metricKeys": ["service_consult_cnt"],
+    }
+    data = post_api("/customer-service/table", payload)
+    rows = (data or {}).get("rows") or []
+    return rows
+
+
+def _parse_staff_service_name(sv, platform):
+    """从 serviceName 拆出客服昵称与店铺展示名
+
+    拼多多(1): '易方配件专营店:哆啦A梦' -> (哆啦A梦, 易方配件专营店)
+    抖音(5)/京东(7): '小罗' -> (小罗, '')  (serviceName 仅昵称)
+    """
+    if not sv:
+        return "", ""
+    if ":" in sv:
+        a, b = sv.split(":", 1)
+        if not b.strip().isdigit() and b.strip():
+            # 冒号前是店铺展示名(拼多多), 冒号后是昵称
+            return b.strip(), a.strip()
+    return sv.strip(), ""
+
+
+def sync_staff_names_from_tanyu():
+    """触发客服昵称同步(异步后台线程); 互斥检查: 核算/刷新/今日进行中不可同时跑"""
+    if _staff_sync_state.get("running"):
+        raise RuntimeError("客服昵称同步任务进行中")
+    try:
+        _assert_no_running_task()
+    except RuntimeError as e:
+        raise RuntimeError(f"其他任务进行中, 请稍后再试: {e}")
+    _staff_sync_state["running"] = True
+    _staff_sync_state["error"] = None
+    # 用"昨天~昨天"(客服表按天, 一天足矣; 该接口反映当前客服成员)
+    end_day = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+    threading.Thread(target=_sync_staff_names_worker, args=(end_day, end_day), daemon=True).start()
+    return {"ok": True, "message": "客服昵称同步已启动"}
+
+
+@app.get("/api/staff/names")
+def staff_names():
+    """客服昵称映射: {fetched_at, map, count}(供客服池渲染昵称/店铺名)"""
+    data = _load_staff_names()
+    if not data:
+        return {"fetched_at": None, "map": {}, "count": 0}
+    name_map = data.get("map") or {}
+    return {"fetched_at": data.get("fetched_at"), "map": name_map, "count": len(name_map)}
+
+
+@app.get("/api/staff/shops")
+def staff_shops(platform: int | None = None):
+    """跨集团全量店铺(客服池店铺筛选下拉的数据源, 不依赖当前激活集团)
+
+    与 /api/shops 不同: /api/shops 读 shops.json(当前激活集团), 客服池查询走
+    SQLite 跨集团表(trace_store.get_shops), 下拉必须与该作用域一致。
+    """
+    try:
+        shops = trace_store.get_shops()
+    except Exception:
+        shops = []
+    for s in shops:
+        s["platformName"] = PLATFORM_NAMES.get(s.get("platform"), str(s.get("platform")))
+    if platform is not None:
+        shops = [s for s in shops if s.get("platform") == platform]
+    shops.sort(key=lambda s: (s.get("platformName") or "", s.get("shopName") or ""))
+    return {"shops": shops}
+
+
+@app.post("/api/staff/names/sync")
+def staff_names_sync():
+    """手动触发客服昵称同步(异步)"""
+    try:
+        r = sync_staff_names_from_tanyu()
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+    return r
+
+
+@app.get("/api/staff/names/status")
+def staff_names_status():
+    """客服昵称同步任务状态"""
+    with _lock:
+        return dict(_staff_sync_state)
 
 
 # ---------- 风控保护 ----------
@@ -831,36 +1122,82 @@ def fetch_trace_page(shop_id, begin, end, page_index, page_size=TRACE_PAGE_SIZE)
     return d.get("total") or 0, d.get("results") or []
 
 
+# 客服昵称同步(人工客服账号池: 真实昵称 + 子账号)
+# 数据源: customer-service/table 经营罗盘(实测确认)
+#   拼多多(1): serviceAccount='cs_340410493:154573412' serviceName='易方配件专营店:哆啦A梦'(店铺名:昵称)
+#   抖音(5)/京东(7): serviceAccount='48653908:小罗' serviceName='小罗'(仅昵称)
+# 每店含 '__SUMMARY__' 汇总行(跳过); section 用 'service'(operations 全 0 无数据)
+CUSTOMER_SERVICE_TABLE_API = API_BASE + "/customer-service/table"
+STAFF_NAMES_FILE = DATA_DIR / "staff_names.json"
+STAFF_NAMES_TTL = 6 * 3600  # 同步结果有效期(小时级刷新即可, 客服昵称低频变化)
+
+# 客服昵称同步状态(异步任务, 独立于核算/刷新/今日)
+_staff_sync_state = {
+    "running": False,
+    "progress": {"done": 0, "total": 0, "current": ""},
+    "last_run": None,
+    "error": None,
+}
+
+
+def _load_staff_names():
+    """读本地客服昵称映射(不读 config cookie, 无敏感信息)"""
+    if not STAFF_NAMES_FILE.exists():
+        return None
+    try:
+        return json.loads(STAFF_NAMES_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
 def _split_staff(acct):
     """拆解 sellerAccount 为账号与真实名称: '48653908:柯柯' -> 账号=48653908 名称=柯柯
 
     抖音(5)/京东(7) 冒号后是真实客服名; 拼多多(1) 'cs_340410493:154573412'
     冒号后是数字ID(接口不返回真实名), 此时无 name、账号显示完整串。
+    拼多多账号形如 cs_<卖家ID>:<客服数字ID>, accountShort=cs_340410493, accountId=154573412。
     客服维度主键始终是完整 sellerAccount(同一个人名可对应多个账号)。
     """
     if not acct:
-        return {"account": acct or "", "name": None, "accountShort": acct or ""}
+        return {"account": acct or "", "name": None, "accountShort": acct or "", "accountId": ""}
     if ":" in acct:
         a, b = acct.split(":", 1)
         if b.strip().isdigit():
-            return {"account": acct, "name": None, "accountShort": a}
-        return {"account": acct, "name": b.strip(), "accountShort": a}
-    return {"account": acct, "name": None, "accountShort": acct}
+            return {"account": acct, "name": None, "accountShort": a, "accountId": b.strip()}
+        return {"account": acct, "name": b.strip(), "accountShort": a, "accountId": ""}
+    return {"account": acct, "name": None, "accountShort": acct, "accountId": ""}
 
 
 def _staff_list_from_agg(by_staff):
-    """把 {account: {total, adopted}} 聚合成 byStaff 列表(含拆出的真实名称), 按 total 降序"""
+    """把 {account: {total, adopted}} 聚合成 byStaff 列表(含拆出的真实名称), 按 total 降序
+
+    用本地客服昵称映射(staff_names.json)给拼多多客服补真实昵称/店铺名:
+    拼多多 sellerAccount 是数字ID('cs_340410493:154573412'), 接口不返回名字,
+    昵称来自 customer-service/table 的 serviceName('店铺名:客服昵称')。字段:
+      nick     - 真实昵称(拼多多从映射取, 无映射则 None)
+      shopName - 该客服所在店铺的展示名(拼多多从 serviceName 前缀取)
+    抖音/京东 sellerAccount 已含昵称(_split_staff 的 name), 不受影响。
+    """
+    staff_names = _load_staff_names()
+    name_map = (staff_names or {}).get("map") or {}
     out = []
     for acct, v in by_staff.items():
         meta = _split_staff(acct)
-        out.append({
+        rec = {
             "account": meta["account"],
             "name": meta["name"],
             "accountShort": meta["accountShort"],
             "total": v["total"],
             "adopted": v["adopted"],
             "rate": round(v["adopted"] / v["total"] * 100, 2) if v["total"] else 0,
-        })
+        }
+        # 拼接多多真实昵称/店铺名(映射键是完整 serviceAccount)
+        n = name_map.get(acct)
+        if n:
+            rec["nick"] = n.get("nick") or rec["name"]
+            if n.get("shopName"):
+                rec["shopName"] = n["shopName"]
+        out.append(rec)
     return sorted(out, key=lambda x: -x["total"])
 
 
@@ -2163,6 +2500,24 @@ def update_cookies(body: CookieUpdate):
     return {"ok": True}
 
 
+@app.get("/api/auth/cookie-expiry")
+def auth_cookie_expiry():
+    """各登录 cookie 的到期日 + 最近到期剩余天数(仅日期, 无 cookie 值)"""
+    cfg = load_config()
+    expires_map = dict(cfg.get("cookie_expires") or {})
+    today = datetime.date.today()
+    days_left = None
+    for day in expires_map.values():
+        try:
+            d = datetime.date.fromisoformat(day)
+        except Exception:
+            continue
+        left = (d - today).days
+        if days_left is None or left < days_left:
+            days_left = left
+    return {"expires": expires_map, "daysLeft": days_left}
+
+
 # ---------- 静态页面 ----------
 # ---------- 浏览器登录获取 Cookie ----------
 _login_state = {
@@ -2212,6 +2567,16 @@ def _login_worker():
                 if len(found) >= 3:  # 至少3个关键 cookie
                     cfg = load_config()
                     cfg["cookies"].update(found)
+                    # 记录各 cookie 到期日(playwright expires 是 epoch 秒; -1=SESSION 不记录)
+                    try:
+                        expires_map = dict(cfg.get("cookie_expires") or {})
+                        for c in cks:
+                            if c["name"] in LOGIN_COOKIE_NAMES and c.get("expires", -1) not in (-1, None):
+                                day = datetime.datetime.fromtimestamp(c["expires"]).strftime("%Y-%m-%d")
+                                expires_map[c["name"]] = day
+                        cfg["cookie_expires"] = expires_map
+                    except Exception:
+                        pass
                     # 尝试读取扫码登录时写入 localStorage 的集团列表
                     try:
                         group_list = page.evaluate("() => localStorage.getItem('groupList')")
