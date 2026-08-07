@@ -425,6 +425,35 @@ def _valid_date_iso(value):
         return None
 
 
+def _valid_datetime_iso(value):
+    """校验 YYYY-MM-DD 或 YYYY-MM-DDTHH:MM(秒级核算用), 合法返回原串, 非法返回 None"""
+    try:
+        import datetime as _dt
+        _dt.datetime.fromisoformat(value)
+        return value
+    except (TypeError, ValueError):
+        return None
+
+
+def _split_bounds(start, end):
+    """把核算区间归一化成 (start_ms, end_ms, start_day, end_day, has_time)
+
+    start/end 接受 YYYY-MM-DD(纯日期) 或 YYYY-MM-DDTHH:MM(带时间, datetime-local 值)。
+    end_ms 语义(唯一事实源, 下游禁止自己 +1day):
+      纯日期 = 当天 23:59:59.999; 带时间 = 该时刻 +999ms。
+    """
+    import datetime as dt
+    s = dt.datetime.fromisoformat(start)
+    e = dt.datetime.fromisoformat(end)
+    has_time = ("T" in start) or ("T" in end)
+    start_ms = int(s.timestamp() * 1000)
+    if has_time:
+        end_ms = int(e.timestamp() * 1000) + 999
+    else:
+        end_ms = int((e + dt.timedelta(days=1)).timestamp() * 1000) - 1
+    return start_ms, end_ms, s.date().isoformat(), e.date().isoformat(), has_time
+
+
 def _stat_type_range(stat_type, ref=None):
     """统计口径对应的主值区间(与前端 statTypeRange 语义一致)。
 
@@ -1506,8 +1535,9 @@ def days_all_cached(shop_id, start, end):
     cache = _load_trace_days_cache(shop_id)
     if not cache or not cache.get("days"):
         return False
-    start_d = datetime.date.fromisoformat(start)
-    end_d = datetime.date.fromisoformat(end)
+    _sms, _ems, sday, eday, _ = _split_bounds(start, end)
+    start_d = datetime.date.fromisoformat(sday)
+    end_d = datetime.date.fromisoformat(eday)
     need = {(start_d + datetime.timedelta(days=i)).isoformat()
             for i in range((end_d - start_d).days + 1)}
     return all(_cached_days_usable(cache, ds) for ds in need)
@@ -1530,7 +1560,7 @@ def _upsert_shop_day_db(shop_id, day_str, msgs):
     trace_store.upsert_shop_day(shop_id, platform, day_str, msgs)
 
 
-def stat_trace_daily(shop_id, start, end, force=False, force_days=None):
+def stat_trace_daily(shop_id, start, end, force=False, force_days=None, trim_ms=None):
     """按天遍历消息轨迹, 逐日缓存, 支持增量更新
 
     - 已缓存的天直接复用(零请求)
@@ -1538,14 +1568,18 @@ def stat_trace_daily(shop_id, start, end, force=False, force_days=None):
     - force=True 时忽略缓存重新抓取全部天(用于"重新抓取"按钮)
     - force_days: 这些天即使缓存有效也强制重抓(如"昨天"防采纳口径漂移:
       tanyu 会对已抓消息回溯更新 sendType, 不重抓则昨天采纳数停在预抓时刻)
+    - trim_ms=(start_ms, end_ms): 秒级核算区间, 聚合前按消息 msg_time(毫秒)过滤
+      (trace_daily 只有整天聚合, 秒级边界必须落到原始消息时间戳)
     - 返回聚合 stat(messages/daily 齐全, 供折线图/核算/原始消息)
     """
     force_days = force_days or set()
-    # 按天拆分区间
-    start_d = datetime.date.fromisoformat(start)
-    end_d = datetime.date.fromisoformat(end)
+    # 按天拆分区间(接受纯日期或带时间的 start/end, 一律取 day 边界)
+    _sms, _ems, start_day, end_day, _ht = _split_bounds(start, end)
+    start_d = datetime.date.fromisoformat(start_day)
+    end_d = datetime.date.fromisoformat(end_day)
     days = [start_d + datetime.timedelta(days=i) for i in range((end_d - start_d).days + 1)]
     day_strs = [d.isoformat() for d in days]
+    trim_lo, trim_hi = (trim_ms if trim_ms else (None, None))
 
     cache = {} if force else (_load_trace_days_cache(shop_id) or {})
     cached_days = cache.get("days") or {}  # {day_str: [messages...]}
@@ -1583,6 +1617,13 @@ def stat_trace_daily(shop_id, start, end, force=False, force_days=None):
             "days": cached_days,
         })
         log_line("trace", f"{shop_id} {ds} 抓取完成 {len(res)} 条")
+
+    # 秒级区间: 聚合前按消息毫秒时间戳过滤(整天的首尾消息在窗口外被裁掉)
+    if trim_lo is not None:
+        total_results = [
+            r for r in total_results
+            if trim_lo <= (r.get("time") or r.get("createTime") or r.get("createAt") or 0) <= trim_hi
+        ]
 
     # 聚合成与 stat_trace 相同的结构
     counts = {1: 0, 2: 0, 3: 0, None: 0}
@@ -2016,12 +2057,17 @@ def trace_shop(shop_id: str, days: int = 7, force: int = 0, start: str | None = 
     if not shop:
         raise HTTPException(404, "店铺不存在")
     start, end = date_range(days, end) if not start else (start, end or (datetime.date.today() - datetime.timedelta(days=1)).isoformat())
+    if start and not _valid_datetime_iso(start):
+        raise HTTPException(400, f"start 格式非法: {start}")
+    if end and not _valid_datetime_iso(end):
+        raise HTTPException(400, f"end 格式非法: {end}")
+    _sms, _ems, _sday, _eday, _ht = _split_bounds(start, end)
     today_str = datetime.date.today().isoformat()
-    # 区间含今天: 历史(库) + 今天(实时) 合并, 保留实时数据
+    # 区间含今天: 历史(库) + 今天(实时) 合并, 保留实时数据(day 边界判定)
     if (not force and _use_sqlite_trace()
-            and start <= today_str <= end):
+            and today_str >= _sday and today_str <= _eday):
         try:
-            merged = _trace_shop_merged(shop_id, start, end)
+            merged = _trace_shop_merged(shop_id, start, end, _sms, _ems, _ht)
             if merged and merged[0]:
                 stat, has_today = merged
                 return {"shop": shop, "startDate": start, "endDate": end,
@@ -2033,7 +2079,7 @@ def trace_shop(shop_id: str, days: int = 7, force: int = 0, start: str | None = 
             print(f"[trace] SQLite+实时 合并路径失败, 回退在线抓取: {e}")
     # SQLite 快路径: 数据库已覆盖该区间(纯历史) => 纯本地聚合(核算提速主因)
     if (not force and _use_sqlite_trace()
-            and trace_store.db_window_covers(start, end)):
+            and trace_store.db_window_covers(_sday, _eday)):
         try:
             stat = _trace_shop_from_db(shop_id, start, end)
             if stat:
@@ -2044,16 +2090,16 @@ def trace_shop(shop_id: str, days: int = 7, force: int = 0, start: str | None = 
     # 新式按日缓存: 全部天都命中(且未过期)则零请求
     cache = _load_trace_days_cache(shop_id) if not force else None
     if cache and cache.get("days") and not force:
-        start_d = datetime.date.fromisoformat(start)
-        end_d = datetime.date.fromisoformat(end)
+        start_d = datetime.date.fromisoformat(_sday)
+        end_d = datetime.date.fromisoformat(_eday)
         need = {(start_d + datetime.timedelta(days=i)).isoformat()
                 for i in range((end_d - start_d).days + 1)}
         if all(_cached_days_usable(cache, ds) for ds in need):
-            stat = stat_trace_daily(shop_id, start, end)  # 全命中: 纯聚合零请求
+            stat = stat_trace_daily(shop_id, start, end, trim_ms=(_sms, _ems))  # 全命中: 纯聚合零请求
             return {"shop": shop, "startDate": start, "endDate": end,
                     "fetchedAt": time.time(), "stat": stat}
     try:
-        stat = stat_trace_daily(shop_id, start, end, force=bool(force))
+        stat = stat_trace_daily(shop_id, start, end, force=bool(force), trim_ms=(_sms, _ems))
     except RuntimeError as e:
         raise HTTPException(502, str(e))
     return {"shop": shop, "startDate": start, "endDate": end, "fetchedAt": time.time(), "stat": stat}
@@ -2098,7 +2144,13 @@ TRACE_OVERVIEW_CACHE_TTL = 6 * 3600   # 总览磁盘缓存有效期(探域数据
 
 
 def load_trace_overview_cache(start, end, platform=None):
-    """从磁盘读核算总览结果(同时间段重复核算零请求, 且未过期)"""
+    """从磁盘读核算总览结果(同时间段重复核算零请求, 且未过期)
+
+    秒级区间(带 'T')不走盘: 磁盘是单文件只存一份 startDate/endDate,
+    秒级区间几乎必 miss 且会覆盖掉"近7天"等日级缓存 → 一律返回 None。
+    """
+    if "T" in start or "T" in end:
+        return None
     if not TRACE_OVERVIEW_CACHE_FILE.exists():
         return None
     try:
@@ -2131,6 +2183,9 @@ def load_latest_trace_overview_cache():
 
 
 def save_trace_overview_cache(result):
+    # 秒级区间不落盘(单文件会被覆盖), 只存日级 presets
+    if "T" in (result.get("startDate") or "") or "T" in (result.get("endDate") or ""):
+        return
     try:
         _atomic_write_text(TRACE_OVERVIEW_CACHE_FILE,
                            json.dumps(result, ensure_ascii=False, separators=(",", ":")))
@@ -2139,37 +2194,55 @@ def save_trace_overview_cache(result):
 
 
 def _trace_shop_from_db(shop_id, start, end):
-    """从 SQLite 聚合单店 stat(与 stat_trace_daily 输出结构完全一致)"""
-    start_ms = int(datetime.datetime.fromisoformat(start).timestamp() * 1000)
-    # end 23:59:59.999 转毫秒
-    end_d = datetime.datetime.fromisoformat(end)
-    end_ms = int((end_d + datetime.timedelta(days=1)).timestamp() * 1000) - 1
-    rows = trace_store.query_shop_aggregate(shop_id, start, end, start_ms, end_ms)
-    if not rows and not trace_store.query_daily(shop_id, start, end):
+    """从 SQLite 聚合单店 stat(与 stat_trace_daily 输出结构完全一致)
+
+    支持秒级 start/end: end_ms 由 _split_bounds 统一给出(纯日期=整天 23:59:59.999,
+    带时间=该时刻+999ms), 不再无脑 +1day(否则秒级 end 会多算一天)。
+    """
+    sms, ems, sday, eday, _ = _split_bounds(start, end)
+    rows = trace_store.query_shop_aggregate(shop_id, sday, eday, sms, ems)
+    if not rows and not trace_store.query_daily(shop_id, sday, eday):
         return None
     # 复用 stat_trace_daily 的聚合逻辑(保证口径一致)
     return _aggregate_stat_rows(rows, start, end)
 
 
-def _trace_shop_merged(shop_id, start, end):
+def _trace_shop_merged(shop_id, start, end, start_ms=None, end_ms=None, has_time=False):
     """历史天走 SQLite + 今天实时抓取, 合并出 [start, end] 的单店 stat
 
     口径: 完整历史天(含昨天)读库聚合(与探域逐日口径一致);
       "今天"未定型, 实时抓取当天消息(不走 6h 缓存), 只读不写库。
+    秒级区间(has_time=True): 历史库按 msg_time 毫秒精确过滤, 今天实时抓取整天后
+      再按 [start_ms, end_ms] 裁剪(今天 09:00 起时只算 09:00 后的消息)。
     返回 (stat_dict, has_today_flag); 实时抓取抛 RiskTriggered 时向上传播。
     """
     today_str = datetime.date.today().isoformat()
     yesterday_str = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
-    has_today = start <= today_str <= end
-    # 历史部分: start .. min(end, 昨天)(ISO 日期字符串字典序可比较)
-    hist_end = end if end < today_str else yesterday_str
-    rows = []
-    if start <= hist_end:
-        rows = trace_store.query_shop_aggregate(
-            shop_id, start, hist_end,
-            int(datetime.datetime.fromisoformat(start).timestamp() * 1000),
-            int((datetime.datetime.fromisoformat(hist_end) + datetime.timedelta(days=1)).timestamp() * 1000) - 1,
-        )
+    if has_time:
+        # 已由外层 _split_bounds 归一化; 未传则兜底
+        if start_ms is None:
+            start_ms, end_ms, sday, eday, _ = _split_bounds(start, end)
+        else:
+            sday, eday = start[:10], end[:10]
+        # 今天判定用 day 边界(字符串字典序对带 'T' 的 start 会恒 False)
+        has_today = today_str >= sday and today_str <= eday
+        hist_end = end if end < today_str else yesterday_str  # 语义: end 带时间仍按 day 比
+        hist_end_day = hist_end[:10] if has_time else hist_end
+        rows = []
+        if start[:10] <= hist_end_day:
+            rows = trace_store.query_shop_aggregate(
+                shop_id, start[:10], hist_end_day, start_ms, end_ms)
+    else:
+        has_today = start <= today_str <= end
+        # 历史部分: start .. min(end, 昨天)(ISO 日期字符串字典序可比较)
+        hist_end = end if end < today_str else yesterday_str
+        rows = []
+        if start <= hist_end:
+            rows = trace_store.query_shop_aggregate(
+                shop_id, start, hist_end,
+                int(datetime.datetime.fromisoformat(start).timestamp() * 1000),
+                int((datetime.datetime.fromisoformat(hist_end) + datetime.timedelta(days=1)).timestamp() * 1000) - 1,
+            )
     # 今天实时(未定型日不进库, 只读合并)
     live = []
     if has_today:
@@ -2177,6 +2250,12 @@ def _trace_shop_merged(shop_id, start, end):
         if live_res is None:
             live_res = []  # 今天暂无数据/请求失败, 历史部分照常返回
         live = [_trim_trace_msg(m) for m in live_res]
+        # 秒级区间: 今天实时抓的是整天, 按 ms 边界裁剪(只留 [start_ms, end_ms])
+        if has_time and start_ms is not None:
+            live = [
+                m for m in live
+                if start_ms <= (m.get("time") or m.get("createTime") or m.get("createAt") or 0) <= end_ms
+            ]
         rows.extend(live)
     # 区间含今天时恒返回 stat(即使全空), 避免回退到会写库的 stat_trace_daily;
     # 纯历史且无数据才返回 None(由调用方走在线抓取兜底)
@@ -2242,14 +2321,20 @@ def _aggregate_stat_rows(results, start, end):
     }
 
 
-def _trace_overview_from_db(start, end, platform=None, shop_filter=None):
-    """从 SQLite trace_daily 聚合核算总览(与在线 worker 输出结构完全一致)
+def _trace_overview_from_db(start, end, platform=None, shop_filter=None, has_time=False):
+    """从 SQLite 聚合核算总览(与在线 worker 输出结构完全一致)
 
     shop_filter: 可选店铺子集(集合), 只聚合勾选的店铺。
     店铺池 = 跨集团店铺表(全部店铺)按 platform/shop_filter 过滤后的全集:
     零消息店铺(total=0)也保留在 shopList 里, 与在线 worker 口径一致。
+    has_time=True 时区间带秒级边界: 改从 messages 表按 msg_time 毫秒过滤聚合
+      (trace_daily 只有整天, 秒级边界会把整天算进来); 纯日期仍走 trace_daily day 版。
     """
-    agg = trace_store.overview_aggregate(start, end, platform, shop_filter)
+    if has_time:
+        sms, ems, sday, eday, _ = _split_bounds(start, end)
+        agg = trace_store.overview_aggregate_ms(sms, ems, platform, shop_filter)
+    else:
+        agg = trace_store.overview_aggregate(start, end, platform, shop_filter)
     # 用跨集团店铺表(全部 118 家)解析店铺元数据并枚举店铺全集, 而非当前激活
     # 集团的 shops.json(否则非当前集团店铺 platform 为 None、无法展示平台标签)
     shop_map = {s["thirdShopId"]: s for s in trace_store.get_shops()}
@@ -2272,7 +2357,10 @@ def _trace_overview_from_db(start, end, platform=None, shop_filter=None):
         agg_total += v["total"]
         agg_adopted += v["adopted"]
     # 客服按 (店铺,客服) 组合区分(不去重), 用同一区间/店铺集的按店聚合
-    per_shop = trace_store.staff_aggregate_per_shop(start, end, platform, shop_filter)
+    if has_time:
+        per_shop = trace_store.staff_aggregate_per_shop_ms(sms, ems, platform, shop_filter)
+    else:
+        per_shop = trace_store.staff_aggregate_per_shop(start, end, platform, shop_filter)
     staff_list = _staff_list_per_shop(per_shop["by_shop"], platform, shop_filter)
     return {
         "startDate": start,
@@ -2293,7 +2381,7 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
                    from_cache: int = 0, shop_ids: str | None = None):
     """核算总览(异步): 遍历抓取店铺统计核算采纳率
 
-    支持自定义时间段(start/end, YYYY-MM-DD); 不传则用近 N 天。
+    支持自定义时间段(start/end, YYYY-MM-DD 或 YYYY-MM-DDTHH:MM 秒级); 不传则用近 N 天。
     platform: 平台筛选(只核算该平台店铺)。
     shop_ids: 逗号分隔的店铺 ID 子集(账号池勾选后只核算勾选店铺)。
     has_shop_filter: 勾选了店铺子集时强制走在线路径(不命中全平台缓存)。
@@ -2313,6 +2401,12 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
         except RuntimeError as e:
             raise HTTPException(409, str(e))
     start, end = date_range(days, end) if not start else (start, end or (datetime.date.today() - datetime.timedelta(days=1)).isoformat())
+    if start and not _valid_datetime_iso(start):
+        raise HTTPException(400, f"start 格式非法: {start}(应为 YYYY-MM-DD 或 YYYY-MM-DDTHH:MM)")
+    if end and not _valid_datetime_iso(end):
+        raise HTTPException(400, f"end 格式非法: {end}(应为 YYYY-MM-DD 或 YYYY-MM-DDTHH:MM)")
+    # 区间统一归一化: 唯一事实源(ms 边界 + day 边界 + 是否带时间), 下游一律用它取值
+    _sms, _ems, sday, eday, has_time = _split_bounds(start, end)
     # 店铺子集核算不复用全量缓存(勾选不同店铺结果不同)
     no_subset_cache = bool(shop_filter)
     # 内存缓存命中(需平台一致 + 未过期 + 结果自身时间段与请求一致, 防止跨范围误命中)
@@ -2324,7 +2418,7 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
             and _trace_state.get("last_run")
             and time.time() - _trace_state["last_run"] < TRACE_OVERVIEW_CACHE_TTL):
         return {"status": "done", "startDate": start, "endDate": end, "result": mem_result}
-    # 磁盘缓存命中(服务重启后同时间段重复核算零请求)
+    # 磁盘缓存命中(服务重启后同时间段重复核算零请求); 秒级区间不走盘(单文件会互相覆盖)
     disk = load_trace_overview_cache(start, end, platform) if not force and not no_subset_cache else None
     if disk:
         _trace_state["result"] = disk
@@ -2336,10 +2430,11 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
         return {"status": "done", "startDate": start, "endDate": end, "result": disk}
     # SQLite 快路径: 数据库已覆盖该区间 => 纯本地聚合, 零上游请求(核算提速主因)
     # 店铺子集/跨平台核算同样走 DB 快路径(预抓已把三集团数据都入库, 无需切集团)
+    # 覆盖判定用 day 边界(datetime 串直接比会因 'T' 静默 miss)
     if (not force and _use_sqlite_trace()
-            and trace_store.db_window_covers(start, end)):
+            and trace_store.db_window_covers(sday, eday)):
         try:
-            result = _trace_overview_from_db(start, end, platform, shop_filter)
+            result = _trace_overview_from_db(start, end, platform, shop_filter, has_time=has_time)
             if result:
                 if shop_filter:
                     # 店铺子集结果单独存, 不覆盖全量核算视图
@@ -2396,10 +2491,10 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
                 # 店铺子集: 只核算勾选的店铺(账号池模式)
                 shops = [s for s in shops if s["thirdShopId"] in shop_filter]
             total = len(shops)
-            begin, end_t = f"{start} 00:00:00", f"{end} 23:59:59"
             today_str = datetime.date.today().isoformat()
             # 区间含今天 => 单店走"历史库 + 今天实时"合并(今天未定型不进库)
-            range_has_today = start <= today_str <= end
+            # 判定用 day 边界(datetime 串字典序对带 'T' 的 start 会恒 False)
+            range_has_today = today_str >= sday and today_str <= eday
             _trace_state["progress"] = {"done": 0, "total": total, "current": ""}
             shop_list = []
             agg_total = agg_adopted = 0
@@ -2415,12 +2510,13 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
                     break
                 _trace_state["progress"]["current"] = f"{shop['platformName']} · {shop['shopName']} ({i}/{total})"
                 # 该店在区间内天数全部已缓存 => 纯聚合零请求, 无需限速停顿
-                if i > 1 and not days_all_cached(shop["thirdShopId"], start, end):
+                if i > 1 and not days_all_cached(shop["thirdShopId"], sday, eday):
                     sleep_trace_shop()
                 try:
                     if range_has_today:
                         # 含今天: 历史(库)+今天(实时) 合并, 不写库
-                        merged = _trace_shop_merged(shop["thirdShopId"], start, end)
+                        merged = _trace_shop_merged(shop["thirdShopId"], start, end,
+                                                    _sms, _ems, has_time)
                         if not merged or not merged[0]:
                             # 零消息店铺也保留在池中(total=0), 展示"无消息"
                             shop_list.append(
@@ -2431,7 +2527,8 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
                             continue
                         stat = merged[0]
                     else:
-                        stat = stat_trace_daily(shop["thirdShopId"], start, end)
+                        # 不跨今天: 按天遍历抓取(历史已缓存的天零请求), 秒级区间聚合前按 ms 过滤
+                        stat = stat_trace_daily(shop["thirdShopId"], start, end, trim_ms=(_sms, _ems))
                     shop_list.append(
                         {"shop": shop, "total": stat["total"], "adopted": stat["adopted"],
                          "rate": stat["rate"],
@@ -2472,8 +2569,8 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
                 "rate": round(agg_adopted / agg_total * 100, 2) if agg_total else 0,
                 "shopList": shop_list,
                 "byStaff": staff_list,
-                # 区间含今天时标记实时(前端显示"实时"徽标)
-                "live": start <= datetime.date.today().isoformat() <= end,
+                # 区间含今天时标记实时(前端显示"实时"徽标); day 边界比较
+                "live": today_str >= sday and today_str <= eday,
             }
             if shop_filter:
                 # 店铺子集结果单独存, 不覆盖全量核算视图, 也不落盘
@@ -2512,11 +2609,19 @@ def trace_staff(days: int = 7, start: str | None = None, end: str | None = None,
     DB 未覆盖该区间时返回空 byStaff(前端提示数据未抓取)。
     """
     start, end = date_range(days, end) if not start else (start, end or (datetime.date.today() - datetime.timedelta(days=1)).isoformat())
+    if start and not _valid_datetime_iso(start):
+        raise HTTPException(400, f"start 格式非法: {start}")
+    if end and not _valid_datetime_iso(end):
+        raise HTTPException(400, f"end 格式非法: {end}")
+    _sms, _ems, sday, eday, has_time = _split_bounds(start, end)
     shop_filter = {s for s in shop_ids.split(",") if s.strip()} if shop_ids else None
     result = {"startDate": start, "endDate": end, "platform": platform,
               "total": 0, "adopted": 0, "rate": 0, "byStaff": []}
-    if trace_store.db_window_covers(start, end):
-        per_shop = trace_store.staff_aggregate_per_shop(start, end, platform, shop_filter)
+    if trace_store.db_window_covers(sday, eday):
+        if has_time:
+            per_shop = trace_store.staff_aggregate_per_shop_ms(_sms, _ems, platform, shop_filter)
+        else:
+            per_shop = trace_store.staff_aggregate_per_shop(start, end, platform, shop_filter)
         staff_list = _staff_list_per_shop(per_shop["by_shop"], platform, shop_filter)
         result["byStaff"] = staff_list
         result["total"] = sum(s["total"] for s in staff_list)
@@ -2785,12 +2890,17 @@ def trace_messages(shop_id: str, days: int = 7, force: int = 0,
     if not shop:
         raise HTTPException(404, "店铺不存在")
     start, end = date_range(days, end) if not start else (start, end or (datetime.date.today() - datetime.timedelta(days=1)).isoformat())
+    if start and not _valid_datetime_iso(start):
+        raise HTTPException(400, f"start 格式非法: {start}")
+    if end and not _valid_datetime_iso(end):
+        raise HTTPException(400, f"end 格式非法: {end}")
+    _sms, _ems, sday, eday, has_time = _split_bounds(start, end)
     today_str = datetime.date.today().isoformat()
-    # 区间含今天: 历史(库) + 今天(实时) 合并
+    # 区间含今天: 历史(库) + 今天(实时) 合并(day 边界判定)
     if (not force and _use_sqlite_trace()
-            and start <= today_str <= end):
+            and today_str >= sday and today_str <= eday):
         try:
-            merged = _trace_shop_merged(shop_id, start, end)
+            merged = _trace_shop_merged(shop_id, start, end, _sms, _ems, has_time)
             if merged and merged[0]:
                 stat, has_today = merged
                 return {"shop": shop, "startDate": start, "endDate": end,
@@ -2802,17 +2912,17 @@ def trace_messages(shop_id: str, days: int = 7, force: int = 0,
             print(f"[trace] 原始消息 合并路径失败, 回退在线抓取: {e}")
     cache = _load_trace_days_cache(shop_id) if not force else None
     if cache and cache.get("days") and not force:
-        start_d = datetime.date.fromisoformat(start)
-        end_d = datetime.date.fromisoformat(end)
+        start_d = datetime.date.fromisoformat(sday)
+        end_d = datetime.date.fromisoformat(eday)
         need = {(start_d + datetime.timedelta(days=i)).isoformat()
                 for i in range((end_d - start_d).days + 1)}
         if all(_cached_days_usable(cache, ds) for ds in need):
-            stat = stat_trace_daily(shop_id, start, end)
+            stat = stat_trace_daily(shop_id, start, end, trim_ms=(_sms, _ems))
             return {"shop": shop, "startDate": start, "endDate": end,
                     "total": stat["total"], "daily": stat.get("daily", []),
                     "messages": stat.get("messages", [])}
     try:
-        stat = stat_trace_daily(shop_id, start, end, force=bool(force))
+        stat = stat_trace_daily(shop_id, start, end, force=bool(force), trim_ms=(_sms, _ems))
     except RuntimeError as e:
         raise HTTPException(502, str(e))
     return {"shop": shop, "startDate": start, "endDate": end,

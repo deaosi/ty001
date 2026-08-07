@@ -142,9 +142,9 @@
     background: var(--card); border: 1px solid var(--border-soft);
     border-radius: 8px; padding: 5px 8px;
   }
-  .date-range input[type="date"] {
+  .date-range input[type="date"], .date-range input[type="datetime-local"] {
     background: transparent; border: none; color: var(--text);
-    font-size: 12.5px; outline: none; width: 118px;
+    font-size: 12.5px; outline: none; width: 172px;
     color-scheme: dark;
   }
   .date-range .sep { color: var(--muted); font-size: 12px; }
@@ -648,9 +648,9 @@
           <option value="custom">自定义</option>
         </select>
         <div class="date-range" id="auditDateRange" style="display:none">
-          <input type="date" id="auditStart" value="" onchange="onAuditDateInput()">
+          <input type="datetime-local" id="auditStart" value="" onchange="onAuditDateInput()">
           <span class="sep">~</span>
-          <input type="date" id="auditEnd" value="" onchange="onAuditDateInput()">
+          <input type="datetime-local" id="auditEnd" value="" onchange="onAuditDateInput()">
         </div>
         <span class="today-sep">┊</span>
         <input type="time" id="todayStart" value="00:00" class="time-input" title="今日抓取开始时刻">
@@ -705,9 +705,9 @@
                 <option value="custom">自定义</option>
               </select>
               <div class="date-range" id="staffDateRange" style="display:none">
-                <input type="date" id="staffStart" value="" onchange="loadStaffData()">
+                <input type="datetime-local" id="staffStart" value="" onchange="loadStaffData()">
                 <span class="sep">~</span>
-                <input type="date" id="staffEnd" value="" onchange="loadStaffData()">
+                <input type="datetime-local" id="staffEnd" value="" onchange="loadStaffData()">
               </div>
               <span class="today-sep">┊</span>
               <input type="time" id="staffTodayStart" value="00:00" class="time-input" title="今日抓取开始时刻">
@@ -758,9 +758,9 @@
       <div class="msg-toolbar">
         <div class="msg-filter">
           时间:
-          <input type="date" id="traceStart" style="background:var(--bg);border:1px solid var(--border-soft);border-radius:6px;color:var(--text);padding:3px 6px;font-size:12px;color-scheme:dark;outline:none">
+          <input type="datetime-local" id="traceStart" style="background:var(--bg);border:1px solid var(--border-soft);border-radius:6px;color:var(--text);padding:3px 6px;font-size:12px;color-scheme:dark;outline:none">
           <span>~</span>
-          <input type="date" id="traceEnd" style="background:var(--bg);border:1px solid var(--border-soft);border-radius:6px;color:var(--text);padding:3px 6px;font-size:12px;color-scheme:dark;outline:none">
+          <input type="datetime-local" id="traceEnd" style="background:var(--bg);border:1px solid var(--border-soft);border-radius:6px;color:var(--text);padding:3px 6px;font-size:12px;color-scheme:dark;outline:none">
         </div>
         <div class="msg-filter">
           发送状态:
@@ -953,6 +953,12 @@ async function fetchJSON(url, opts) {
 function localDateStr(d) {
   const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+}
+
+// 本地时区日期时间串(YYYY-MM-DDTHH:MM): datetime-local 秒级核算用, 分钟精度已够
+function localDateTimeStr(d) {
+  const hh = String(d.getHours()).padStart(2, '0'), mm = String(d.getMinutes()).padStart(2, '0');
+  return `${localDateStr(d)}T${hh}:${mm}`;
 }
 
 // ---------- 平台配置 ----------
@@ -1836,12 +1842,12 @@ function onAuditDaysChange() {
   const custom = document.getElementById('auditDays').value === 'custom';
   document.getElementById('auditDateRange').style.display = custom ? 'inline-flex' : 'none';
   if (custom) {
-    // 默认填充最近7天
+    // 默认填充最近7天(秒级: start=7天前 00:00, end=昨天 23:59, 保持"近7天含整天"语义)
     if (!document.getElementById('auditStart').value) {
-      const end = new Date(); end.setDate(end.getDate() - 1);
-      const start = new Date(); start.setDate(start.getDate() - 7);
-      document.getElementById('auditStart').value = localDateStr(start);
-      document.getElementById('auditEnd').value = localDateStr(end);
+      const end = new Date(); end.setDate(end.getDate() - 1); end.setHours(23, 59, 0, 0);
+      const start = new Date(); start.setDate(start.getDate() - 7); start.setHours(0, 0, 0, 0);
+      document.getElementById('auditStart').value = localDateTimeStr(start);
+      document.getElementById('auditEnd').value = localDateTimeStr(end);
     }
   }
   // 只加载缓存结果, 不自动开始核算(核算由「开始核算」按钮显式触发)
@@ -1938,10 +1944,10 @@ function onStaffDaysChange() {
   const custom = staffFilter.days === 'custom';
   document.getElementById('staffDateRange').style.display = custom ? 'inline-flex' : 'none';
   if (custom && !document.getElementById('staffStart').value) {
-    const end = new Date(); end.setDate(end.getDate() - 1);
-    const start = new Date(); start.setDate(start.getDate() - 7);
-    document.getElementById('staffStart').value = localDateStr(start);
-    document.getElementById('staffEnd').value = localDateStr(end);
+    const end = new Date(); end.setDate(end.getDate() - 1); end.setHours(23, 59, 0, 0);
+    const start = new Date(); start.setDate(start.getDate() - 7); start.setHours(0, 0, 0, 0);
+    document.getElementById('staffStart').value = localDateTimeStr(start);
+    document.getElementById('staffEnd').value = localDateTimeStr(end);
   }
   loadStaffData();
 }
@@ -2195,11 +2201,11 @@ async function startAudit(force) {
     const s = document.getElementById('auditStart').value;
     const e = document.getElementById('auditEnd').value;
     if (!s || !e) {
-      toast('请选择完整的开始和结束日期');
+      toast('请选择完整的开始和结束时间');
       return;
     }
     if (s > e) {
-      toast('开始日期不能晚于结束日期');
+      toast('开始时间不能晚于结束时间');
       return;
     }
   }

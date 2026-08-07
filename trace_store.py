@@ -522,6 +522,52 @@ def overview_aggregate(start, end, platform=None, shop_filter=None):
         return {"shop_list": [], "staff_agg": {}}
 
 
+def overview_aggregate_ms(start_ms, end_ms, platform=None, shop_filter=None):
+    """跨店总览聚合(秒级边界): 从 messages 表按 msg_time 毫秒过滤
+
+    与 overview_aggregate 同形状({shop_list: [(sid, {total, adopted})], staff_agg}),
+    但 trace_daily 只有整天聚合, 秒级区间必须落到原始消息的 msg_time。
+    adopted 口径一致: send_type IN (1,2,3)。
+    """
+    if not DB_FILE.exists():
+        return {"shop_list": [], "staff_agg": {}}
+    try:
+        c = _conn()
+        where = "m.msg_time BETWEEN ? AND ?"
+        args = [start_ms, end_ms]
+        if platform is not None:
+            where += " AND m.platform = ?"
+            args.append(platform)
+        if shop_filter:
+            placeholders = ",".join("?" * len(shop_filter))
+            where += f" AND m.third_shop_id IN ({placeholders})"
+            args.extend(shop_filter)
+        rows = c.execute(
+            f"""SELECT m.third_shop_id, m.send_type, m.seller_account
+                FROM messages m
+                WHERE {where}
+                ORDER BY m.third_shop_id, m.msg_time""",
+            args,
+        ).fetchall()
+        shop_map = {}
+        staff_agg = {}
+        for r in rows:
+            sid = r["third_shop_id"]
+            sm = shop_map.setdefault(sid, {"total": 0, "adopted": 0})
+            sm["total"] += 1
+            st = r["send_type"]
+            if st in ADOPTED_SEND_TYPES:
+                sm["adopted"] += 1
+            acct = r["seller_account"] or "未知"
+            e = staff_agg.setdefault(acct, {"total": 0, "adopted": 0})
+            e["total"] += 1
+            if st in ADOPTED_SEND_TYPES:
+                e["adopted"] += 1
+        return {"shop_list": list(shop_map.items()), "staff_agg": staff_agg}
+    except Exception:
+        return {"shop_list": [], "staff_agg": {}}
+
+
 def staff_aggregate(start, end, platform=None, shop_filter=None):
     """按时间段聚合客服维度(从 trace_daily.by_staff_json 出发, 秒级)
 
@@ -576,6 +622,47 @@ def staff_aggregate_per_shop(start, end, platform=None, shop_filter=None):
                 e["adopted"] += v["adopted"]
         for shop_agg in by_shop.values():
             combos += len(shop_agg)
+        return {"by_shop": by_shop, "combos": combos}
+    except Exception:
+        return {"by_shop": {}, "combos": 0}
+
+
+def staff_aggregate_per_shop_ms(start_ms, end_ms, platform=None, shop_filter=None):
+    """按 (店铺, 客服) 组合聚合客服维度(秒级边界): 从 messages 表按 msg_time 过滤
+
+    与 staff_aggregate_per_shop 同形状({"by_shop", "combos"}), 供 _staff_list_per_shop 消费。
+    trace_daily 只有整天聚合, 秒级区间必须落到原始消息的 msg_time。
+    """
+    if not DB_FILE.exists():
+        return {"by_shop": {}, "combos": 0}
+    try:
+        c = _conn()
+        where = "m.msg_time BETWEEN ? AND ?"
+        args = [start_ms, end_ms]
+        if platform is not None:
+            where += " AND m.platform = ?"
+            args.append(platform)
+        if shop_filter:
+            placeholders = ",".join("?" * len(shop_filter))
+            where += f" AND m.third_shop_id IN ({placeholders})"
+            args.extend(shop_filter)
+        rows = c.execute(
+            f"""SELECT m.third_shop_id, m.send_type, m.seller_account
+                FROM messages m
+                WHERE {where}
+                ORDER BY m.third_shop_id, m.msg_time""",
+            args,
+        ).fetchall()
+        by_shop = {}
+        for r in rows:
+            sid = r["third_shop_id"]
+            shop_agg = by_shop.setdefault(sid, {})
+            acct = r["seller_account"] or "未知"
+            e = shop_agg.setdefault(acct, {"total": 0, "adopted": 0})
+            e["total"] += 1
+            if r["send_type"] in ADOPTED_SEND_TYPES:
+                e["adopted"] += 1
+        combos = sum(len(a) for a in by_shop.values())
         return {"by_shop": by_shop, "combos": combos}
     except Exception:
         return {"by_shop": {}, "combos": 0}
