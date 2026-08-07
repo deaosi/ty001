@@ -1038,11 +1038,12 @@ function renderGroupSelect() {
     return;
   }
   menu.innerHTML = groups.map(g => {
-    const name = g.groupName || g.name || '未知集团';
+    const name = esc(g.groupName || g.name || '未知集团');
     const active = g.current ? 'active' : '';
-    const badge = g.groupId ? `<span class="g-badge">${(g.groupId || '').slice(0, 8)}…</span>` : '';
+    const gid = esc(g.groupId || '');
+    const badge = g.groupId ? `<span class="g-badge">${esc((g.groupId || '').slice(0, 8))}…</span>` : '';
     const color = g.accountType === 3 ? '#22d3ee' : '#a78bfa';
-    return `<div class="g-item ${active}" onclick="switchGroup('${g.groupId}')">
+    return `<div class="g-item ${active}" onclick="switchGroup('${gid}')">
       <span class="g-dot" style="background:${color}"></span>
       <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${name}</span>
       ${active ? '<span style="color:var(--blue);font-size:11px">✓</span>' : ''}
@@ -1106,13 +1107,7 @@ document.addEventListener('click', () => {
 });
 
 function overviewDaysLabel() {
-  const t = currentStatType();
-  const map = { natural_day: '昨天', natural_week: '本周', natural_month: '本月' };
-  return map[t] || '昨天';
-}
-
-function onOverviewDateInput() {
-  // 旧版自定义日期输入已移除(overviewDays 改为口径切换), 保留空实现防历史调用报错
+  return getStatUnit(currentStatType());
 }
 
 function switchPlatform(value) {
@@ -1129,6 +1124,8 @@ function refreshHeaderSub() {
 
 // ---------- 概览 ----------
 let overviewReqId = 0;  // 防竞态: 只应用最新一次请求的结果
+let overviewRetryLeft = 3;  // 503 重试上限: 上游长时间限速时停止无限排队
+let shopSummariesGen = 0;  // 店铺汇总加载代际: 切口径/平台/集团时旧响应作废
 
 function overviewQueryParams() {
   return statTypeQuery();
@@ -1149,6 +1146,10 @@ function onOverviewDaysChange() {
   loadOverview();
   // 店铺表格跟口径走
   loadAllShopSummaries();
+  // 若详情抽屉已打开, 重开当前店铺以跟随新口径(否则抽屉指标卡仍显示旧口径)
+  if (selectedShop && document.getElementById('shopDrawer').classList.contains('show')) {
+    openDetail(selectedShop.thirdShopId);
+  }
   // 同步顶部标题的口径文案
   refreshHeaderSub();
 }
@@ -1160,9 +1161,11 @@ async function loadOverview() {
   infoEl.classList.add('loading');
   infoEl.textContent = '加载中…';
   try {
-    overviewData = await fetchJSON(`/api/overview?platform=${platform}&${overviewQueryParams()}`);
-    if (myId !== overviewReqId) return;  // 已有更新的请求, 丢弃本次结果
-    const items = overviewData.items;
+    const data = await fetchJSON(`/api/overview?platform=${platform}&${overviewQueryParams()}`);
+    if (myId !== overviewReqId) return;  // 已有更新的请求, 丢弃本次结果(不污染全局 overviewData)
+    overviewData = data;
+    overviewRetryLeft = 3;  // 成功即重置重试计数
+    const items = overviewData.items || {};
     const cards = document.querySelectorAll('.o-card');
     const order = [
       'service_3m_response_rate',
@@ -1195,9 +1198,13 @@ async function loadOverview() {
     }
   } catch (e) {
     if (myId !== overviewReqId) return;  // 已有更新的请求, 不处理
-    // 限速繁忙(503)时数据没变, 保留加载状态, 排队自动重试
-    if (e.message.includes('503')) {
+    // 限速繁忙(503): 保留加载状态, 有限重试(最多 3 次), 避免上游长时间限速时无限排队
+    if (e.message.includes('503') && overviewRetryLeft > 0) {
+      overviewRetryLeft--;
       setTimeout(() => { if (myId === overviewReqId) loadOverview(); }, 1500);
+    } else if (e.message.includes('503')) {
+      infoEl.classList.remove('loading');
+      infoEl.textContent = '上游繁忙, 请稍后再试';
     } else {
       infoEl.classList.remove('loading');
       infoEl.textContent = '加载失败';
@@ -1222,31 +1229,40 @@ async function loadShops() {
 
 async function loadAllShopSummaries() {
   let loaded = 0, failed = 0;
+  // 代际守卫: 切口径/平台/集团时旧响应不得覆写新视图
+  const gen = ++shopSummariesGen;
+  const tbody = document.getElementById('shopTableBody');
+  tbody.innerHTML = `<tr><td colspan="5" class="empty">正在加载店铺数据…</td></tr>`;
+  document.getElementById('shopCount').textContent = '加载中…';
   // 分批并发: 每批 5 个店铺并行请求, 避免 21 个串行逐个排队拖慢整体
   const BATCH = 5;
   const q = statTypeQuery();
-  for (let i = 0; i < shops.length; i += BATCH) {
-    const batch = shops.slice(i, i + BATCH);
+  const shopSnapshot = shops.slice();  // 抓本次调用时的店铺快照, 防中途切组混入旧店
+  for (let i = 0; i < shopSnapshot.length; i += BATCH) {
+    const batch = shopSnapshot.slice(i, i + BATCH);
     const results = await Promise.allSettled(batch.map(async (s) => {
       // summary 按统计口径切换(stat_type), 后端据此换缓存键; start/end 用于定位 section 明细
       // tables=0: 店铺列表只取汇总, 明细表(3 section)在详情抽屉才拉, 省上游配额
       const data = await fetchJSON(`/api/shop/${s.thirdShopId}?${q}&tables=0`);
+      if (gen !== shopSummariesGen) return;  // 旧代际响应, 丢弃
       s.summary = data.items || {};
       loaded++;
     }));
     results.forEach(r => { if (r.status === 'rejected') { failed++; } });
+    if (gen !== shopSummariesGen) return;  // 新代际已接管, 停止渲染旧数据
     renderTable();
     document.getElementById('shopCount').textContent =
-      `正在加载 ${Math.min(i + BATCH, shops.length)}/${shops.length} 家… (成功 ${loaded} 失败 ${failed})`;
+      `正在加载 ${Math.min(i + BATCH, shopSnapshot.length)}/${shopSnapshot.length} 家… (成功 ${loaded} 失败 ${failed})`;
   }
-  document.getElementById('shopCount').textContent = `${shops.length} 家店铺 (成功 ${loaded} 失败 ${failed})`;
+  if (gen !== shopSummariesGen) return;
+  document.getElementById('shopCount').textContent = `${shopSnapshot.length} 家店铺 (成功 ${loaded} 失败 ${failed})`;
   if (failed > 0) toast(`部分店铺数据加载失败: ${failed} 家`);
 }
 
 function renderTable() {
   const kw = document.getElementById('searchInput').value.trim().toLowerCase();
   const rows = shops
-    .filter(s => !kw || (s.shopName || '').toLowerCase().includes(kw))
+    .filter(s => !kw || String(s.shopName || '').toLowerCase().includes(kw))
     .sort((a, b) => (b.summary?.service_3m_response_rate?.current || 0) - (a.summary?.service_3m_response_rate?.current || 0));
 
   const tbody = document.getElementById('shopTableBody');
@@ -1266,9 +1282,9 @@ function renderTable() {
     const acc = m.ai_consult_response_accept_rate;
     const rep = m.ai_consult_response_rate;
     const pill = v => v ? ratePill(v.current) : '--';
-    return `<tr class="${sel}" onclick="openDetail('${s.thirdShopId}')">
-      <td><div class="shop-cell"><span class="name">${s.shopName || '未知'}</span><span class="id">${s.thirdShopId}</span></div></td>
-      <td><span class="platform-tag">${s.platformName || '-'}</span></td>
+    return `<tr class="${sel}" onclick="openDetail('${esc(s.thirdShopId)}')">
+      <td><div class="shop-cell"><span class="name">${esc(s.shopName) || '未知'}</span><span class="id">${esc(s.thirdShopId)}</span></div></td>
+      <td><span class="platform-tag">${esc(s.platformName) || '-'}</span></td>
       <td><span class="num">${fmtNum(s3m?.current, 'percent')}</span><div class="sub-line">${vsHtml(s3m)}</div></td>
       <td><span class="num">${fmtNum(acc?.current, 'percent')}</span><div class="sub-line">${vsHtml(acc)}</div></td>
       <td><span class="num">${fmtNum(rep?.current, 'percent')}</span><div class="sub-line">${vsHtml(rep)}</div></td>
@@ -1424,7 +1440,7 @@ function renderTraceList() {
       <div class="m-body">
         <div class="m-tags">
           ${sendTypeBadge(m.sendType)}
-          ${m.type ? `<span class="st-badge st-none">${m.type}</span>` : ''}
+          ${m.type ? `<span class="st-badge st-none">${esc(m.type)}</span>` : ''}
           ${m.buyer ? `<span class="st-badge st-none" style="background:rgba(167,139,250,.12);color:#a78bfa">买家: ${esc(m.buyer)}</span>` : ''}
         </div>
         <div class="m-content">${esc(traceContent(m.content))}</div>
@@ -1592,6 +1608,7 @@ function openTraceDrawer(shopId) {
 let auditPolling = false;
 let auditTimer = null;  // pollAudit 的定时器句柄, 供组切换等场景主动停止轮询
 let auditReloadPending = false;  // 清除/返回全量时任务仍在轮询, 收尾后需强制重载全量视图
+let auditPollScope = null;  // 本轮核算的平台范围标记: 平台/集团切换后置空, 旧任务收尾不再渲染
 
 function auditQueryParams() {
   const days = document.getElementById('auditDays').value;
@@ -1768,8 +1785,10 @@ async function loadStaffData() {
   if (hintEl) hintEl.textContent = `期间: ${periodLabel}${scopeLabel ? ' · ' + scopeLabel : ''}`;
   gridEl.innerHTML = `<span class="empty">加载中…</span>`;
   try {
-    let q = `${staffQueryParams()}${auditPlatform ? `&platform=${auditPlatform}` : ''}${auditSelMode && auditSelShops.length ? `&shop_ids=${auditSelShops.join(',')}` : ''}`;
-    if (staffShopFilter) q += `&shop_ids=${staffShopFilter}`;
+    // 客服店铺筛选优先: 选中单店时只查该店(覆盖子集勾选), 避免重复 shop_ids 参数被 FastAPI 逗号连接成并集
+    const shopFilter = staffShopFilter || (auditSelMode && auditSelShops.length ? auditSelShops.join(',') : '');
+    let q = `${staffQueryParams()}${auditPlatform ? `&platform=${auditPlatform}` : ''}`;
+    if (shopFilter) q += `&shop_ids=${shopFilter}`;
     const d = await fetchJSON(`/api/trace/staff?${q}`);
     renderStaffGrid(d.byStaff || []);
   } catch (e) {
@@ -1800,7 +1819,7 @@ async function renderStaffShopFilter() {
     const d = await fetchJSON(`/api/staff/shops${q}`);
     const scope = d.shops || [];
     sel.innerHTML = `<option value="">全部店铺 (${scope.length}家)</option>` + scope.map(s =>
-      `<option value="${s.thirdShopId}" ${s.platformName ? `data-pf="${s.platformName}"` : ''}>${s.shopName || s.thirdShopId}</option>`
+      `<option value="${esc(s.thirdShopId)}" ${s.platformName ? `data-pf="${esc(s.platformName)}"` : ''}>${esc(s.shopName) || esc(s.thirdShopId)}</option>`
     ).join('');
     if (prev && scope.some(s => s.thirdShopId === prev)) sel.value = prev;
   } catch (e) {
@@ -2032,6 +2051,7 @@ async function startAudit(force) {
 
 function pollAudit() {
   auditPolling = true;
+  auditPollScope = { platform: auditPlatform, sel: auditSelMode, shops: (auditSelShops || []).slice() };
   setAuditRunningUI(true);
   if (auditTimer) clearInterval(auditTimer);
   auditTimer = setInterval(async () => {
@@ -2057,6 +2077,23 @@ function pollAudit() {
         clearInterval(auditTimer);
         auditTimer = null;
         auditPolling = false;
+        // 范围校验: 若平台/集团/子集在核算期间已切换, 旧任务结果不渲染到新视图, 只重载缓存
+        // 双层守卫: (1) auditPollScope 为 null = 已被 stopAuditPolling(组/平台切换)清除 → 一律不渲染;
+        // (2) 后端任务自身范围(task.platform/taskShopFilter)与当前界面不一致 = 旧任务收尾 → 不渲染。
+        // 守卫(2)是权威依据: 即使中间被 reloadCachedAudit 重新赋过 auditPollScope, 旧任务的收尾
+        // tick 拿到的仍是旧任务的 task.* 范围, 与已切换的新界面必然不一致, 不会被旧行污染。
+        const scopeChanged = !auditPollScope || (
+          auditPollScope.platform !== auditPlatform ||
+          auditPollScope.sel !== auditSelMode ||
+          auditPollScope.shops.join(',') !== (auditSelShops || []).join(',')
+        ) || auditTaskScopeMismatch(t);
+        if (scopeChanged) {
+          auditPollScope = null;
+          setAuditRunningUI(false);
+          resetAuditUI();
+          reloadCachedAudit();
+          return;
+        }
         if (t.canceled) {
           setAuditRunningUI(false);
           if (auditReloadPending) {
@@ -2107,10 +2144,28 @@ function pollAudit() {
   }, 2000);
 }
 
-// 主动停止核算轮询(组切换时调用): 后端取消后旧定时器仍会轮询并可能把旧组结果渲染到新组下
+// 当前界面核算范围(平台+子集)的归一化描述, 与后端任务范围(task.platform/taskShopFilter)比较。
+// 后端是权威来源: 同一任务的比较永不失效, 不依赖可被重新赋值的 pollAuditScope。
+function taskScopeStr(p, sel, shops) {
+  const sc = (sel && shops.length) ? shops.slice().sort().join(',') : '';
+  return `${p || ''}|${sc}`;
+}
+
+// 运行中的核算任务是否仍匹配当前界面范围(否则为旧任务, 结果不渲染到新视图)
+function auditTaskScopeMismatch(task) {
+  const cur = taskScopeStr(auditPlatform, auditSelMode, auditSelShops);
+  const taskSel = task.taskShopFilter;
+  const taskShops = Array.isArray(taskSel) ? taskSel : (taskSel ? String(taskSel).split(',').filter(Boolean) : []);
+  const tk = taskScopeStr(String(task.platform || ''), taskShops.length > 0, taskShops);
+  return cur !== tk;
+}
+
+// 主动停止核算轮询(组切换时调用): 停前端轮询 + 取消后端任务, 防止旧任务把旧范围结果渲染到新视图
 function stopAuditPolling() {
   if (auditTimer) { clearInterval(auditTimer); auditTimer = null; }
   auditPolling = false;
+  auditPollScope = null;  // 清范围标记, 旧任务收尾不再渲染(防御: 兜底比较以任务自身范围为准)
+  fetchJSON('/api/trace/overview/cancel', { method: 'POST' }).catch(() => {});
 }
 
 function resetAuditUI() {
@@ -2169,10 +2224,16 @@ async function reloadCachedAudit() {
     // 已取消的运行是终态(如切组触发的取消), 不接管轮询, 直接走缓存/空态
     let st = null;
     try { st = await fetchJSON('/api/trace/overview/status'); } catch (e) { /* 忽略, 走缓存路径 */ }
-    if (st && st.running && !st.canceled) {
+    if (st && st.running && !st.canceled && !auditTaskScopeMismatch(st)) {
+      // 后台核算仍在对应当前界面范围: 接管轮询并展示实时进度, 不渲染陈旧缓存
       setAuditRunningUI(true);
       pollAudit();
       return;
+    }
+    if (st && st.running && auditTaskScopeMismatch(st)) {
+      // 后台核算属于旧范围(平台/子集已切换但取消尚未被 worker 处理): 不接管、不渲染旧任务,
+      // 同时取消它防止旧任务继续污染; 结果以当前范围缓存为准。
+      stopAuditPolling();
     }
     const r = await fetchJSON(`/api/trace/overview?${auditQueryParams()}&from_cache=1`);
     // 店铺子集核算结果在 subsetResult(不落盘, 仅内存); 全量结果在 result/磁盘缓存
@@ -2321,14 +2382,14 @@ function renderShopRows(list) {
         const dateRange = (x.startDate && x.endDate && x.startDate !== x.endDate)
           ? `${x.startDate} ~ ${x.endDate}` : (x.startDate || '');
         return `<tr>
-        <td><input type="checkbox" class="audit-shop-check" value="${sid}" ${checked ? 'checked' : ''} onchange="toggleAuditSel('${sid}', this.checked)"></td>
-        <td><div class="shop-cell"><span class="name">${x.shop.shopName || '未知'}</span><span class="id">${x.shop.thirdShopId}</span></div></td>
-        <td><span class="platform-tag">${x.shop.platformName || '-'}</span></td>
-        <td><span class="audit-shop-date">${dateRange}</span></td>
+        <td><input type="checkbox" class="audit-shop-check" value="${esc(sid)}" ${checked ? 'checked' : ''} onchange="toggleAuditSel('${esc(sid)}', this.checked)"></td>
+        <td><div class="shop-cell"><span class="name">${esc(x.shop.shopName) || '未知'}</span><span class="id">${esc(x.shop.thirdShopId)}</span></div></td>
+        <td><span class="platform-tag">${esc(x.shop.platformName) || '-'}</span></td>
+        <td><span class="audit-shop-date">${esc(dateRange)}</span></td>
         <td>${x.total.toLocaleString()}</td>
         <td>${x.adopted.toLocaleString()}</td>
         <td>${ratePill(x.rate)}</td>
-        <td><button class="btn btn-ghost" style="padding:2px 8px;font-size:11.5px" onclick="openTraceDrawer('${x.shop.thirdShopId}')">查看明细</button></td>
+        <td><button class="btn btn-ghost" style="padding:2px 8px;font-size:11.5px" onclick="openTraceDrawer('${esc(x.shop.thirdShopId)}')">查看明细</button></td>
       </tr>`;
       }).join('');
   }

@@ -369,8 +369,11 @@ def save_cache(kind, target_id, data):
 
 
 def _atomic_write_text(path: Path, text: str):
-    """原子写入: 先写临时文件再 os.replace, 崩溃/并发时不会留下半截文件"""
-    tmp = path.with_name(path.name + ".tmp")
+    """原子写入: 唯一临时名(pid+线程+随机)写后再 os.replace, 并发/崩溃不互相踩踏"""
+    import threading
+    tmp = path.with_name(
+        f".{path.name}.{os.getpid()}.{threading.get_ident()}.{random.randint(0, 2 ** 31 - 1)}.tmp"
+    )
     try:
         tmp.write_text(text, encoding="utf-8")
         os.replace(tmp, path)
@@ -394,6 +397,16 @@ def _valid_stat_type(stat_type):
     return stat_type in SUMMARY_STAT_TYPES
 
 
+def _valid_date_iso(value):
+    """校验 YYYY-MM-DD 格式, 合法返回原串, 非法返回 None"""
+    try:
+        import datetime as _dt
+        _dt.date.fromisoformat(value)
+        return value
+    except (TypeError, ValueError):
+        return None
+
+
 # ---------- 批量刷新 ----------
 def refresh_one(shop, start, end):
     """刷新单个店铺: summary + 3 个 section 明细, 返回汇总"""
@@ -408,13 +421,18 @@ def refresh_one(shop, start, end):
         "targetId": shop_id,
     }
     summary = fetch_summary(base)
-    save_cache("summary", shop_id, {"fetched_at": time.time(), "data": summary})
+    # 缓存键带口径后缀(与 shop_detail 一致): 批量刷新只刷 natural_day,
+    # 写 {shop_id}__natural_day 键, 避免与周/月口径缓存互相覆盖
+    save_cache("summary", f"{shop_id}__natural_day", {"fetched_at": time.time(), "data": summary})
 
     for section in ["operations", "service", "ai"]:
         payload = {**base, "section": section}
         try:
             table = fetch_section_table(payload)
-            save_cache("table", f"{shop_id}__{section}", {"fetched_at": time.time(), "data": table})
+            # 明细表按日期区间缓存(键带起止日期): 与 shop_detail 的读键严格一致,
+            # 避免批量刷新(近7天)与单店自然日(昨天)写读同一键串日期范围。
+            save_cache("table", f"{shop_id}__natural_day__{section}__{start}__{end}",
+                       {"fetched_at": time.time(), "data": table})
         except Exception as e:
             log_line("refresh", f"{shop['shopName']} section={section} 失败: {e}")
     return shop_id
@@ -1004,8 +1022,9 @@ _risk_state = {"triggered": False, "reason": "", "at": None, "last_code": None}
 _request_times = []  # 滑动窗口请求时间戳
 
 
-class RiskTriggered(Exception):
-    """风控/登录失效信号, 触发后任务立即停止"""
+class RiskTriggered(RuntimeError):
+    """风控/登录失效信号, 触发后任务立即停止; 继承 RuntimeError 使各端点
+    except RuntimeError 能统一兜底(返回 502/503), 避免漏网 500"""
 
 
 def _set_risk(reason, code=None):
@@ -1652,8 +1671,8 @@ def overview(platform: int = 1, stat_type: str = "natural_day", start: str | Non
         raise HTTPException(400, f"不支持的统计口径: {stat_type}")
     today = datetime.date.today()
     yest = (today - datetime.timedelta(days=1)).isoformat()
-    start = start or yest
-    end = end or yest
+    start = _valid_date_iso(start) or yest
+    end = _valid_date_iso(end) or yest
     payload = {
         "statType": stat_type,
         "startDate": start,
@@ -1663,6 +1682,8 @@ def overview(platform: int = 1, stat_type: str = "natural_day", start: str | Non
     }
     try:
         summary = fetch_summary_interactive(payload)
+    except RiskTriggered:
+        raise HTTPException(503, "风控触发, 请先登录更新Cookie")
     except BusyQueueError as e:
         raise HTTPException(503, str(e))
     except RuntimeError as e:
@@ -1696,11 +1717,11 @@ def shop_detail(shop_id: str, stat_type: str = "natural_day", start: str | None 
 
     today = datetime.date.today()
     yest = (today - datetime.timedelta(days=1)).isoformat()
-    start = start or yest
-    end = end or yest
+    start = _valid_date_iso(start) or yest
+    end = _valid_date_iso(end) or yest
     # 平台/店铺自然日数据一天内基本不变, 缓存 6 小时; 页面加载/切平台走交互快通道, 不排队
-    # 缓存键按口径拆维度: natural_day 用 legacy 键(与 refresh_one 共用), 周/月用后缀键防串写
-    cache_key = shop_id if stat_type == "natural_day" else f"{shop_id}__{stat_type}"
+    # 缓存键按口径拆维度: 三口径各用独立后缀键({id}__natural_day/week/month), 防批量刷新串写
+    cache_key = f"{shop_id}__{stat_type}"
     cache = load_cache("summary", cache_key, max_age=21600)
     if cache and cache.get("data"):
         items = cache["data"]
@@ -1716,6 +1737,8 @@ def shop_detail(shop_id: str, stat_type: str = "natural_day", start: str | None 
         }
         try:
             items = fetch_summary_interactive(payload)
+        except RiskTriggered:
+            raise HTTPException(503, "风控触发, 请先登录更新Cookie")
         except BusyQueueError as e:
             raise HTTPException(503, str(e))
         except RuntimeError as e:
@@ -1726,7 +1749,10 @@ def shop_detail(shop_id: str, stat_type: str = "natural_day", start: str | None 
     tables_data = {}
     if tables:
         for section in ["operations", "service", "ai"]:
-            c = load_cache("table", f"{shop_id}__{stat_type}__{section}", max_age=21600)
+            # 明细表键带日期区间(与 refresh_one 批量刷新写键一致): 日期敏感的
+            # /section/table 数据严格绑定其起止日期, 周/月明细不会与自然日串写。
+            table_key = f"{shop_id}__{stat_type}__{section}__{start}__{end}"
+            c = load_cache("table", table_key, max_age=21600)
             if c and c.get("data"):
                 tables_data[section] = c["data"]
             else:
@@ -1741,7 +1767,16 @@ def shop_detail(shop_id: str, stat_type: str = "natural_day", start: str | None 
                 }
                 try:
                     tables_data[section] = fetch_section_table_interactive(payload)
-                except (BusyQueueError, RuntimeError):
+                    # 抓取成功即写 6h 缓存, 与读取键一致形成闭环(否则周/月每次必 miss)
+                    save_cache("table", table_key,
+                               {"fetched_at": time.time(), "data": tables_data[section]})
+                except BusyQueueError as e:
+                    raise HTTPException(503, str(e))
+                except RiskTriggered:
+                    raise HTTPException(503, "风控触发, 请先登录更新Cookie")
+                except RuntimeError as e:
+                    # 单个 section 上游失败: 记录日志, 返回空表(该区间可能确实无数据), 不打断其余 section
+                    log_line("shop_detail", f"shop={shop_id} section={section} 失败: {e}")
                     tables_data[section] = {"dates": [], "rows": []}
 
     return {
@@ -2485,6 +2520,7 @@ def trace_overview_status():
             "endDate": _trace_state["end_date"],
             "platform": _trace_state["platform"],
             "lastRun": _trace_state["last_run"],
+            "taskShopFilter": _trace_state["shop_filter"],
             "error": _trace_state["error"],
             "result": _trace_state["result"],
             "subsetResult": _trace_state["subset_result"],
