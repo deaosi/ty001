@@ -914,6 +914,8 @@ let staffNames = {};            // serviceAccount -> {nick, shopName, ...} (GET 
 let staffNamesFetchedAt = null; // 昵称映射抓取时间戳
 let staffShopFilter = '';       // 客服池店铺筛选(thirdShopId), '' = 全部店铺
 let staffSyncRunning = false;   // 客服昵称同步进行中
+let staffShopFilterGen = 0;  // 客服池店铺下拉加载代际: 快速切平台/集团时旧响应不得覆写下拉选项
+let staffDataGen = 0;        // 客服数据加载代际: 快速切平台/集团时旧响应不得覆写客服面板
 
 const PLATFORM_NAMES = { 0: '淘宝', 1: '拼多多', 2: '有赞', 4: '快手', 5: '抖音', 7: '京东' };
 
@@ -1044,6 +1046,7 @@ async function loadGroups() {
         loadOverview();
         loadShops();
         reloadCachedAudit();
+        renderStaffShopFilter();  // 客服池店铺下拉跟随联动平台刷新
         loadStaffData();  // 客服面板跟随联动平台刷新
       }
       window.__groupPlatformLinked = true;
@@ -1128,6 +1131,7 @@ async function switchGroup(groupId) {
     await loadShops();
     loadOverview();
     reloadCachedAudit();  // 组切换后缓存已失效, 只加载缓存, 不自动核算
+    renderStaffShopFilter();  // 客服池店铺下拉跟随新平台刷新
     loadStaffData();      // 客服面板跟随新平台刷新
   } catch (e) {
     toast('切换集团失败: ' + e.message);
@@ -1953,6 +1957,7 @@ function staffQueryParams() {
 }
 
 async function loadStaffData() {
+  const myGen = ++staffDataGen;
   const gridEl = document.getElementById('auditStaffGrid');
   const hintEl = document.getElementById('staffFilterHint');
   const periodLabel = staffFilter.days === 'custom'
@@ -1969,8 +1974,10 @@ async function loadStaffData() {
     let q = `${staffQueryParams()}${auditPlatform ? `&platform=${auditPlatform}` : ''}`;
     if (shopFilter) q += `&shop_ids=${shopFilter}`;
     const d = await fetchJSON(`/api/trace/staff?${q}`);
+    if (myGen !== staffDataGen) return;  // 已切平台/集团/时间段, 丢弃本次结果
     renderStaffGrid(d.byStaff || []);
   } catch (e) {
+    if (myGen !== staffDataGen) return;
     gridEl.innerHTML = `<span class="empty">客服数据加载失败: ${e.message}</span>`;
   }
 }
@@ -1989,6 +1996,7 @@ async function loadStaffNames() {
 // 客服池店铺筛选下拉: 选项 = 全部店铺 + 跨集团全量店铺(与客服池查询作用域一致)
 // 数据源 /api/staff/shops(SQLite 跨集团表), 不依赖当前激活集团; 按平台筛选
 async function renderStaffShopFilter() {
+  const myGen = ++staffShopFilterGen;
   const sel = document.getElementById('staffShopFilter');
   if (!sel) return;
   const prev = sel.value;
@@ -1996,12 +2004,14 @@ async function renderStaffShopFilter() {
   try {
     const q = auditPlatform ? `?platform=${auditPlatform}` : '';
     const d = await fetchJSON(`/api/staff/shops${q}`);
+    if (myGen !== staffShopFilterGen) return;  // 已切平台/集团, 丢弃本次结果
     const scope = d.shops || [];
     sel.innerHTML = `<option value="">全部店铺 (${scope.length}家)</option>` + scope.map(s =>
       `<option value="${esc(s.thirdShopId)}" ${s.platformName ? `data-pf="${esc(s.platformName)}"` : ''}>${esc(s.shopName) || esc(s.thirdShopId)}</option>`
     ).join('');
     if (prev && scope.some(s => s.thirdShopId === prev)) sel.value = prev;
   } catch (e) {
+    if (myGen !== staffShopFilterGen) return;
     sel.innerHTML = '<option value="">全部店铺</option>';
     console.error('客服池店铺列表加载失败', e);
   }
