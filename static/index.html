@@ -204,6 +204,19 @@
   .badge.flat { background: rgba(139, 150, 174, .12); color: var(--text-sub); }
   .trend.note { color: var(--text-dim); }
 
+  /* 历史周缺失标记 */
+  .missing-badge {
+    display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px;
+    border-radius: 20px; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;
+    background: rgba(251, 146, 60, .14); color: #fbbf24; border: 1px solid rgba(251, 146, 60, .35);
+    cursor: help; white-space: nowrap;
+  }
+  .row-missing { background: rgba(251, 146, 60, .06) !important; }
+  .row-missing td:first-child { box-shadow: inset 3px 0 0 rgba(251, 146, 60, .6); }
+  .history-note { font-size: 12px; color: var(--text-dim); font-weight: 400; }
+  .d-card.dim { opacity: .75; }
+  .d-card.dim .value { font-size: 15px; letter-spacing: 0; opacity: .8; }
+
   /* ---------- 面板 ---------- */
   .panel {
     background: var(--card); border: 1px solid var(--border);
@@ -568,6 +581,9 @@
         <option value="natural_week">自然周 · 值=本周</option>
         <option value="natural_month">自然月 · 值=本月</option>
       </select>
+      <select id="historyWeek" class="platform-select" style="display:none" onchange="onHistoryWeekChange(this.value)" title="切换查看历史自然周(本地库覆盖)">
+        <option value="">本周</option>
+      </select>
       <span class="date-info" id="overviewDateInfo">--</span>
     </div>
   </div>
@@ -841,10 +857,17 @@ function getStatVs(statType) {
 function currentStatType() {
   return document.getElementById('overviewDays').value || 'natural_day';
 }
+// 历史周锚点(周一 YYYY-MM-DD); '' = 当前周(走 tanyu summary)
+let historyWeekStart = '';
 // 周/月口径下透传给后端的周期区间(用于定位 section 明细; summary 忽略该区间)
 function statTypeRange() {
   const t = currentStatType();
   const today = new Date();
+  if (t === 'natural_week' && historyWeekStart) {
+    const ws = new Date(historyWeekStart + 'T00:00:00');
+    const we = new Date(ws); we.setDate(ws.getDate() + 6);
+    return { start: localDateStr(ws), end: localDateStr(we) };
+  }
   if (t === 'natural_week') {
     const dow = (today.getDay() + 6) % 7;  // 周一=0
     const monday = new Date(today); monday.setDate(today.getDate() - dow);
@@ -859,7 +882,9 @@ function statTypeRange() {
 }
 function statTypeQuery() {
   const r = statTypeRange();
-  return `stat_type=${currentStatType()}&start=${r.start}&end=${r.end}`;
+  let q = `stat_type=${currentStatType()}&start=${r.start}&end=${r.end}`;
+  if (currentStatType() === 'natural_week' && historyWeekStart) q += `&week=${historyWeekStart}`;
+  return q;
 }
 // 紧凑区间串用于标题/表头小字: 自然日="08-06", 自然周="08-03 ~ 08-07", 自然月="08-01 ~ 08-07"
 function statTypeRangeShort() {
@@ -1113,6 +1138,8 @@ document.addEventListener('click', () => {
 });
 
 function overviewDaysLabel() {
+  // 历史周视图: 显示所选周(上周/更早), 不再用"本周"
+  if (isHistoryWeek()) return '历史周';
   return getStatUnit(currentStatType());
 }
 
@@ -1145,6 +1172,15 @@ function overviewQueryParams() {
 }
 
 function onOverviewDaysChange() {
+  // 自然周时显示周选择下拉, 其他口径隐藏并回到当前周
+  if (currentStatType() === 'natural_week') {
+    const weekSel = document.getElementById('historyWeek');
+    if (weekSel) { weekSel.style.display = ''; loadHistoryWeeks(); }
+  } else {
+    historyWeekStart = '';
+    const weekSel = document.getElementById('historyWeek');
+    if (weekSel) { weekSel.style.display = 'none'; weekSel.value = ''; }
+  }
   // 同步表格列头主值小字 + 店铺表现副标题 + 顶部副标题
   refreshStatLabels();
   loadOverview();
@@ -1156,6 +1192,42 @@ function onOverviewDaysChange() {
   }
   // 同步顶部标题的口径文案
   refreshHeaderSub();
+}
+
+// 历史周下拉选项(基于本地库覆盖); 当前周(值='')走 tanyu summary
+async function loadHistoryWeeks() {
+  const weekSel = document.getElementById('historyWeek');
+  if (!weekSel) return;
+  const platformQ = currentPlatform ? `?platform=${currentPlatform}` : '';
+  try {
+    const d = await fetchJSON(`/api/history/weeks${platformQ}`);
+    const weeks = d.weeks || [];
+    // 重建前读当前选择: fetch 期间用户可能已选了历史周, 重建不得丢选
+    const prev = weekSel.value;
+    const opts = [['', '本周']].concat(weeks.map(w => [w.start, `上周起 ${w.start.slice(5)} ~ ${w.end.slice(5)}`]));
+    weekSel.innerHTML = opts.map(([v, label]) => `<option value="${v}">${label}</option>`).join('');
+    if (prev && weeks.some(w => w.start === prev)) weekSel.value = prev;
+    else if (historyWeekStart) { historyWeekStart = ''; weekSel.value = ''; }
+  } catch (e) {
+    weekSel.innerHTML = '<option value="">本周</option>';
+    console.error('历史周列表加载失败', e);
+  }
+}
+
+function onHistoryWeekChange(v) {
+  historyWeekStart = v || '';
+  refreshStatLabels();
+  loadOverview();
+  loadAllShopSummaries();
+  if (selectedShop && document.getElementById('shopDrawer').classList.contains('show')) {
+    openDetail(selectedShop.thirdShopId);
+  }
+  refreshHeaderSub();
+}
+
+// 历史周标记: 是否当前处于历史周视图(本地库聚合)
+function isHistoryWeek() {
+  return currentStatType() === 'natural_week' && !!historyWeekStart;
 }
 
 // 统计口径主值小字: 表格三列列头 + 店铺表现副标题(含具体日期区间)
@@ -1170,7 +1242,9 @@ function refreshStatLabels() {
     el.title = getStatSemantic(currentStatType());
   });
   document.getElementById('shopPanelSub').textContent =
-    `点击店铺查看详情 · 数值为 tanyu ${getStatSemantic(currentStatType())}`;
+    isHistoryWeek()
+      ? `点击店铺查看详情 · 历史周基于本地库(消息量/采纳率), 缺天已标记`
+      : `点击店铺查看详情 · 数值为 tanyu ${getStatSemantic(currentStatType())}`;
 }
 
 async function loadOverview() {
@@ -1186,29 +1260,53 @@ async function loadOverview() {
     overviewRetryLeft = 3;  // 成功即重置重试计数
     const items = overviewData.items || {};
     const cards = document.querySelectorAll('.o-card');
-    const order = [
-      'service_3m_response_rate',
-      'ai_consult_response_accept_rate',
-      'ai_consult_response_rate'
-    ];
-    const colors = ['#22d3ee', '#fbbf24', '#a78bfa'];
-    cards.forEach((card, i) => {
-      const key = order[i];
-      const m = items[key];
-      if (!m) {
-        card.querySelector('.value').textContent = '--';
-        card.querySelector('.trend').innerHTML = '<span class="trend note">无数据</span>';
-        return;
-      }
-      const fmt = FORMATS[key];
-      card.querySelector('.label').textContent = METRIC_TITLES[key];
-      card.querySelector('.value').textContent = fmtNum(m.current, fmt);
-      card.querySelector('.value').style.color = colors[i];
-      card.querySelector('.trend').innerHTML = trendHtml(m.comparePercent);
-    });
+    if (overviewData.source === 'history') {
+      // 历史周: 本地库聚合(消息量/采纳数/采纳率), 无环比
+      const histOrder = [
+        ['history_msg_total', '消息量', 'integer'],
+        ['history_adopted_total', '采纳数', 'integer'],
+        ['history_accept_rate', '采纳率', 'percent'],
+      ];
+      cards.forEach((card, i) => {
+        const [key, label, fmt] = histOrder[i];
+        const m = items[key];
+        if (!m) {
+          card.querySelector('.value').textContent = '--';
+          card.querySelector('.trend').innerHTML = '<span class="trend note">无数据</span>';
+          return;
+        }
+        card.querySelector('.label').textContent = label;
+        card.querySelector('.value').textContent = fmtNum(m.current, fmt);
+        card.querySelector('.value').style.color = ['#22d3ee', '#fbbf24', '#a78bfa'][i];
+        card.querySelector('.trend').innerHTML = '<span class="trend note">本地库</span>';
+      });
+    } else {
+      const order = [
+        'service_3m_response_rate',
+        'ai_consult_response_accept_rate',
+        'ai_consult_response_rate'
+      ];
+      const colors = ['#22d3ee', '#fbbf24', '#a78bfa'];
+      cards.forEach((card, i) => {
+        const key = order[i];
+        const m = items[key];
+        if (!m) {
+          card.querySelector('.value').textContent = '--';
+          card.querySelector('.trend').innerHTML = '<span class="trend note">无数据</span>';
+          return;
+        }
+        const fmt = FORMATS[key];
+        card.querySelector('.label').textContent = METRIC_TITLES[key];
+        card.querySelector('.value').textContent = fmtNum(m.current, fmt);
+        card.querySelector('.value').style.color = colors[i];
+        card.querySelector('.trend').innerHTML = trendHtml(m.comparePercent);
+      });
+    }
     infoEl.classList.remove('loading');
-    // summary 为 tanyu 统计口径, 与所选区间无关(见 getStatSemantic)
-    const sem = getStatSemantic(overviewData.statType || currentStatType());
+    // summary 为 tanyu 统计口径, 与所选区间无关(见 getStatSemantic); 历史周标注本地库
+    const sem = overviewData.source === 'history'
+      ? '历史周 · 基于本地库'
+      : getStatSemantic(overviewData.statType || currentStatType());
     infoEl.textContent = `${overviewDaysLabel()}(${statTypeRangeShort()}) · ${overviewData.platformName || ''} · ${sem}`;
     // 顶栏同步显示当前口径说明
     const headerInfo = document.getElementById('dateInfo');
@@ -1265,6 +1363,7 @@ async function loadAllShopSummaries() {
       const data = await fetchJSON(`/api/shop/${s.thirdShopId}?${q}&tables=0`);
       if (gen !== shopSummariesGen) return;  // 旧代际响应, 丢弃
       s.summary = data.items || {};
+      s.missingDays = (data.source === 'history') ? (data.missing_days || []) : undefined;
       loaded++;
     }));
     results.forEach(r => { if (r.status === 'rejected') { failed++; } });
@@ -1280,9 +1379,11 @@ async function loadAllShopSummaries() {
 
 function renderTable() {
   const kw = document.getElementById('searchInput').value.trim().toLowerCase();
+  const hist = isHistoryWeek();
   const rows = shops
     .filter(s => !kw || String(s.shopName || '').toLowerCase().includes(kw))
-    .sort((a, b) => (b.summary?.service_3m_response_rate?.current || 0) - (a.summary?.service_3m_response_rate?.current || 0));
+    .sort((a, b) => (b.summary?.[hist ? 'history_accept_rate' : 'service_3m_response_rate']?.current || 0)
+                  - (a.summary?.[hist ? 'history_accept_rate' : 'service_3m_response_rate']?.current || 0));
 
   const tbody = document.getElementById('shopTableBody');
   if (!rows.length) {
@@ -1297,6 +1398,23 @@ function renderTable() {
   tbody.innerHTML = rows.map(s => {
     const m = s.summary || {};
     const sel = selectedShop && selectedShop.thirdShopId === s.thirdShopId ? 'selected' : '';
+    // 历史周: 显示本地消息量/采纳数/采纳率 + 缺天徽标
+    if (isHistoryWeek()) {
+      const histMsg = m.history_msg_total;
+      const histAcc = m.history_adopted_total;
+      const histRate = m.history_accept_rate;
+      const miss = s.missingDays || [];
+      const missBadge = miss.length
+        ? `<span class="missing-badge" title="数据缺失 ${miss.join(', ')}">缺${miss.length}天</span>`
+        : '';
+      return `<tr class="${sel} ${miss.length ? 'row-missing' : ''}" onclick="openDetail('${esc(s.thirdShopId)}')">
+        <td><div class="shop-cell"><span class="name">${esc(s.shopName) || '未知'}</span><span class="id">${esc(s.thirdShopId)}</span></div></td>
+        <td><span class="platform-tag">${esc(s.platformName) || '-'}</span></td>
+        <td><span class="num">${fmtNum(histMsg?.current, 'integer')}</span><div class="sub-line">${missBadge}</div></td>
+        <td><span class="num">${fmtNum(histAcc?.current, 'integer')}</span><div class="sub-line">${histAcc ? '本地库' : ''}</div></td>
+        <td><span class="num">${fmtNum(histRate?.current, 'percent')}</span><div class="sub-line">${histRate ? '采纳率' : ''}</div></td>
+      </tr>`;
+    }
     const s3m = m.service_3m_response_rate;
     const acc = m.ai_consult_response_accept_rate;
     const rep = m.ai_consult_response_rate;
@@ -1344,8 +1462,15 @@ async function openDetail(shopId, tab) {
       fetchJSON(`/api/trace/messages/${shopId}?days=7`),
     ]);
     renderDetailMetrics(data.items);
-    document.getElementById('detailDate').textContent =
-      `${overviewDaysLabel()} · ${getStatSemantic(data.statType || currentStatType())} · ${data.startDate} ~ ${data.endDate}`;
+    const isHist = data.source === 'history';
+    const detailSem = isHist ? '历史周 · 基于本地库' : getStatSemantic(data.statType || currentStatType());
+    let detailDateTxt = isHist
+      ? `${data.startDate} ~ ${data.endDate} · ${detailSem}`
+      : `${overviewDaysLabel()} · ${detailSem} · ${data.startDate} ~ ${data.endDate}`;
+    if (isHist && data.missing_days && data.missing_days.length) {
+      detailDateTxt += ` · <span class="missing-badge">缺${data.missing_days.length}天(${data.missing_days.join(', ')})</span>`;
+    }
+    document.getElementById('detailDate').innerHTML = detailDateTxt;
     renderCharts(traceData);
   } catch (e) {
     document.getElementById('detailMetrics').innerHTML = `<div class="empty">详情加载失败: ${e.message}</div>`;
@@ -1541,6 +1666,36 @@ function renderDetailMetrics(items) {
     ai_consult_response_accept_rate: '#fbbf24',
     ai_consult_response_rate: '#a78bfa'
   };
+  // 历史周: 本地消息量/采纳数/采纳率 + tanyu 专属指标"历史不可用"
+  if (isHistoryWeek() && items.history_msg_total) {
+    const histCards = [
+      ['history_msg_total', '消息量', 'integer', '#22d3ee'],
+      ['history_adopted_total', '采纳数', 'integer', '#fbbf24'],
+      ['history_accept_rate', '采纳率', 'percent', '#a78bfa'],
+    ];
+    document.getElementById('detailMetrics').innerHTML = histCards.map(([key, title, fmt, color]) => {
+      const v = items[key];
+      return `<div class="d-card">
+        <div class="label">${title}</div>
+        <div class="value" style="color:${color}">${v ? fmtNum(v.current, fmt) : '--'}</div>
+        <div class="vs">${v && v.comparePercent != null ? trendHtml(v.comparePercent) : '<span class="trend note">本地库</span>'}</div>
+        <div class="prev">历史周 · 基于本地库</div>
+      </div>`;
+    }).join('')
+      // tanyu 专属指标: 历史不可用
+      + METRICS.map(m => {
+        if (items[m.key] && items[m.key].unavailable) {
+          return `<div class="d-card dim">
+            <div class="label">${m.title}</div>
+            <div class="value" style="color:${colors[m.key]}">历史不可用</div>
+            <div class="vs"></div>
+            <div class="prev">仅 tanyu summary 提供, 历史周无此数据</div>
+          </div>`;
+        }
+        return '';
+      }).join('');
+    return;
+  }
   document.getElementById('detailMetrics').innerHTML = METRICS.map(m => {
     const v = items[m.key];
     if (!v) return '';

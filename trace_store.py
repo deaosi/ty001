@@ -357,6 +357,78 @@ def db_day_window_covers(hist_start, hist_end):
         return False
 
 
+def week_coverage(platform=None):
+    """按自然周统计每店覆盖天数 + 缺失天列表(基于 trace_daily, 纯本地只读)
+
+    用于历史周下拉选项与"缺N天"徽标。返回按周降序的列表, 每项:
+      {week_start: "YYYY-MM-DD(周一)", week_end, days(应覆盖天数),
+       shop_days: {shop_id: set(day 集合)}, missing: {shop_id: [缺天列表]}}
+    当前周应覆盖天数=周一~今天; 历史周=周一~周日 7 天。
+    """
+    if not DB_FILE.exists():
+        return []
+    try:
+        c = _conn()
+        today = datetime.date.today()
+        where = ""
+        args = []
+        if platform is not None:
+            where = " AND s.platform = ?"
+            args.append(platform)
+        rows = c.execute(
+            f"""SELECT d.third_shop_id, d.day
+                FROM trace_daily d
+                JOIN shops s ON s.third_shop_id = d.third_shop_id
+                WHERE d.day >= ?{where}
+                ORDER BY d.day""",
+            [(today - datetime.timedelta(days=63)).isoformat()] + args,
+        ).fetchall()
+    except Exception:
+        return []
+    # 逐店按天归类
+    by_shop = {}
+    for r in rows:
+        by_shop.setdefault(r["third_shop_id"], set()).add(r["day"])
+    if not by_shop:
+        return []
+    weeks = {}
+    for shop_id, days in by_shop.items():
+        for d in days:
+            try:
+                dt = datetime.date.fromisoformat(d)
+            except (TypeError, ValueError):
+                continue
+            ws = dt - datetime.timedelta(days=dt.weekday())  # 周一
+            weeks.setdefault(ws, {}).setdefault(shop_id, set()).add(d)
+    out = []
+    for ws in sorted(weeks, reverse=True):
+        we = ws + datetime.timedelta(days=6)
+        exp = 7
+        if ws <= today <= we:
+            exp = (today - ws).days + 1  # 当前周: 周一~今天
+        shop_days = weeks[ws]
+        missing = {}
+        for sid, days in shop_days.items():
+            have = set()
+            for x in days:
+                try:
+                    have.add(datetime.date.fromisoformat(x))
+                except (TypeError, ValueError):
+                    pass
+            miss = [(ws + datetime.timedelta(days=i)).isoformat()
+                    for i in range(exp) if (ws + datetime.timedelta(days=i)) not in have]
+            if miss:
+                missing[sid] = miss
+        out.append({
+            "week_start": ws.isoformat(),
+            "week_end": we.isoformat(),
+            "days": exp,
+            "shop_days": {k: sorted(v) for k, v in shop_days.items()},
+            "missing": missing,
+        })
+    return out
+
+
 def query_daily(shop_id, start, end):
     """该店在区间内的逐日聚合(用于折线图/核算总览)"""
     if not DB_FILE.exists():

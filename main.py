@@ -1680,13 +1680,98 @@ def shops_cached_groups():
     return {"ok": True}
 
 
+# ---------- 历史周(本地 SQLite 聚合) ----------
+# tanyu /summary 忽略日期永远只给当前周(已实测), 历史周只能从本地 trace_daily
+# 聚合(消息量/采纳数/采纳率)。纯本地零上游请求, 无需风控/限速。
+# 历史周本地指标(前端据此渲染), 无 tanyu 专属指标(unavailable)。
+
+def _week_anchor_range(anchor):
+    """周一锚点 -> (start, end) 周区间"""
+    ws = datetime.date.fromisoformat(anchor)
+    return ws.isoformat(), (ws + datetime.timedelta(days=6)).isoformat()
+
+
+def _history_week_summary(platform, week_anchor, shop_filter=None):
+    """本地聚合指定历史周的平台/店铺子集汇总。
+
+    返回 overview 同构 dict(source="history", items 含消息量/采纳数/采纳率,
+    coverage 含缺天统计) 或 None(该周无任何本地数据)。
+    shop_filter: 可选店铺子集(集合), 只聚合勾选店铺(账号池模式)。
+    """
+    ws, we = _week_anchor_range(week_anchor)
+    today_str = datetime.date.today().isoformat()
+    if ws <= today_str <= we:
+        return None  # 当前周走 tanyu summary, 不落历史分支
+    agg = trace_store.overview_aggregate(ws, we, platform, shop_filter)
+    shop_list = agg["shop_list"]
+    staff_agg = agg["staff_agg"]
+    if not shop_list:
+        return None
+    total_msgs = sum(v["total"] for _, v in shop_list)
+    total_adopted = sum(v["adopted"] for _, v in shop_list)
+    # 缺天统计(仅该平台): 复用 week_coverage
+    wc = trace_store.week_coverage(platform=platform)
+    cov = next((w for w in wc if w["week_start"] == week_anchor), None)
+    shop_total = dict(shop_list)
+    items = {
+        "history_msg_total": {"current": total_msgs, "previous": 0, "comparePercent": None, "label": "消息量"},
+        "history_adopted_total": {"current": total_adopted, "previous": 0, "comparePercent": None, "label": "采纳数"},
+        "history_accept_rate": {"current": (round(total_adopted * 100.0 / total_msgs, 2) if total_msgs else 0), "previous": 0, "comparePercent": None, "label": "采纳率"},
+    }
+    coverage = {
+        "days": cov["days"] if cov else 7,
+        "shops": len(shop_list),
+        "missing": {sid: miss for sid, miss in (cov["missing"] if cov else {}).items() if sid in shop_total},
+    }
+    return {
+        "statType": "natural_week",
+        "startDate": ws,
+        "endDate": we,
+        "platform": platform,
+        "platformName": PLATFORM_NAMES.get(platform),
+        "source": "history",
+        "items": items,
+        "coverage": coverage,
+    }
+
+
+@app.get("/api/history/weeks")
+def history_weeks(platform: int | None = None):
+    """可回溯的历史周列表(基于本地 trace_daily 覆盖), 供历史周下拉。
+
+    纯本地零上游请求; 返回按周降序的 [{start: 周一锚点, end, label, days}]。
+    平台可选过滤。仅返回有数据的周(不含当前周——当前周走 tanyu summary)。
+    """
+    today = datetime.date.today()
+    cur_ws = today - datetime.timedelta(days=today.weekday())
+    weeks = trace_store.week_coverage(platform=platform)
+    out = []
+    for w in weeks:
+        if w["week_start"] == cur_ws.isoformat():
+            continue  # 当前周不在下拉(走 tanyu summary)
+        if not w["shop_days"]:
+            continue
+        out.append({
+            "start": w["week_start"],
+            "end": w["week_end"],
+            "days": w["days"],
+            "shops": len(w["shop_days"]),
+        })
+    return {"weeks": out}
+
+
 @app.get("/api/overview")
-def overview(platform: int = 1, stat_type: str = "natural_day", start: str | None = None, end: str | None = None):
+def overview(platform: int = 1, stat_type: str = "natural_day", start: str | None = None, end: str | None = None,
+             week: str | None = None):
     """平台维度汇总, 按统计口径(自然日/自然周/自然月)。
 
     tanyu summary 固定忽略 startDate/endDate: 三种口径分别返回 昨天vs前天 /
     本周vs上周 / 本月vs上月。days 参数已废弃(曾误导为可调范围), 仅保留
     start/end 透传给 tanyu(无实际作用, 但保接口兼容)。
+
+    week(可选, 仅 natural_week): 周一锚点 YYYY-MM-DD。传入历史周时改用本地
+    SQLite 聚合(source="history", 消息量/采纳数/采纳率 + coverage), 因为 tanyu
+    summary 忽略日期永远只给当前周(实测); 不传或传当前周走 tanyu summary。
     """
     if platform not in PLATFORM_NAMES:
         raise HTTPException(400, f"不支持的平台: {platform}")
@@ -1696,6 +1781,11 @@ def overview(platform: int = 1, stat_type: str = "natural_day", start: str | Non
     _start, _end = _stat_type_range(stat_type)
     start = _valid_date_iso(start) or _start
     end = _valid_date_iso(end) or _end
+    # 历史周分支: 传了 week 且非当前周 => 本地 SQLite 聚合(零上游请求)
+    if stat_type == "natural_week" and week and _valid_date_iso(week):
+        hist = _history_week_summary(platform, week)
+        if hist is not None:
+            return hist
     payload = {
         "statType": stat_type,
         "startDate": start,
@@ -1723,13 +1813,17 @@ def overview(platform: int = 1, stat_type: str = "natural_day", start: str | Non
 
 @app.get("/api/shop/{shop_id}")
 def shop_detail(shop_id: str, stat_type: str = "natural_day", start: str | None = None, end: str | None = None,
-                tables: int = 1):
+                tables: int = 1, week: str | None = None):
     """单店汇总 + 明细(带本地缓存); 按统计口径(自然日/自然周/自然月)。
 
     tanyu summary 固定忽略 startDate/endDate(见 SUMMARY_STAT_TYPES 注释);
     明细表(section/table)对日期敏感, natural_week/natural_month 时按传入的
     周/月区间定位。days 参数已废弃, 保留 start/end 透传。
     tables=0: 只返回 summary(店铺列表用, 跳过明细表请求, 省上游配额)。
+
+    week(可选, 仅 natural_week): 周一锚点。历史周时走本地 SQLite 聚合
+    (source="history"), 返回该店该周消息量/采纳数/采纳率 + missing_days;
+    tanyu 专属指标标记 unavailable。当前周不传/传当前周走 tanyu summary。
     """
     shops = {s["thirdShopId"]: s for s in load_shops()}
     shop = shops.get(shop_id)
@@ -1742,6 +1836,12 @@ def shop_detail(shop_id: str, stat_type: str = "natural_day", start: str | None 
     _start, _end = _stat_type_range(stat_type)
     start = _valid_date_iso(start) or _start
     end = _valid_date_iso(end) or _end
+
+    # 历史周分支: 本地 SQLite 聚合(零上游请求)
+    if stat_type == "natural_week" and week and _valid_date_iso(week):
+        hist = _history_week_shop(shop, week)
+        if hist is not None:
+            return hist
     # 平台/店铺自然日数据一天内基本不变, 缓存 6 小时; 页面加载/切平台走交互快通道, 不排队
     # 缓存键按口径拆维度: 三口径各用独立后缀键({id}__natural_day/week/month), 防批量刷新串写
     cache_key = f"{shop_id}__{stat_type}"
@@ -1810,6 +1910,52 @@ def shop_detail(shop_id: str, stat_type: str = "natural_day", start: str | None 
         "items": items,
         "fetchedAt": fetched_at,
         "tables": tables_data,
+    }
+
+
+def _history_week_shop(shop, week_anchor):
+    """本地聚合单个店铺的历史周数据(纯只读, 零上游请求)。
+
+    返回与 shop_detail 同构的 dict(source="history"), 含该店周消息量/采纳数/
+    采纳率 + missing_days(缺天列表); tanyu 专属指标标记 unavailable。
+    该周该店无任何数据时返回 None(调用方走 tanyu summary 兜底, 行为不变)。
+    """
+    ws, we = _week_anchor_range(week_anchor)
+    today_str = datetime.date.today().isoformat()
+    if ws <= today_str <= we:
+        return None  # 当前周走 tanyu summary
+    shop_id = shop["thirdShopId"]
+    platform = shop.get("platform", 1)
+    daily = trace_store.query_daily(shop_id, ws, we)
+    if not daily:
+        return None
+    total = sum(d["total"] for d in daily)
+    adopted = sum(d["adopted"] for d in daily)
+    have_days = {d["day"] for d in daily}
+    # 缺天: 周区间应覆盖天数 vs 实际天数
+    missing = []
+    for i in range(7):
+        ds = (datetime.date.fromisoformat(ws) + datetime.timedelta(days=i)).isoformat()
+        if ds not in have_days:
+            missing.append(ds)
+    items = {
+        "history_msg_total": {"current": total, "previous": 0, "comparePercent": None, "label": "消息量"},
+        "history_adopted_total": {"current": adopted, "previous": 0, "comparePercent": None, "label": "采纳数"},
+        "history_accept_rate": {"current": (round(adopted * 100.0 / total, 2) if total else 0), "previous": 0, "comparePercent": None, "label": "采纳率"},
+    }
+    # tanyu 专属指标历史不可用(前端显示"历史不可用")
+    for key in ("service_3m_response_rate", "ai_consult_response_accept_rate", "ai_consult_response_rate"):
+        items[key] = {"unavailable": True, "label": METRIC_BY_KEY[key]["title"]}
+    return {
+        "shop": shop,
+        "startDate": ws,
+        "endDate": we,
+        "statType": "natural_week",
+        "items": items,
+        "fetchedAt": time.time(),
+        "source": "history",
+        "missing_days": missing,
+        "coverage": {"days": 7, "have": len(have_days)},
     }
 
 
