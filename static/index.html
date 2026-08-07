@@ -1120,6 +1120,13 @@ function switchPlatform(value) {
   currentPlatform = value;
   refreshHeaderSub();
   loadShops();
+  // 顶部平台切换联动核算/客服账号池: 账号池是顶部平台的下游视图,
+  // 保留"切换后不跟"会造成顶部=京东 而账号池仍在拼多多的错位。
+  const auditSel = document.getElementById('auditPlatform');
+  if (auditSel && auditSel.value !== value) {
+    auditSel.value = value;
+    onAuditPlatformChange();  // 复用核算平台切换逻辑: 重置店铺筛选/勾选 + 重载核算缓存 + 客服面板
+  }
 }
 
 // 同步顶部副标题(口径 · 日期区间 · 平台 · 店铺范围); summary 为 tanyu 统计口径(见 getStatSemantic)
