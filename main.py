@@ -414,15 +414,19 @@ def _stat_type_range(stat_type, ref=None):
     对日期敏感; 未显式传 start/end 时按口径给默认区间, 使回显的
     startDate/endDate 不再是误导的 昨天~昨天:
       natural_day   = 昨天 ~ 昨天
-      natural_week  = 本周一 ~ 今天
+      natural_week  = 本周一 ~ 周日(完整自然周)
       natural_month = 本月1日 ~ 今天
     ref 为基准日(默认今天), 便于测试/回溯历史周期。
+    注意: 当前周 ref 为今天时 end 可能指向未来(本周日, 如周五的 08-09);
+    该区间用于展示/缓存键, 出网 payload 的 endDate 须 clamp 到今天
+    (见 shop_detail 的 table payload 构造处)。
     """
     ref = ref or datetime.date.today()
     one_day = datetime.timedelta(days=1)
     if stat_type == "natural_week":
-        start = ref - datetime.timedelta(days=(ref.weekday()))  # weekday(): 周一=0
-        return start.isoformat(), ref.isoformat()
+        start = ref - datetime.timedelta(days=ref.weekday())  # weekday(): 周一=0
+        end = ref + datetime.timedelta(days=6 - ref.weekday())  # 周日(完整自然周)
+        return start.isoformat(), end.isoformat()
     if stat_type == "natural_month":
         start = ref.replace(day=1)
         return start.isoformat(), ref.isoformat()
@@ -1777,7 +1781,7 @@ def overview(platform: int = 1, stat_type: str = "natural_day", start: str | Non
         raise HTTPException(400, f"不支持的平台: {platform}")
     if not _valid_stat_type(stat_type):
         raise HTTPException(400, f"不支持的统计口径: {stat_type}")
-    # 未显式传区间时按口径给默认值(周=本周一~今天, 月=本月1日~今天, 日=昨天)
+    # 未显式传区间时按口径给默认值(周=本周一~周日, 月=本月1日~今天, 日=昨天)
     _start, _end = _stat_type_range(stat_type)
     start = _valid_date_iso(start) or _start
     end = _valid_date_iso(end) or _end
@@ -1836,6 +1840,8 @@ def shop_detail(shop_id: str, stat_type: str = "natural_day", start: str | None 
     _start, _end = _stat_type_range(stat_type)
     start = _valid_date_iso(start) or _start
     end = _valid_date_iso(end) or _end
+    # 出网 endDate clamp 基准: 自然周默认区间含未来周日, 上游 payload 发送时截到今天
+    today_str = datetime.date.today().isoformat()
 
     # 历史周分支: 本地 SQLite 聚合(零上游请求)
     if stat_type == "natural_week" and week and _valid_date_iso(week):
@@ -1844,7 +1850,9 @@ def shop_detail(shop_id: str, stat_type: str = "natural_day", start: str | None 
             return hist
     # 平台/店铺自然日数据一天内基本不变, 缓存 6 小时; 页面加载/切平台走交互快通道, 不排队
     # 缓存键按口径拆维度: 三口径各用独立后缀键({id}__natural_day/week/month), 防批量刷新串写
-    cache_key = f"{shop_id}__{stat_type}"
+    # natural_week 键额外绑周一锚点(start): 周界 0 点换新键必然 miss, 杜绝"上周数值服务到
+    # 周一早高峰"的 6h 交叉陈旧窗口(旧键 6h TTL 后自然失效, 孤儿化无危害)。
+    cache_key = f"{shop_id}__{stat_type}" + (f"__{start}" if stat_type == "natural_week" else "")
     cache = load_cache("summary", cache_key, max_age=21600)
     if cache and cache.get("data"):
         items = cache["data"]
@@ -1874,15 +1882,20 @@ def shop_detail(shop_id: str, stat_type: str = "natural_day", start: str | None 
         for section in ["operations", "service", "ai"]:
             # 明细表键带日期区间(与 refresh_one 批量刷新写键一致): 日期敏感的
             # /section/table 数据严格绑定其起止日期, 周/月明细不会与自然日串写。
+            # 键保持完整自然周(start~周日): 周内恒定不逐日换键; clamp 只作用于出网 payload。
             table_key = f"{shop_id}__{stat_type}__{section}__{start}__{end}"
             c = load_cache("table", table_key, max_age=21600)
             if c and c.get("data"):
                 tables_data[section] = c["data"]
             else:
+                # 出网 endDate clamp 到今天: 自然周默认区间含未来周日(如周五的 08-09),
+                # 未来天物理无数据, 且 tanyu /section/table 对未来 endDate 行为未验证,
+                # 故发送 min(end, today)(ISO 字典序==时间序)。历史周 we<today 自动不变。
+                eff_end = min(end, today_str)
                 payload = {
                     "statType": stat_type,
                     "startDate": start,
-                    "endDate": end,
+                    "endDate": eff_end,
                     "platform": shop.get("platform", 1),
                     "dimension": "shop",
                     "targetId": shop_id,

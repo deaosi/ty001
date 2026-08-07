@@ -871,7 +871,8 @@ function statTypeRange() {
   if (t === 'natural_week') {
     const dow = (today.getDay() + 6) % 7;  // 周一=0
     const monday = new Date(today); monday.setDate(today.getDate() - dow);
-    return { start: localDateStr(monday), end: localDateStr(today) };
+    const sunday = new Date(today); sunday.setDate(today.getDate() + (6 - dow));
+    return { start: localDateStr(monday), end: localDateStr(sunday) };
   }
   if (t === 'natural_month') {
     const first = new Date(today.getFullYear(), today.getMonth(), 1);
@@ -886,7 +887,7 @@ function statTypeQuery() {
   if (currentStatType() === 'natural_week' && historyWeekStart) q += `&week=${historyWeekStart}`;
   return q;
 }
-// 紧凑区间串用于标题/表头小字: 自然日="08-06", 自然周="08-03 ~ 08-07", 自然月="08-01 ~ 08-07"
+// 紧凑区间串用于标题/表头小字: 自然日="08-06", 自然周="08-03 ~ 08-09"(完整自然周), 自然月="08-01 ~ 08-07"
 function statTypeRangeShort() {
   const r = statTypeRange();
   const m = s => s.slice(5);  // 去年份: "2026-08-03" -> "08-03"

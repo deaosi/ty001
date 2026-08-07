@@ -364,6 +364,8 @@ def week_coverage(platform=None):
       {week_start: "YYYY-MM-DD(周一)", week_end, days(应覆盖天数),
        shop_days: {shop_id: set(day 集合)}, missing: {shop_id: [缺天列表]}}
     当前周应覆盖天数=周一~今天; 历史周=周一~周日 7 天。
+    此预期天数保持非对称(当前周=周一~今天), 与展示区间(自然周=周一~周日,
+    含未来周日)不同系有意设计——未来天物理无数据, 不能标成缺天。
     """
     if not DB_FILE.exists():
         return []
