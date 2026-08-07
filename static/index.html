@@ -237,6 +237,7 @@
     font-size: 12px; letter-spacing: .3px;
   }
   thead th:first-child, tbody td:first-child { text-align: left; }
+  .th-hint { display: block; font-size: 10px; font-weight: 400; color: var(--text-dim); margin-top: 1px; letter-spacing: .3px; }
   tbody td { padding: 11px 14px; text-align: right; border-bottom: 1px solid var(--border-soft); font-variant-numeric: tabular-nums; white-space: nowrap; }
   tbody tr { transition: background .12s; cursor: pointer; }
   tbody tr:hover { background: rgba(91, 140, 255, .07); }
@@ -589,7 +590,7 @@
     <div class="panel-head">
       <div>
         <h2>🏬 店铺表现</h2>
-        <div class="sub">点击店铺查看详情</div>
+        <div class="sub">点击店铺查看详情 · 数值为 tanyu 自然日口径: 主值=昨天, 下方环比=前天</div>
       </div>
       <div class="toolbar" style="margin-bottom:0">
         <div class="search-box" style="min-width:200px">
@@ -606,9 +607,9 @@
             <tr>
               <th>店铺</th>
               <th>平台</th>
-              <th>3分钟回复率</th>
-              <th>采纳率</th>
-              <th>生成率</th>
+              <th title="tanyu 自然日口径: 主值=昨天, 下方环比=前天">3分钟回复率<small class="th-hint">昨天</small></th>
+              <th title="tanyu 自然日口径: 主值=昨天, 下方环比=前天">采纳率<small class="th-hint">昨天</small></th>
+              <th title="tanyu 自然日口径: 主值=昨天, 下方环比=前天">生成率<small class="th-hint">昨天</small></th>
             </tr>
           </thead>
           <tbody id="shopTableBody">
@@ -650,7 +651,7 @@
         <button class="btn btn-primary" id="btnTodayAudit" onclick="startTodayAudit()">⚡ 抓取今日数据</button>
         <span class="audit-sel-label" id="auditSelLabel" style="display:none"></span>
         <button class="btn btn-ghost" id="btnAuditSel" onclick="auditSelected()" style="display:none">🧮 核算所选</button>
-        <button class="btn btn-ghost" id="btnAuditClearSel" onclick="clearAuditSel()" style="display:none">✕ 清除</button>
+        <button class="btn btn-ghost" id="btnAuditClearSel" onclick="backToFullAudit()" style="display:none">✕ 清除</button>
         <button class="btn btn-ghost" id="btnAuditBack" onclick="backToFullAudit()" style="display:none">⬅ 返回全量</button>
         <button class="btn btn-primary" id="btnAudit" onclick="startAudit(true)">▶ 开始核算</button>
         <button class="btn btn-ghost" id="btnAuditPause" onclick="toggleAuditPause()" style="display:none">⏸ 暂停</button>
@@ -821,6 +822,9 @@ const METRICS = [
 ];
 const METRIC_TITLES = Object.fromEntries(METRICS.map(m => [m.key, m.title]));
 const FORMATS = Object.fromEntries(METRICS.map(m => [m.key, m.format]));
+// tanyu /summary 接口 natural_day 口径: current=昨天, previous=前天, 与请求日期范围无关。
+// 所有展示该数据的标签统一引用此常量, 避免口径文案漂移。
+const SUMMARY_SEMANTIC = '自然日: 值=昨天 环比=前天';
 
 let shops = [];
 let overviewData = null;
@@ -1072,7 +1076,7 @@ function overviewDaysLabel() {
     const e = document.getElementById('overviewEnd').value;
     return (s && e) ? `${s} ~ ${e}` : '自定义';
   }
-  return days === '1' ? '今天' : `近${days}天`;
+  return days === '1' ? '昨天' : `近${days}天`;
 }
 
 function onOverviewDateInput() {
@@ -1090,7 +1094,7 @@ function switchPlatform(value) {
   loadShops();
 }
 
-// 同步顶部副标题(时间段 · 平台 · 店铺范围)
+// 同步顶部副标题(时间段 · 平台 · 店铺范围); summary 为 tanyu 自然日口径(见 SUMMARY_SEMANTIC)
 function refreshHeaderSub() {
   document.getElementById('dateSub').textContent =
     `${overviewDaysLabel()} · ${currentPlatform ? PLATFORM_NAMES[currentPlatform] || '平台' : '全部抓取平台'} · 全部店铺`;
@@ -1158,13 +1162,15 @@ async function loadOverview() {
       card.querySelector('.trend').innerHTML = trendHtml(m.comparePercent);
     });
     infoEl.classList.remove('loading');
-    infoEl.textContent = `${overviewData.startDate} ~ ${overviewData.endDate} · ${overviewData.platformName || ''}`;
-    // 顶栏同步显示当前时间范围
+    // summary 接口为 tanyu 自然日口径: current=昨天, previous=前天, 与所选窗口无关
+    infoEl.textContent = `${overviewData.startDate} ~ ${overviewData.endDate} · ${overviewData.platformName || ''} · ${SUMMARY_SEMANTIC}`;
+    // 顶栏同步显示当前时间范围 + 自然日口径说明(summary 值=昨天/环比=前天)
     const headerInfo = document.getElementById('dateInfo');
     if (headerInfo) {
       const lbl = overviewDaysLabel();
       headerInfo.textContent = lbl.includes('~')
-        ? `自定义 · ${lbl}` : `${lbl} · ${overviewData.startDate} ~ ${overviewData.endDate}`;
+        ? `自定义 · ${lbl} · ${SUMMARY_SEMANTIC}`
+        : `${lbl} · ${overviewData.startDate} ~ ${overviewData.endDate} · ${SUMMARY_SEMANTIC}`;
     }
   } catch (e) {
     if (myId !== overviewReqId) return;  // 已有更新的请求, 不处理
@@ -1200,6 +1206,7 @@ async function loadAllShopSummaries() {
   for (let i = 0; i < shops.length; i += BATCH) {
     const batch = shops.slice(i, i + BATCH);
     const results = await Promise.allSettled(batch.map(async (s) => {
+      // natural_day 固定昨天vs前天(summary 忽略 days 参数), 统一请求近7天以复用缓存
       const data = await fetchJSON(`/api/shop/${s.thirdShopId}?days=7`);
       s.summary = data.items || {};
       loaded++;
@@ -1237,9 +1244,9 @@ function renderTable() {
     return `<tr class="${sel}" onclick="openDetail('${s.thirdShopId}')">
       <td><div class="shop-cell"><span class="name">${s.shopName || '未知'}</span><span class="id">${s.thirdShopId}</span></div></td>
       <td><span class="platform-tag">${s.platformName || '-'}</span></td>
-      <td><span class="num">${fmtNum(s3m?.current, 'percent')}</span><div class="sub-line">${s3m ? '环比 ' + (s3m.comparePercent > 0 ? '▲' : '▼') + Math.abs(s3m.comparePercent).toFixed(2) + '%' : ''}</div></td>
-      <td><span class="num">${fmtNum(acc?.current, 'percent')}</span><div class="sub-line">${acc ? '环比 ' + (acc.comparePercent > 0 ? '▲' : '▼') + Math.abs(acc.comparePercent).toFixed(2) + '%' : ''}</div></td>
-      <td><span class="num">${fmtNum(rep?.current, 'percent')}</span><div class="sub-line">${rep ? '环比 ' + (rep.comparePercent > 0 ? '▲' : '▼') + Math.abs(rep.comparePercent).toFixed(2) + '%' : ''}</div></td>
+      <td><span class="num">${fmtNum(s3m?.current, 'percent')}</span><div class="sub-line">${s3m ? 'vs 前天 ' + (s3m.comparePercent > 0 ? '▲' : '▼') + Math.abs(s3m.comparePercent).toFixed(2) + '%' : ''}</div></td>
+      <td><span class="num">${fmtNum(acc?.current, 'percent')}</span><div class="sub-line">${acc ? 'vs 前天 ' + (acc.comparePercent > 0 ? '▲' : '▼') + Math.abs(acc.comparePercent).toFixed(2) + '%' : ''}</div></td>
+      <td><span class="num">${fmtNum(rep?.current, 'percent')}</span><div class="sub-line">${rep ? 'vs 前天 ' + (rep.comparePercent > 0 ? '▲' : '▼') + Math.abs(rep.comparePercent).toFixed(2) + '%' : ''}</div></td>
     </tr>`;
   }).join('');
 }
@@ -1270,13 +1277,13 @@ async function openDetail(shopId, tab) {
   charts = {};
 
   try {
-    // 并行: 详情指标 + 消息轨迹(含按日聚合)
+    // 并行: 详情指标 + 消息轨迹(含按日聚合); summary 为 natural_day 固定昨天vs前天, days 参数无实际影响
     const [data, traceData] = await Promise.all([
       fetchJSON(`/api/shop/${shopId}?days=7`),
       fetchJSON(`/api/trace/messages/${shopId}?days=7`),
     ]);
     renderDetailMetrics(data.items);
-    document.getElementById('detailDate').textContent = `${data.startDate} ~ ${data.endDate}`;
+    document.getElementById('detailDate').textContent = `${data.startDate} ~ ${data.endDate} · ${SUMMARY_SEMANTIC}`;
     renderCharts(traceData);
   } catch (e) {
     document.getElementById('detailMetrics').innerHTML = `<div class="empty">详情加载失败: ${e.message}</div>`;
@@ -1475,7 +1482,7 @@ function renderDetailMetrics(items) {
   document.getElementById('detailMetrics').innerHTML = METRICS.map(m => {
     const v = items[m.key];
     if (!v) return '';
-    const prevNote = `上期 ${fmtNum(v.previous, FORMATS[m.key])}`;
+    const prevNote = `前天 ${fmtNum(v.previous, FORMATS[m.key])}`;
     return `<div class="d-card">
       <div class="label">${m.title}</div>
       <div class="value" style="color:${colors[m.key]}">${fmtNum(v.current, FORMATS[m.key])}</div>
@@ -1557,6 +1564,7 @@ function openTraceDrawer(shopId) {
 // ---------- 核算板块 ----------
 let auditPolling = false;
 let auditTimer = null;  // pollAudit 的定时器句柄, 供组切换等场景主动停止轮询
+let auditReloadPending = false;  // 清除/返回全量时任务仍在轮询, 收尾后需强制重载全量视图
 
 function auditQueryParams() {
   const days = document.getElementById('auditDays').value;
@@ -1671,12 +1679,19 @@ async function auditSelected() {
 
 // 退出店铺子集核算模式, 回到全量视图
 async function backToFullAudit() {
+  // 子集核算仍在运行时点「清除/返回全量」: 先取消进行中的任务, 标记收尾后强制重载全量
+  if (auditPolling) {
+    try { await fetchJSON('/api/trace/overview/cancel', { method: 'POST' }); }
+    catch (e) { /* 任务已结束/网络异常, 忽略 */ }
+    auditReloadPending = true;
+  }
   auditSelMode = false;
   clearAuditSel();
   reloadCachedAudit();
   loadStaffData();  // 刷新客服面板范围提示(去掉"所选N店")
 }
 
+// 清空勾选状态并退出子集模式(不重载表格)。要"清除并回到全量视图"请走 backToFullAudit()。
 function clearAuditSel() {
   auditSelShops = [];
   shopCheckboxStates.__clearAll = true;
@@ -1684,6 +1699,8 @@ function clearAuditSel() {
   delete shopCheckboxStates.__clearAll;
   const all = document.getElementById('auditSelAll');
   if (all) all.checked = false;
+  // 清除勾选即退出子集模式: 避免平台/集团切换后 reloadCachedAudit 命中陈旧的 subsetResult
+  auditSelMode = false;
   updateAuditSelUI();
 }
 
@@ -2015,6 +2032,11 @@ function pollAudit() {
         auditPolling = false;
         if (t.canceled) {
           setAuditRunningUI(false);
+          if (auditReloadPending) {
+            // 用户点「清除/返回全量」取消: 不渲染子集部分行, 交给 reloadCachedAudit 渲染全量
+            reloadCachedAudit();
+            return;
+          }
           document.getElementById('auditStatus').className = 'audit-status';
           const n = t.shopList ? t.shopList.length : 0;
           document.getElementById('auditStatus').textContent =
@@ -2044,6 +2066,8 @@ function pollAudit() {
         }
         setAuditRunningUI(false);
         resetAuditUI();
+        // 清除/返回全量的意图: 收尾后再强制重载一次全量视图
+        if (auditReloadPending) reloadCachedAudit();
       }
     } catch (e) {
       clearInterval(auditTimer);
@@ -2106,7 +2130,12 @@ async function cancelAudit() {
 
 // 仅加载缓存结果(时间切换/组切换后), 不触发新核算
 async function reloadCachedAudit() {
-  if (auditPolling) return;  // 运行中由 pollAudit 负责展示
+  if (auditPolling) {
+    // 任务仍在轮询: 记录"收尾后需强制重载", 避免清除/返回全量的意图因早退而丢失
+    auditReloadPending = true;
+    return;
+  }
+  auditReloadPending = false;  // 实际执行即清标记, 防 pollAudit 收尾触发无限重载
   const statusEl = document.getElementById('auditStatus');
   try {
     // 先查任务状态: 后台核算若仍在进行(如页面刷新/切组后), 接管轮询并展示实时进度, 不渲染陈旧缓存
@@ -2327,7 +2356,7 @@ function pollProgress() {
         } else {
           toast(`刷新完成 ✅ 上次刷新: ${lastRun}`);
         }
-        document.getElementById('dateSub').textContent = '近7天 · 全部抓取平台 · 全部店铺';
+        refreshHeaderSub();  // 恢复日期口径标签(含自然日说明), 不用硬编码近7天
         await loadAllShopSummaries();
         loadOverview();
       }

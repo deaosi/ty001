@@ -2205,6 +2205,8 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
                 _trace_state["subset_result"] = completed
             else:
                 _trace_state["result"] = completed
+                # 全量核算完成: 清掉旧子集结果, 避免 status 接口残留暴露陈旧子集数据
+                _trace_state["subset_result"] = None
             _trace_state["last_run"] = time.time()
             # 店铺子集核算结果不落盘: 磁盘缓存按(时间段,平台)为键、不分店铺子集,
             # 写入子集结果会让后续同时间段的全量查询命中错误的子集数据
