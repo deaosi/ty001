@@ -861,6 +861,12 @@ function statTypeQuery() {
   const r = statTypeRange();
   return `stat_type=${currentStatType()}&start=${r.start}&end=${r.end}`;
 }
+// 紧凑区间串用于标题/表头小字: 自然日="08-06", 自然周="08-03 ~ 08-07", 自然月="08-01 ~ 08-07"
+function statTypeRangeShort() {
+  const r = statTypeRange();
+  const m = s => s.slice(5);  // 去年份: "2026-08-03" -> "08-03"
+  return r.start === r.end ? m(r.start) : `${m(r.start)} ~ ${m(r.end)}`;
+}
 
 let shops = [];
 let overviewData = null;
@@ -1116,10 +1122,10 @@ function switchPlatform(value) {
   loadShops();
 }
 
-// 同步顶部副标题(口径 · 平台 · 店铺范围); summary 为 tanyu 统计口径(见 getStatSemantic)
+// 同步顶部副标题(口径 · 日期区间 · 平台 · 店铺范围); summary 为 tanyu 统计口径(见 getStatSemantic)
 function refreshHeaderSub() {
   document.getElementById('dateSub').textContent =
-    `${overviewDaysLabel()} · ${currentPlatform ? PLATFORM_NAMES[currentPlatform] || '平台' : '全部抓取平台'} · 全部店铺`;
+    `${overviewDaysLabel()}(${statTypeRangeShort()}) · ${currentPlatform ? PLATFORM_NAMES[currentPlatform] || '平台' : '全部抓取平台'} · 全部店铺`;
 }
 
 // ---------- 概览 ----------
@@ -1133,16 +1139,7 @@ function overviewQueryParams() {
 
 function onOverviewDaysChange() {
   // 同步表格列头主值小字 + 店铺表现副标题 + 顶部副标题
-  const unit = getStatUnit(currentStatType());
-  const th = ['thMetricS3m', 'thMetricAcc', 'thMetricRep'];
-  th.forEach(id => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.querySelector('.th-hint').textContent = unit;
-    el.title = getStatSemantic(currentStatType());
-  });
-  document.getElementById('shopPanelSub').textContent =
-    `点击店铺查看详情 · 数值为 tanyu ${getStatSemantic(currentStatType())}`;
+  refreshStatLabels();
   loadOverview();
   // 店铺表格跟口径走
   loadAllShopSummaries();
@@ -1152,6 +1149,21 @@ function onOverviewDaysChange() {
   }
   // 同步顶部标题的口径文案
   refreshHeaderSub();
+}
+
+// 统计口径主值小字: 表格三列列头 + 店铺表现副标题(含具体日期区间)
+function refreshStatLabels() {
+  const unit = getStatUnit(currentStatType());
+  const rangeShort = statTypeRangeShort();
+  const th = ['thMetricS3m', 'thMetricAcc', 'thMetricRep'];
+  th.forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.querySelector('.th-hint').textContent = `${unit} ${rangeShort}`;
+    el.title = getStatSemantic(currentStatType());
+  });
+  document.getElementById('shopPanelSub').textContent =
+    `点击店铺查看详情 · 数值为 tanyu ${getStatSemantic(currentStatType())}`;
 }
 
 async function loadOverview() {
@@ -1190,7 +1202,7 @@ async function loadOverview() {
     infoEl.classList.remove('loading');
     // summary 为 tanyu 统计口径, 与所选区间无关(见 getStatSemantic)
     const sem = getStatSemantic(overviewData.statType || currentStatType());
-    infoEl.textContent = `${overviewDaysLabel()} · ${overviewData.platformName || ''} · ${sem}`;
+    infoEl.textContent = `${overviewDaysLabel()}(${statTypeRangeShort()}) · ${overviewData.platformName || ''} · ${sem}`;
     // 顶栏同步显示当前口径说明
     const headerInfo = document.getElementById('dateInfo');
     if (headerInfo) {
@@ -2560,6 +2572,7 @@ function pollLogin() {
 (async function init() {
   // 平台列表是纯本地配置, 快; 集团下拉涉及远程 detail 请求(可能排队), 不阻塞核算渲染
   await loadPlatforms();
+  refreshStatLabels();  // 表格列头小字首次渲染即带具体日期区间
   // 集团→平台联动前置: 概览三卡跟随当前集团(否则首次加载猜错平台会返回空)
   await loadGroups();
   // 今日时刻筛选默认结束时刻 = 当前时间

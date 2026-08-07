@@ -407,6 +407,29 @@ def _valid_date_iso(value):
         return None
 
 
+def _stat_type_range(stat_type, ref=None):
+    """统计口径对应的主值区间(与前端 statTypeRange 语义一致)。
+
+    tanyu summary 三种口径忽略 startDate/endDate, 但明细表(section/table)
+    对日期敏感; 未显式传 start/end 时按口径给默认区间, 使回显的
+    startDate/endDate 不再是误导的 昨天~昨天:
+      natural_day   = 昨天 ~ 昨天
+      natural_week  = 本周一 ~ 今天
+      natural_month = 本月1日 ~ 今天
+    ref 为基准日(默认今天), 便于测试/回溯历史周期。
+    """
+    ref = ref or datetime.date.today()
+    one_day = datetime.timedelta(days=1)
+    if stat_type == "natural_week":
+        start = ref - datetime.timedelta(days=(ref.weekday()))  # weekday(): 周一=0
+        return start.isoformat(), ref.isoformat()
+    if stat_type == "natural_month":
+        start = ref.replace(day=1)
+        return start.isoformat(), ref.isoformat()
+    yest = ref - one_day
+    return yest.isoformat(), yest.isoformat()
+
+
 # ---------- 批量刷新 ----------
 def refresh_one(shop, start, end):
     """刷新单个店铺: summary + 3 个 section 明细, 返回汇总"""
@@ -1669,10 +1692,10 @@ def overview(platform: int = 1, stat_type: str = "natural_day", start: str | Non
         raise HTTPException(400, f"不支持的平台: {platform}")
     if not _valid_stat_type(stat_type):
         raise HTTPException(400, f"不支持的统计口径: {stat_type}")
-    today = datetime.date.today()
-    yest = (today - datetime.timedelta(days=1)).isoformat()
-    start = _valid_date_iso(start) or yest
-    end = _valid_date_iso(end) or yest
+    # 未显式传区间时按口径给默认值(周=本周一~今天, 月=本月1日~今天, 日=昨天)
+    _start, _end = _stat_type_range(stat_type)
+    start = _valid_date_iso(start) or _start
+    end = _valid_date_iso(end) or _end
     payload = {
         "statType": stat_type,
         "startDate": start,
@@ -1715,10 +1738,10 @@ def shop_detail(shop_id: str, stat_type: str = "natural_day", start: str | None 
     if not _valid_stat_type(stat_type):
         raise HTTPException(400, f"不支持的统计口径: {stat_type}")
 
-    today = datetime.date.today()
-    yest = (today - datetime.timedelta(days=1)).isoformat()
-    start = _valid_date_iso(start) or yest
-    end = _valid_date_iso(end) or yest
+    # 未显式传区间时按口径给默认值(与 /api/overview 一致)
+    _start, _end = _stat_type_range(stat_type)
+    start = _valid_date_iso(start) or _start
+    end = _valid_date_iso(end) or _end
     # 平台/店铺自然日数据一天内基本不变, 缓存 6 小时; 页面加载/切平台走交互快通道, 不排队
     # 缓存键按口径拆维度: 三口径各用独立后缀键({id}__natural_day/week/month), 防批量刷新串写
     cache_key = f"{shop_id}__{stat_type}"
