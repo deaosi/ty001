@@ -1502,8 +1502,9 @@ function auditQueryParams() {
   }
   // 平台筛选: 只核算该平台店铺
   if (auditPlatform) q += `&platform=${auditPlatform}`;
-  // 店铺勾选子集(账号池模式): 只核算勾选的店铺
-  if (auditSelShops.length) q += `&shop_ids=${auditSelShops.join(',')}`;
+  // 店铺勾选子集(账号池模式): 只在显式进入"核算所选"子集模式后才带 shop_ids,
+  // 与 loadStaffData 口径一致——仅勾选复选框而未进子集模式时仍核算全量。
+  if (auditSelMode && auditSelShops.length) q += `&shop_ids=${auditSelShops.join(',')}`;
   return q;
 }
 
@@ -1667,9 +1668,11 @@ function todayQueryParams() {
   const st = startEl && startEl.value ? startEl.value : '00:00';
   const et = endEl && endEl.value ? endEl.value : '';
   let q = `start_ts=${st}&end_ts=${et}`;
-  // 店铺范围: 与核算/客服面板一致的平台 + 勾选店铺(单/多/全)
+  // 店铺范围: 与核算/客服面板一致的平台 + 勾选店铺(单/多/全)。
+  // 与 loadStaffData 保持一致: 仅在"核算所选店铺"子集模式下才带 shop_ids,
+  // 否则复选框残留勾选但未进入子集模式时, 今日抓取会静默只抓勾选店铺。
   if (auditPlatform) q += `&platform=${auditPlatform}`;
-  if (auditSelShops.length) q += `&shop_ids=${auditSelShops.join(',')}`;
+  if (auditSelMode && auditSelShops.length) q += `&shop_ids=${auditSelShops.join(',')}`;
   return q;
 }
 
