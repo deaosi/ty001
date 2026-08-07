@@ -20,6 +20,7 @@ import os
 import sys
 import threading
 import time
+from io import BytesIO
 from pathlib import Path
 
 # Windows 控制台默认 GBK, 打印 emoji/生僻字符会抛 UnicodeEncodeError 打崩请求线程。
@@ -37,10 +38,12 @@ if sys.stderr and hasattr(sys.stderr, "reconfigure"):
 
 import requests
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+
+import openpyxl  # 导入平台 Excel 解析(openpyxl 3.1.5, 环境已装; pandas/xlrd 未装勿依赖)
 
 import trace_store  # SQLite 消息轨迹存储层(35 天滚动窗口, 全平台)
 
@@ -53,12 +56,52 @@ API_BASE = "https://agent.tanyuai.com/api/data-service/business/compass"
 
 # 平台枚举(与探域前端源码一致): 0=淘宝 1=拼多多 2=有赞 4=快手 5=抖店 7=京东 8=视频号 9=得物 10=1688
 # 本账号只用到 1/5/7; 7=京东(集团"京东"的店铺, 非枚举字面上的天猫), 2=有赞无店铺
-PLATFORM_NAMES = {0: "淘宝", 1: "拼多多", 2: "有赞", 4: "快手", 5: "抖音", 7: "京东"}
+# 本系统内 10/11 = 天猫1/天猫2(非 tanyu 枚举字面的 1688): 无抓取能力, 靠 Excel 文档导入
+PLATFORM_NAMES = {0: "淘宝", 1: "拼多多", 2: "有赞", 4: "快手", 5: "抖音", 7: "京东", 10: "天猫1", 11: "天猫2"}
 
 # 抓取配置: 拼多多(1)/京东(7, "京东"集团店铺)/抖音(5)抓取; 淘宝(0)/快手(4)保留接口但不抓取
 # 注: 本账号店铺只涉及 1/5/7, 故 fetch 列表不含 2(有赞)等未用到平台
 FETCH_PLATFORMS = [1, 5, 7]
+# 导入平台(10/11 = 天猫1/天猫2): 无法从 tanyu 抓取, 数据靠 Excel 文档上传入库。
+# 绝不加入 FETCH_PLATFORMS——否则 prefetch/核算 worker 会把它们当可抓取平台逐店发
+# tanyu 请求(每次必失败+限速风控)。所有在线抓取入口必须对这些平台短路到纯 DB 聚合。
+IMPORT_PLATFORMS = [10, 11]
 KEEP_PLATFORMS = [0, 4]  # 保留接口, 不抓取不统计
+
+# 导入平台店铺清单(天猫1 = platform 10, 9 店来自 RPA 登记的 Excel 文档)。
+# thirdShopId 为确定性合成 ID(imp10_ + md5(店名)[:12]), 重复导入幂等。
+# 只 upsert 进 SQLite shops 表(展示链路 load_all_shops→get_shops 读取),
+# 绝不写 shops.json——sync_shops_from_tanyu 每次切集团全量覆写会冲掉它。
+# platform 11(天猫2)预留, 店铺待后续文档。
+IMPORT_SHOPS = [
+    {"thirdShopId": "imp10_5f1ac7a4c2eb", "shopName": "魔鬼猫青橙专卖店", "platform": 10},
+    {"thirdShopId": "imp10_28f77c920652", "shopName": "果时代数码旗舰店", "platform": 10},
+    {"thirdShopId": "imp10_c27d29667f41", "shopName": "MONSTER魔声安诺专卖店", "platform": 10},
+    {"thirdShopId": "imp10_70d7a1ab08cc", "shopName": "星科数码专营", "platform": 10},
+    {"thirdShopId": "imp10_8edee4132ec3", "shopName": "联想华荣专卖店", "platform": 10},
+    {"thirdShopId": "imp10_c9a83b825a6d", "shopName": "星诚影音专营店", "platform": 10},
+    {"thirdShopId": "imp10_fe29a40e541c", "shopName": "联想博睿兴专卖店", "platform": 10},
+    {"thirdShopId": "imp10_3d083ccf86c5", "shopName": "联想聚源专卖店", "platform": 10},
+    {"thirdShopId": "imp10_447e9133401a", "shopName": "飞利浦昕屿专卖店", "platform": 10},
+]
+_IMPORT_SHOPS_BY_NAME = {s["shopName"]: s for s in IMPORT_SHOPS}
+# 大小写不敏感索引: RPA 文档里店铺名大小写不统一(如 "monster魔声安诺专卖店" 小写开头)
+_IMPORT_SHOPS_BY_NAME_LOWER = {s["shopName"].lower(): s for s in IMPORT_SHOPS}
+# 店铺行补平台名(供 /api/shops 展示"天猫1"而非数字): upsert_shops 写 platform_name 列,
+# get_shops 读不到时回退 str(platform) 会显示 "10"。tanyu 抓取店铺由 sync_shops 带真名。
+for _imp_s in IMPORT_SHOPS:
+    _imp_s.setdefault("platformName", PLATFORM_NAMES.get(_imp_s["platform"], str(_imp_s["platform"])))
+
+
+def _import_shop_id(shop_name):
+    """按店名找导入平台合成 ID; 未登记的店名返回 None(导入时该行跳过并记 warning)
+
+    优先精确匹配, 回退大小写不敏感匹配(RPA 文档大小写不统一)。
+    """
+    s = _IMPORT_SHOPS_BY_NAME.get(shop_name)
+    if not s and shop_name:
+        s = _IMPORT_SHOPS_BY_NAME_LOWER.get(shop_name.lower())
+    return s["thirdShopId"] if s else None
 
 # 汇总指标定义(标题 / 格式化 / 排序权重)
 METRICS = [
@@ -1347,6 +1390,18 @@ def _staff_list_per_shop(by_shop, platform=None, shop_filter=None):
         if shop_filter and sid not in shop_filter:
             continue
         roster.setdefault(sid, {})[acct] = rec
+    # 导入平台(天猫1/2)在编客服: 用 imported_roster(Excel 登记的客服清单, 不被
+    # tanyu 同步覆写)。is_excluded=1 的剔除账号不进入在编池(仍会因消息出现而列出)。
+    import_plat_set = set(IMPORT_PLATFORMS)
+    if platform in import_plat_set:
+        for r in trace_store.get_import_roster(platform):
+            if r["isExcluded"]:
+                continue
+            sid = r["shopId"]
+            if shop_filter and sid not in shop_filter:
+                continue
+            rec = {"platform": platform, "nick": r.get("nick"), "serviceName": r.get("nick")}
+            roster.setdefault(sid, {})[r["account"]] = rec
     combos = []
     for sid in set(msg_agg) | set(roster):
         shop = shop_map.get(sid, {})
@@ -1704,11 +1759,381 @@ def shops_list(platform: int | None = None):
 
 @app.get("/api/platforms")
 def platforms_info():
-    """平台配置信息: 哪些平台抓取, 哪些保留接口"""
+    """平台配置信息: 哪些平台抓取, 哪些保留接口, 哪些靠 Excel 文档导入(10/11 天猫1/2)"""
     return {
         "fetch": [{"id": p, "name": PLATFORM_NAMES.get(p, str(p))} for p in FETCH_PLATFORMS],
+        "import": [{"id": p, "name": PLATFORM_NAMES.get(p, str(p))} for p in IMPORT_PLATFORMS],
         "keep": [{"id": p, "name": PLATFORM_NAMES.get(p, str(p))} for p in KEEP_PLATFORMS],
         "all": [{"id": p, "name": PLATFORM_NAMES.get(p, str(p))} for p in sorted(PLATFORM_NAMES)],
+    }
+
+
+# ---------- 导入平台(天猫1/2) Excel 文档上传 ----------
+# 平台 10/11 无 tanyu 抓取能力, 数据靠 RPA 人工登记的 Excel 上传入库。
+# 解析目标 sheet:
+#   明细数据1/明细数据2        A-I: 时间段/店铺/店铺消息总量/话术未生成/未发送/话术总量/采纳数/采纳率/生成率
+#   探域店铺数据抓取           A-I: 同上(时间段为 "2026-06-01 00:00:00" datetime, 取日期部分)
+#   客服数据抓取               A-G: 时间段/店铺/客服/客服消息总量/未发送/采纳数/采纳率
+#   后台客服数据抓取           A-L: 时间段(5.1-5.7)/店铺简称/客服/接待量/询单量/下单量/转化/.../满意率
+#   要抓的客服账号             A-B: 店铺/客服账号
+#   剔除账号登记               A-B: 店铺/账号
+# 所有 sheet 按表头嗅探识别, 列位置不写死(容错), 解析失败返回 400 并定位行列。
+# 导入策略: 天级聚合写 trace_daily(by_staff_json), 幂等覆盖; 客服 KPI 写 imported_staff_kpi;
+#           在编/剔除写 imported_roster。店铺由 IMPORT_SHOPS 常量按店名匹配(未知店名跳行记 warning)。
+# 绝不向 tanyu 发任何请求, 绝不清 shops.json(店铺只 upsert 进 SQLite shops 表)。
+_IMPORT_MAX_BYTES = 20 * 1024 * 1024  # 20MB 上限
+
+# 店铺简称 → 全名(后台客服数据抓取用简称: 华荣/魔声/博睿兴/星诚/聚源/青橙/果时代/星科/飞利浦)
+_IMPORT_SHOP_ALIASES = {
+    "华荣": "联想华荣专卖店", "魔声": "MONSTER魔声安诺专卖店", "博睿兴": "联想博睿兴专卖店",
+    "星诚": "星诚影音专营店", "聚源": "联想聚源专卖店", "青橙": "魔鬼猫青橙专卖店",
+    "果时代": "果时代数码旗舰店", "星科": "星科数码专营", "飞利浦": "飞利浦昕屿专卖店",
+}
+
+
+def _import_parse_date(v, col):
+    """把 Excel 时间段单元格解析成 'YYYY-MM-DD'; 非法抛 ValueError(定位列名)"""
+    if isinstance(v, datetime.datetime):
+        return v.date().isoformat()
+    if isinstance(v, datetime.date):
+        return v.isoformat()
+    s = str(v).strip()
+    for fmt in ("%Y/%m/%d", "%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S"):
+        try:
+            return datetime.datetime.strptime(s, fmt).date().isoformat()
+        except ValueError:
+            continue
+    # 取年份四位 + 两段数字作为 月/日
+    raise ValueError(f"无法解析日期列 {col}={v!r}")
+
+
+def _import_num(v):
+    """Excel 数值/文本 → int; 空/'-'/None → 0; 非法抛 ValueError"""
+    if v is None:
+        return 0
+    if isinstance(v, (int, float)):
+        return int(v)
+    s = str(v).strip().replace(",", "")
+    if s in ("", "-", "--", "#N/A", "None"):
+        return 0
+    if s.endswith("%"):
+        s = s[:-1]
+    try:
+        return int(float(s))
+    except ValueError:
+        raise ValueError(f"无法解析数值 {v!r}")
+
+
+def _parse_shop_day_sheet(ws, warnings, by_day, gen_rate_by_day):
+    """明细/店铺数据抓取(时间段×店铺, A-I) → by_day[(shop_id, day)] += 聚合 + gen_rate"""
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return 0
+    header = [("" if c is None else str(c)).strip().replace("\n", "") for c in rows[0]]
+    # 列定位: 按表头关键字(允许"时间段/店铺/店铺消息总量/采纳数/生成率"变体)
+    def find_col(*keys):
+        for i, h in enumerate(header):
+            for k in keys:
+                if k in h:
+                    return i
+        return None
+    i_day = find_col("时间段") or 0
+    i_shop = find_col("店铺")
+    i_total = find_col("店铺消息总量")
+    i_adopted = find_col("采纳数")
+    i_gen = find_col("生成率")
+    if i_shop is None or i_total is None:
+        raise ValueError(f"sheet[{ws.title}] 表头缺『店铺/店铺消息总量』列, 实际: {header}")
+    n = 0
+    for r_i, row in enumerate(rows[1:], start=2):
+        vals = list(row)
+        if not vals or all(c is None or str(c).strip() == "" for c in vals[:6]):
+            continue
+        try:
+            day = _import_parse_date(vals[i_day], "时间段")
+            shop_name = str(vals[i_shop]).strip() if vals[i_shop] is not None else ""
+        except (ValueError, IndexError):
+            warnings.append(f"{ws.title} 第{r_i}行: 日期/店铺字段缺失或非法, 跳过")
+            continue
+        shop_id = _import_shop_id(shop_name)
+        if not shop_id:
+            warnings.append(f"{ws.title} 第{r_i}行: 未登记的店铺『{shop_name}』跳过(仅支持 9 家天猫1店铺)")
+            continue
+        try:
+            total = _import_num(vals[i_total] if i_total < len(vals) else None)
+            adopted = _import_num(vals[i_adopted] if i_adopted is not None and i_adopted < len(vals) else None)
+            gen = None
+            if i_gen is not None and i_gen < len(vals):
+                gv = vals[i_gen]
+                if isinstance(gv, (int, float)):
+                    gen = float(gv)
+                elif gv is not None and str(gv).strip() not in ("", "-", "#DIV/0!"):
+                    gen = float(str(gv).strip().rstrip("%")) / 100 if str(gv).strip().endswith("%") else float(str(gv).strip())
+        except ValueError as e:
+            warnings.append(f"{ws.title} 第{r_i}行: {e}, 跳过")
+            continue
+        key = (shop_id, day)
+        prev = by_day.get(key)
+        if prev:
+            # 探域店铺数据抓取与明细可能重叠(同一(店,天)多行); 同源值应一致, 取 max 防 RPA 重复
+            by_day[key] = {
+                "total": max(prev["total"], total),
+                "adopted": max(prev["adopted"], adopted),
+            }
+            if gen is not None:
+                gen_rate_by_day[key] = max(gen_rate_by_day.get(key, 0.0), gen)
+        else:
+            by_day[key] = {"total": total, "adopted": adopted}
+            if gen is not None:
+                gen_rate_by_day[key] = gen
+        n += 1
+    return n
+
+
+def _parse_staff_sheet(ws, warnings, staff_by_day):
+    """客服数据抓取(时间段×店铺×客服, A-G) → staff_by_day[(shop_id, day)][account] = {total, adopted}"""
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return 0
+    header = [("" if c is None else str(c)).strip().replace("\n", "") for c in rows[0]]
+
+    def find_col(*keys):
+        for i, h in enumerate(header):
+            for k in keys:
+                if k in h:
+                    return i
+        return None
+    i_day = find_col("时间段") or 0
+    i_shop = find_col("店铺")
+    i_staff = find_col("客服")
+    i_total = find_col("客服消息总量")
+    i_adopted = find_col("采纳数")
+    if i_shop is None or i_staff is None:
+        raise ValueError(f"sheet[{ws.title}] 表头缺『店铺/客服』列, 实际: {header}")
+    n = 0
+    for r_i, row in enumerate(rows[1:], start=2):
+        vals = list(row)
+        if not vals or all(c is None or str(c).strip() == "" for c in vals[:5]):
+            continue
+        try:
+            day = _import_parse_date(vals[i_day], "时间段")
+            shop_name = str(vals[i_shop]).strip() if vals[i_shop] is not None else ""
+            account = str(vals[i_staff]).strip() if vals[i_staff] is not None else ""
+        except (ValueError, IndexError):
+            warnings.append(f"{ws.title} 第{r_i}行: 日期/店铺/客服字段缺失或非法, 跳过")
+            continue
+        if not account or account == shop_name:
+            continue  # 店铺占位行(非客服), 跳过
+        shop_id = _import_shop_id(shop_name)
+        if not shop_id:
+            warnings.append(f"{ws.title} 第{r_i}行: 未登记的店铺『{shop_name}』跳过")
+            continue
+        try:
+            total = _import_num(vals[i_total] if i_total < len(vals) else None)
+            adopted = _import_num(vals[i_adopted] if i_adopted is not None and i_adopted < len(vals) else None)
+        except ValueError as e:
+            warnings.append(f"{ws.title} 第{r_i}行: {e}, 跳过")
+            continue
+        staff_by_day.setdefault((shop_id, day), {}).setdefault(account, {"total": 0, "adopted": 0})
+        # RPA 可能对同一(天,店,客服)重复登记, 值应一致, 取 max 幂等
+        cur = staff_by_day[(shop_id, day)][account]
+        staff_by_day[(shop_id, day)][account] = {
+            "total": max(cur["total"], total), "adopted": max(cur["adopted"], adopted),
+        }
+        n += 1
+    return n
+
+
+def _parse_kpi_sheet(ws, warnings, kpi_rows):
+    """后台客服数据抓取(周×店铺简称×客服, A-L) → imported_staff_kpi rows"""
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return 0
+    header = [("" if c is None else str(c)).strip().replace("\n", "") for c in rows[0]]
+    # 列: 时间段/店铺/客服/接待量/询单量/下单量/转化/(评价参与量/很满意/满意/总满意数)/满意率
+    def find_col(*keys):
+        for i, h in enumerate(header):
+            for k in keys:
+                if k in h:
+                    return i
+        return None
+    i_week = find_col("时间段") or 0
+    i_shop = find_col("店铺")
+    i_staff = find_col("客服")
+    i_receive = find_col("接待量")
+    i_inquiry = find_col("询单量")
+    i_order = find_col("下单量")
+    i_conv = find_col("转化")
+    i_sat = find_col("满意率")
+    if i_shop is None or i_staff is None:
+        raise ValueError(f"sheet[{ws.title}] 表头缺『店铺/客服』列, 实际: {header}")
+
+    def week_start(week_str):
+        """'5.1-5.7' → 周一日期 'YYYY-05-01'; '2026-05-01 00:00:00' → 取日期"""
+        s = str(week_str).strip()
+        try:
+            return _import_parse_date(s, "时间段")
+        except ValueError:
+            pass
+        if "-" in s and len(s) < 12:
+            a = s.split("-")[0].strip()
+            # 5.1-5.7 → 2026-05-01
+            parts = a.split(".")
+            if len(parts) == 2:
+                try:
+                    return f"2026-{int(parts[0]):02d}-{int(parts[1]):02d}"
+                except ValueError:
+                    pass
+        raise ValueError(f"无法解析周字段 {week_str!r}")
+
+    n = 0
+    for r_i, row in enumerate(rows[1:], start=2):
+        vals = list(row)
+        if not vals or all(c is None or str(c).strip() == "" for c in vals[:4]):
+            continue
+        try:
+            w = week_start(vals[i_week])
+            shop_alias = str(vals[i_shop]).strip() if vals[i_shop] is not None else ""
+            account = str(vals[i_staff]).strip() if vals[i_staff] is not None else ""
+            shop_name = _IMPORT_SHOP_ALIASES.get(shop_alias, shop_alias)
+        except (ValueError, IndexError):
+            warnings.append(f"{ws.title} 第{r_i}行: 周/店铺/客服字段非法, 跳过")
+            continue
+        shop_id = _import_shop_id(shop_name)
+        if not shop_id:
+            warnings.append(f"{ws.title} 第{r_i}行: 未登记的店铺『{shop_name}』跳过")
+            continue
+        if not account:
+            continue
+        try:
+            kpi_rows.append({
+                "third_shop_id": shop_id, "week_start": w, "account": account,
+                "receive_cnt": _import_num(vals[i_receive] if i_receive is not None and i_receive < len(vals) else None),
+                "inquiry_cnt": _import_num(vals[i_inquiry] if i_inquiry is not None and i_inquiry < len(vals) else None),
+                "order_cnt": _import_num(vals[i_order] if i_order is not None and i_order < len(vals) else None),
+                "conversion": float(vals[i_conv]) if i_conv is not None and i_conv < len(vals) and isinstance(vals[i_conv], (int, float)) else None,
+                "satisfaction": float(vals[i_sat]) if i_sat is not None and i_sat < len(vals) and isinstance(vals[i_sat], (int, float)) else None,
+            })
+        except (ValueError, IndexError, TypeError) as e:
+            warnings.append(f"{ws.title} 第{r_i}行: {e}, 跳过")
+            continue
+        n += 1
+    return n
+
+
+def _parse_roster_sheet(ws, warnings, roster_rows, is_excluded):
+    """在编/剔除客服(店铺×账号) → imported_roster rows"""
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return 0
+    header = [("" if c is None else str(c)).strip() for c in rows[0]]
+    i_shop = 0 if "店铺" in header[0] else None
+    i_acc = None
+    for i, h in enumerate(header):
+        if "账号" in h or "客服" in h:
+            i_acc = i
+            break
+    if i_shop is None or i_acc is None:
+        raise ValueError(f"sheet[{ws.title}] 表头缺『店铺/账号』列, 实际: {header}")
+    n = 0
+    for r_i, row in enumerate(rows[1:], start=2):
+        vals = list(row)
+        if not vals or all(c is None or str(c).strip() == "" for c in vals[:2]):
+            continue
+        shop_name = str(vals[i_shop]).strip() if vals[i_shop] is not None else ""
+        account = str(vals[i_acc]).strip() if i_acc < len(vals) and vals[i_acc] is not None else ""
+        if not shop_name or not account:
+            continue
+        shop_id = _import_shop_id(shop_name)
+        if not shop_id:
+            warnings.append(f"{ws.title} 第{r_i}行: 未登记的店铺『{shop_name}』跳过")
+            continue
+        roster_rows.append({
+            "third_shop_id": shop_id, "account": account,
+            "nick": account.split(":")[-1] if ":" in account else account,
+            "is_excluded": is_excluded,
+        })
+        n += 1
+    return n
+
+
+@app.post("/api/import/trace")
+async def import_trace(file: UploadFile = File(...), platform: int = Form(10)):
+    """上传 Excel 文档导入天猫1/2 平台聚合数据。仅接受 IMPORT_PLATFORMS 内平台。"""
+    if platform not in IMPORT_PLATFORMS:
+        raise HTTPException(400, f"platform={platform} 非导入平台(仅 {IMPORT_PLATFORMS})")
+    if not (file.filename or "").lower().endswith(".xlsx"):
+        raise HTTPException(400, "仅支持 .xlsx 文件")
+    content = await file.read()
+    if len(content) > _IMPORT_MAX_BYTES:
+        raise HTTPException(400, f"文件超过 20MB 上限({len(content)} 字节)")
+    try:
+        # 不用 read_only: 该 RPA 生成的工作簿 read_only 模式维度探测异常
+        # (iter_rows 只读到第 1 列/第 1 行), 普通模式配 20MB 上限即可控内存
+        wb = openpyxl.load_workbook(BytesIO(content), data_only=True)
+    except Exception as e:
+        raise HTTPException(400, f"无法解析 Excel: {e}")
+
+    warnings = []
+    by_day = {}          # (shop_id, day) -> {total, adopted}
+    gen_rate_by_day = {}  # (shop_id, day) -> float
+    staff_by_day = {}     # (shop_id, day) -> {account: {total, adopted}}
+    kpi_rows = []
+    roster_rows = []
+
+    try:
+        for ws in wb.worksheets:
+            title = ws.title.strip()
+            if title in ("明细数据 1", "明细数据 2"):
+                _parse_shop_day_sheet(ws, warnings, by_day, gen_rate_by_day)
+            elif title == "探域店铺数据抓取":
+                _parse_shop_day_sheet(ws, warnings, by_day, gen_rate_by_day)
+            elif title == "客服数据抓取":
+                _parse_staff_sheet(ws, warnings, staff_by_day)
+            elif title == "后台客服数据抓取":
+                _parse_kpi_sheet(ws, warnings, kpi_rows)
+            elif title in ("要抓的客服账号", "剔除账号登记"):
+                _parse_roster_sheet(ws, warnings, roster_rows, is_excluded=(title == "剔除账号登记"))
+            else:
+                # 未知 sheet(如 Sheet6 是纯粘贴文本): 跳过不报错, 不致命
+                continue
+    except ValueError as e:
+        raise HTTPException(400, f"Excel 解析失败: {e}")
+
+    if not by_day and not staff_by_day:
+        raise HTTPException(400, f"Excel 中未找到『明细数据1/2 或 探域店铺数据抓取』sheet 的有效行({len(warnings)} 条告警: {warnings[:5]})")
+
+    # 合并客服级数据进天级聚合: by_staff_json 按 total 降序, 与 rebuild_daily 同构
+    for (shop_id, day), staff_map in staff_by_day.items():
+        agg = by_day.setdefault((shop_id, day), {"total": 0, "adopted": 0})
+        staff_total = sum(s["total"] for s in staff_map.values())
+        staff_adopted = sum(s["adopted"] for s in staff_map.values())
+        agg["total"] = max(agg["total"], staff_total)
+        agg["adopted"] = max(agg["adopted"], staff_adopted)
+        gen_rate_by_day.setdefault((shop_id, day), None)
+
+    # 落库
+    trace_store.upsert_shops(IMPORT_SHOPS)  # 店铺先确保在 shops 表
+    trace_store.clear_import_data(platform)  # 全量重传即替换, 防旧日行残留
+    for (shop_id, day), agg in by_day.items():
+        trace_store.upsert_import_shop_day(
+            shop_id, day, agg["total"], agg["adopted"],
+            by_staff_map=staff_by_day.get((shop_id, day)),
+            generation_rate=gen_rate_by_day.get((shop_id, day)),
+        )
+    trace_store.upsert_import_kpi(kpi_rows)
+    trace_store.upsert_import_roster(roster_rows)
+
+    _invalidate_audit_caches()  # 清核算磁盘/内存缓存, 强制下次从新数据聚合
+    log_line("import", f"导入平台{platform}成功: {len(set(k[0] for k in by_day))}店 {len(by_day)}天 {len(roster_rows)}客服 {len(kpi_rows)}条KPI")
+    return {
+        "ok": True, "platform": platform,
+        "shops": len(set(k[0] for k in by_day)),
+        "days": len(by_day),
+        "staff": len(set(r["account"] for r in roster_rows)),
+        "kpis": len(kpi_rows),
+        "warnings": warnings[:50],
+        "warningCount": len(warnings),
     }
 
 
@@ -1824,6 +2249,70 @@ def history_weeks(platform: int | None = None):
     return {"weeks": out}
 
 
+def _import_overview_summary(platform, stat_type):
+    """导入平台(天猫1/2)平台维度汇总: 纯本地 trace_daily 聚合, 零上游请求
+
+    与 overview 返回同构(source="import"), 口径与 tanyu summary 一致(忽略日期):
+      natural_day   = 昨天 vs 前天
+      natural_week  = 本周(周一~昨天) vs 上周
+      natural_month = 本月(1~昨天) vs 上月
+    4 张卡: 消息量/采纳数/采纳率/生成率(generation_rate 来自导入 Excel 生成率列)。
+    统计字段: 消息量/采纳数直接聚合, 采纳率=adopted/total, 生成率=trace_daily.generation_rate。
+    """
+    today = datetime.date.today()
+    one_day = datetime.timedelta(days=1)
+    yesterday = today - one_day
+    if stat_type == "natural_week":
+        cur_ws = today - datetime.timedelta(days=today.weekday())
+        cur_start, cur_end = cur_ws.isoformat(), yesterday.isoformat()
+        prev_start = (cur_ws - datetime.timedelta(days=7)).isoformat()
+        prev_end = (cur_ws - one_day).isoformat()
+    elif stat_type == "natural_month":
+        cur_start, cur_end = today.replace(day=1).isoformat(), yesterday.isoformat()
+        prev_start = (today.replace(day=1) - one_day).replace(day=1).isoformat()
+        prev_end = (today.replace(day=1) - one_day).isoformat()
+    else:  # natural_day
+        cur_start = cur_end = yesterday.isoformat()
+        prev_start = prev_end = (yesterday - one_day).isoformat()
+
+    def _agg(s, e):
+        agg = trace_store.overview_aggregate(s, e, platform)
+        total = sum(v["total"] for _, v in agg["shop_list"])
+        adopted = sum(v["adopted"] for _, v in agg["shop_list"])
+        # 生成率: 区间内各店各天 generation_rate 的均值(Excel 直接给出的字段)
+        gen = trace_store.avg_generation_rate(s, e, platform)
+        return total, adopted, gen
+
+    cur_total, cur_adopted, cur_gen = _agg(cur_start, cur_end)
+    prev_total, prev_adopted, prev_gen = _agg(prev_start, prev_end)
+
+    def _card(current, previous, label):
+        return {
+            "current": current,
+            "previous": previous,
+            "comparePercent": (round((current - previous) / previous * 100, 2) if previous else None),
+            "label": label,
+        }
+
+    items = {
+        "history_msg_total": _card(cur_total, prev_total, "消息量"),
+        "history_adopted_total": _card(cur_adopted, prev_adopted, "采纳数"),
+        "history_accept_rate": _card(round(cur_adopted * 100.0 / cur_total, 2) if cur_total else 0,
+                                     round(prev_adopted * 100.0 / prev_total, 2) if prev_total else 0, "采纳率"),
+        "history_gen_rate": _card(round(cur_gen * 100, 2) if cur_gen is not None else None,
+                                  round(prev_gen * 100, 2) if prev_gen is not None else None, "生成率"),
+    }
+    return {
+        "statType": stat_type,
+        "startDate": _stat_type_range(stat_type)[0],
+        "endDate": _stat_type_range(stat_type)[1],
+        "platform": platform,
+        "platformName": PLATFORM_NAMES.get(platform),
+        "source": "import",
+        "items": items,
+    }
+
+
 @app.get("/api/overview")
 def overview(platform: int = 1, stat_type: str = "natural_day", start: str | None = None, end: str | None = None,
              week: str | None = None):
@@ -1845,6 +2334,9 @@ def overview(platform: int = 1, stat_type: str = "natural_day", start: str | Non
     _start, _end = _stat_type_range(stat_type)
     start = _valid_date_iso(start) or _start
     end = _valid_date_iso(end) or _end
+    # 导入平台(天猫1/2)分支: 纯本地 trace_daily 聚合, 绝不请求 tanyu summary
+    if platform in IMPORT_PLATFORMS:
+        return _import_overview_summary(platform, stat_type)
     # 历史周分支: 传了 week 且非当前周 => 本地 SQLite 聚合(零上游请求)
     if stat_type == "natural_week" and week and _valid_date_iso(week):
         hist = _history_week_summary(platform, week)
@@ -1908,6 +2400,27 @@ def shop_detail(shop_id: str, stat_type: str = "natural_day", start: str | None 
         hist = _history_week_shop(shop, week)
         if hist is not None:
             return hist
+    # 导入平台(天猫1/2)店: 纯本地 trace_daily 聚合, 无原始消息/无 tanyu 明细表,
+    # 绝不请求 tanyu summary/section。source="import", tables 空。
+    if _is_import_shop(shop):
+        stat = _import_shop_stat(shop_id, start, end)
+        items = {}
+        if stat:
+            items = {
+                "history_msg_total": {"current": stat["total"], "previous": 0, "comparePercent": None, "label": "消息量"},
+                "history_adopted_total": {"current": stat["adopted"], "previous": 0, "comparePercent": None, "label": "采纳数"},
+                "history_accept_rate": {"current": stat["rate"], "previous": 0, "comparePercent": None, "label": "采纳率"},
+            }
+        return {
+            "shop": shop,
+            "startDate": start,
+            "endDate": end,
+            "statType": stat_type,
+            "source": "import",
+            "items": items,
+            "fetchedAt": time.time(),
+            "tables": {},
+        }
     # 平台/店铺自然日数据一天内基本不变, 缓存 6 小时; 页面加载/切平台走交互快通道, 不排队
     # 缓存键按口径拆维度: 三口径各用独立后缀键({id}__natural_day/week/month), 防批量刷新串写
     # natural_week 键额外绑周一锚点(start): 周界 0 点换新键必然 miss, 杜绝"上周数值服务到
@@ -2063,6 +2576,11 @@ def trace_shop(shop_id: str, days: int = 7, force: int = 0, start: str | None = 
         raise HTTPException(400, f"end 格式非法: {end}")
     _sms, _ems, _sday, _eday, _ht = _split_bounds(start, end)
     today_str = datetime.date.today().isoformat()
+    # 导入平台(天猫1/2)店: 纯 DB 天级聚合, 无原始消息, 绝不发 tanyu 请求
+    if _is_import_shop(shop):
+        stat = _import_shop_stat(shop_id, start, end)
+        return {"shop": shop, "startDate": start, "endDate": end,
+                "fetchedAt": time.time(), "stat": stat, "live": False}
     # 区间含今天: 历史(库) + 今天(实时) 合并, 保留实时数据(day 边界判定)
     if (not force and _use_sqlite_trace()
             and today_str >= _sday and today_str <= _eday):
@@ -2321,6 +2839,47 @@ def _aggregate_stat_rows(results, start, end):
     }
 
 
+def _import_shop_stat(shop_id, start, end):
+    """导入平台(天猫1/2)单店 stat: 从 trace_daily 聚合(天级), 无原始消息
+
+    start/end 用 day 边界字符串(秒级区间对导入店按整天算——Excel 是天级粒度)。
+    byStaff 从 staff_aggregate_per_shop(按店铺客服聚合, 读 by_staff_json)取该店行;
+    daily 用 query_daily 逐日; messages 恒空(导入数据无原始消息)。
+    """
+    sms, ems, sday, eday, _ = _split_bounds(start, end)
+    days = trace_store.query_daily(shop_id, sday, eday)
+    if not days:
+        return None
+    total = sum(d["total"] for d in days)
+    adopted = sum(d["adopted"] for d in days)
+    per_shop = trace_store.staff_aggregate_per_shop(sday, eday, platform=None,
+                                                    shop_filter={shop_id})
+    staff_map = per_shop["by_shop"].get(shop_id, {})
+    daily_list = [
+        {"date": d["day"], "total": d["total"], "adopted": d["adopted"],
+         "rate": round(d["adopted"] / d["total"] * 100, 2) if d["total"] else 0}
+        for d in days
+    ]
+    staff_list = [{"account": acct, "total": v.get("total", 0), "adopted": v.get("adopted", 0),
+                   "rate": round(v.get("adopted", 0) / v.get("total", 0) * 100, 2) if v.get("total", 0) else 0}
+                  for acct, v in sorted(staff_map.items())]
+    return {
+        "total": total,
+        "counts": {1: 0, 2: 0, 3: 0, None: 0},
+        "adopted": adopted,
+        "rate": round(adopted / total * 100, 2) if total else 0,
+        "byStaff": staff_list,
+        "byType": {},
+        "daily": daily_list,
+        "messages": [],
+    }
+
+
+def _is_import_shop(shop):
+    """店铺是否导入平台(天猫1/2)"""
+    return bool(shop and shop.get("platform") in IMPORT_PLATFORMS)
+
+
 def _trace_overview_from_db(start, end, platform=None, shop_filter=None, has_time=False):
     """从 SQLite 聚合核算总览(与在线 worker 输出结构完全一致)
 
@@ -2338,7 +2897,8 @@ def _trace_overview_from_db(start, end, platform=None, shop_filter=None, has_tim
     # 用跨集团店铺表(全部 118 家)解析店铺元数据并枚举店铺全集, 而非当前激活
     # 集团的 shops.json(否则非当前集团店铺 platform 为 None、无法展示平台标签)
     shop_map = {s["thirdShopId"]: s for s in trace_store.get_shops()}
-    scope = [s for s in shop_map.values() if s.get("platform") in FETCH_PLATFORMS]
+    # 抓取平台 + 导入平台都进 DB 快路径(导入平台靠 Excel 数据, 无 tanyu 抓取能力)
+    scope = [s for s in shop_map.values() if s.get("platform") in FETCH_PLATFORMS + IMPORT_PLATFORMS]
     if platform is not None:
         scope = [s for s in scope if s.get("platform") == platform]
     if shop_filter:
@@ -2428,6 +2988,32 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
         _trace_state["last_run"] = time.time()
         print(f"[trace] 命中磁盘缓存 {start}~{end}, 跳过抓取 (共{disk.get('total', 0)}条)")
         return {"status": "done", "startDate": start, "endDate": end, "result": disk}
+    # 导入平台(天猫1/2)分支: 数据靠 Excel 文档导入, 无 tanyu 抓取能力。
+    # 永不触发 worker、不落盘、不发任何 tanyu 请求; 秒级自定义区间也强制按整天
+    # (Excel 是天级粒度, 秒级边界只对 messages 有意义, 导入店无 messages)。
+    if platform in IMPORT_PLATFORMS:
+        # day 边界字符串(sday/eday)传给 DB 聚合——start/end 带 'T' 的秒级串会
+        # 让 trace_daily.day 的 BETWEEN 字典序误匹配; has_time 恒 False 用 day 版。
+        result = _trace_overview_from_db(sday, eday, platform, shop_filter, has_time=False)
+        if result is None:
+            result = {"startDate": start, "endDate": end, "platform": platform,
+                      "fetched_at": time.time(), "total": 0, "adopted": 0, "rate": 0,
+                      "shopList": [], "byStaff": []}
+        else:
+            # 内层聚合用 day 边界算的, 但对外 startDate/endDate 保持请求原值(秒级区间)
+            result["startDate"] = start
+            result["endDate"] = end
+        if shop_filter:
+            _trace_state["subset_result"] = result
+        else:
+            _trace_state["result"] = result
+        _trace_state["start_date"] = start
+        _trace_state["end_date"] = end
+        _trace_state["platform"] = platform
+        _trace_state["shop_filter"] = shop_filter
+        _trace_state["last_run"] = time.time()
+        print(f"[trace] 导入平台{platform} 纯DB聚合 {start}~{end} (共{result['total']}条)")
+        return {"status": "done", "startDate": start, "endDate": end, "result": result}
     # SQLite 快路径: 数据库已覆盖该区间 => 纯本地聚合, 零上游请求(核算提速主因)
     # 店铺子集/跨平台核算同样走 DB 快路径(预抓已把三集团数据都入库, 无需切集团)
     # 覆盖判定用 day 边界(datetime 串直接比会因 'T' 静默 miss)
@@ -2618,9 +3204,11 @@ def trace_staff(days: int = 7, start: str | None = None, end: str | None = None,
     result = {"startDate": start, "endDate": end, "platform": platform,
               "total": 0, "adopted": 0, "rate": 0, "byStaff": []}
     if trace_store.db_window_covers(sday, eday):
-        if has_time:
+        if has_time and platform not in IMPORT_PLATFORMS:
             per_shop = trace_store.staff_aggregate_per_shop_ms(_sms, _ems, platform, shop_filter)
         else:
+            # 导入平台(10/11)或纯日期区间: 走天级 trace_daily(导入数据无 messages,
+            # 秒级边界对导入店按整天聚合; Excel 就是天级粒度)
             per_shop = trace_store.staff_aggregate_per_shop(start, end, platform, shop_filter)
         staff_list = _staff_list_per_shop(per_shop["by_shop"], platform, shop_filter)
         result["byStaff"] = staff_list
@@ -2896,6 +3484,13 @@ def trace_messages(shop_id: str, days: int = 7, force: int = 0,
         raise HTTPException(400, f"end 格式非法: {end}")
     _sms, _ems, sday, eday, has_time = _split_bounds(start, end)
     today_str = datetime.date.today().isoformat()
+    # 导入平台(天猫1/2)店: 无原始消息, 返回天级 daily + 空 messages, 绝不请求 tanyu
+    if _is_import_shop(shop):
+        stat = _import_shop_stat(shop_id, start, end)
+        return {"shop": shop, "startDate": start, "endDate": end,
+                "total": (stat or {}).get("total", 0),
+                "daily": (stat or {}).get("daily", []),
+                "messages": [], "live": False, "imported": True}
     # 区间含今天: 历史(库) + 今天(实时) 合并(day 边界判定)
     if (not force and _use_sqlite_trace()
             and today_str >= sday and today_str <= eday):
@@ -3368,6 +3963,8 @@ if __name__ == "__main__":
     # 常驻服务启动时初始化 SQLite 表结构
     try:
         trace_store.init_db()
+        # 导入平台(天猫1/2)店铺只进 SQLite shops 表(不进 shops.json, 避免被切集团覆写)
+        trace_store.upsert_shops(IMPORT_SHOPS)
     except Exception as e:
         print(f"[db] 初始化失败: {e}")
     port = int(os.environ.get("PORT", "8080"))

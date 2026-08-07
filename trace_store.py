@@ -95,12 +95,37 @@ def _init_schema(c):
             counts_json   TEXT,
             by_staff_json TEXT,
             by_type_json  TEXT,
+            generation_rate REAL,
             PRIMARY KEY (third_shop_id, day)
         );
         CREATE INDEX IF NOT EXISTS idx_trace_daily_day
             ON trace_daily(day);
+        CREATE TABLE IF NOT EXISTS imported_staff_kpi (
+            third_shop_id TEXT NOT NULL,
+            week_start    TEXT NOT NULL,
+            account       TEXT NOT NULL,
+            receive_cnt   INTEGER,
+            inquiry_cnt   INTEGER,
+            order_cnt     INTEGER,
+            conversion    REAL,
+            satisfaction  REAL,
+            PRIMARY KEY (third_shop_id, week_start, account)
+        );
+        CREATE TABLE IF NOT EXISTS imported_roster (
+            third_shop_id TEXT NOT NULL,
+            account       TEXT NOT NULL,
+            nick          TEXT,
+            is_excluded   INTEGER DEFAULT 0,
+            PRIMARY KEY (third_shop_id, account)
+        );
         """
     )
+    # 旧库的 trace_daily 可能没有 generation_rate 列(导入平台概览生成率卡用):
+    # 幂等补列(已存在则忽略)
+    try:
+        c.execute("ALTER TABLE trace_daily ADD COLUMN generation_rate REAL")
+    except Exception:
+        pass
     c.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', '1')"
     )
@@ -314,6 +339,151 @@ def rebuild_daily(shop_id):
                     )
                     for day, a in agg.items()
                 ],
+            )
+            c.commit()
+        finally:
+            c.close()
+
+
+def upsert_import_shop_day(shop_id, day, total, adopted, by_staff_map=None,
+                           generation_rate=None):
+    """写入导入平台(天猫1/2)某店某天的聚合行到 trace_daily
+
+    与 rebuild_daily 同构: total/adopted + by_staff_json(排序一致, 读链路同口径)。
+    counts_json/by_type_json 写 null(导入数据无 send_type/type 明细, 读链路不用)。
+    generation_rate(话术生成率)来自 Excel 明细的"生成率"列, 概览第 4 卡用。
+    主键 (third_shop_id, day) upsert 幂等, 重复导入覆盖。
+    """
+    _ensure()
+    by_staff = by_staff_map or {}
+    with _write_lock:
+        c = _conn(write=True)
+        try:
+            c.execute(
+                """INSERT INTO trace_daily(third_shop_id, day, total, adopted,
+                                           counts_json, by_staff_json, by_type_json,
+                                           generation_rate)
+                   VALUES(?,?,?,?,?,?,?,?)
+                   ON CONFLICT(third_shop_id, day) DO UPDATE SET
+                     total=excluded.total, adopted=excluded.adopted,
+                     counts_json=excluded.counts_json,
+                     by_staff_json=excluded.by_staff_json,
+                     by_type_json=excluded.by_type_json,
+                     generation_rate=excluded.generation_rate""",
+                (
+                    shop_id, day, int(total), int(adopted),
+                    None,
+                    json.dumps(
+                        sorted(by_staff.items(), key=lambda kv: -kv[1]["total"]),
+                        ensure_ascii=False,
+                    ),
+                    None,
+                    generation_rate,
+                ),
+            )
+            c.commit()
+        finally:
+            c.close()
+
+
+def upsert_import_kpi(rows):
+    """写入导入平台周级客服 KPI(接待量/询单量/下单量/转化/满意率)"""
+    if not rows:
+        return
+    _ensure()
+    with _write_lock:
+        c = _conn(write=True)
+        try:
+            c.executemany(
+                """INSERT INTO imported_staff_kpi(third_shop_id, week_start, account,
+                                                  receive_cnt, inquiry_cnt, order_cnt,
+                                                  conversion, satisfaction)
+                   VALUES(?,?,?,?,?,?,?,?)
+                   ON CONFLICT(third_shop_id, week_start, account) DO UPDATE SET
+                     receive_cnt=excluded.receive_cnt, inquiry_cnt=excluded.inquiry_cnt,
+                     order_cnt=excluded.order_cnt, conversion=excluded.conversion,
+                     satisfaction=excluded.satisfaction""",
+                [
+                    (
+                        r["third_shop_id"], r["week_start"], r["account"],
+                        r.get("receive_cnt"), r.get("inquiry_cnt"), r.get("order_cnt"),
+                        r.get("conversion"), r.get("satisfaction"),
+                    )
+                    for r in rows
+                ],
+            )
+            c.commit()
+        finally:
+            c.close()
+
+
+def upsert_import_roster(rows):
+    """写入导入平台在编/剔除客服清单(客服池渲染用, 独立于 tanyu 同步的 staff_names)"""
+    if not rows:
+        return
+    _ensure()
+    with _write_lock:
+        c = _conn(write=True)
+        try:
+            c.executemany(
+                """INSERT INTO imported_roster(third_shop_id, account, nick, is_excluded)
+                   VALUES(?,?,?,?)
+                   ON CONFLICT(third_shop_id, account) DO UPDATE SET
+                     nick=excluded.nick, is_excluded=excluded.is_excluded""",
+                [
+                    (r["third_shop_id"], r["account"], r.get("nick"), 1 if r.get("is_excluded") else 0)
+                    for r in rows
+                ],
+            )
+            c.commit()
+        finally:
+            c.close()
+
+
+def get_import_roster(platform=10):
+    """读导入平台在编/剔除客服清单(JOIN shops 按平台过滤)"""
+    if not DB_FILE.exists():
+        return {}
+    try:
+        c = _conn()
+        rows = c.execute(
+            """SELECT r.third_shop_id AS shop_id, r.account, r.nick, r.is_excluded
+               FROM imported_roster r
+               JOIN shops s ON s.third_shop_id = r.third_shop_id
+               WHERE s.platform = ?""",
+            (platform,),
+        ).fetchall()
+        return [
+            {
+                "shopId": r["shop_id"], "account": r["account"],
+                "nick": r["nick"], "isExcluded": bool(r["is_excluded"]),
+            }
+            for r in rows
+        ]
+    except Exception:
+        return []
+
+
+def clear_import_data(platform=10):
+    """清空导入平台的聚合/客服/KPI 数据(重新导入前先清, 防残留旧日行)"""
+    _ensure()
+    with _write_lock:
+        c = _conn(write=True)
+        try:
+            c.execute(
+                "DELETE FROM trace_daily WHERE third_shop_id IN "
+                "(SELECT third_shop_id FROM shops WHERE platform = ?)",
+                (platform,),
+            )
+            c.execute(
+                "DELETE FROM imported_staff_kpi WHERE third_shop_id IN "
+                "(SELECT third_shop_id FROM shops WHERE platform = ?)",
+                (platform,),
+            )
+            c.execute(
+                "DELETE FROM imported_roster WHERE third_shop_id IN "
+                "(SELECT third_shop_id FROM shops WHERE platform = ?)",
+                (platform,),
             )
             c.commit()
         finally:
@@ -627,6 +797,38 @@ def staff_aggregate_per_shop(start, end, platform=None, shop_filter=None):
         return {"by_shop": {}, "combos": 0}
 
 
+def avg_generation_rate(start, end, platform=None, shop_filter=None):
+    """区间内 trace_daily.generation_rate 的非空均值(导入平台生成率卡)
+
+    generation_rate 只在导入平台(10/11)有值(Excel 生成率列), 抓取平台恒 None。
+    返回 float|None(区间内无任何非空行时返回 None, 前端显示 '—')。
+    """
+    if not DB_FILE.exists():
+        return None
+    try:
+        c = _conn()
+        where = "d.day BETWEEN ? AND ? AND d.generation_rate IS NOT NULL"
+        args = [start, end]
+        if platform is not None:
+            where += " AND s.platform = ?"
+            args.append(platform)
+        if shop_filter:
+            placeholders = ",".join("?" * len(shop_filter))
+            where += f" AND d.third_shop_id IN ({placeholders})"
+            args.extend(shop_filter)
+        rows = c.execute(
+            f"""SELECT d.generation_rate AS g
+                FROM trace_daily d
+                JOIN shops s ON s.third_shop_id = d.third_shop_id
+                WHERE {where}""",
+            args,
+        ).fetchall()
+        vals = [r["g"] for r in rows if r["g"] is not None]
+        return (sum(vals) / len(vals)) if vals else None
+    except Exception:
+        return None
+
+
 def staff_aggregate_per_shop_ms(start_ms, end_ms, platform=None, shop_filter=None):
     """按 (店铺, 客服) 组合聚合客服维度(秒级边界): 从 messages 表按 msg_time 过滤
 
@@ -714,8 +916,18 @@ def prune_window(keep_days=30):
                 "DELETE FROM messages WHERE msg_time < ?", (cutoff_ms,)
             )
             deleted = cur.rowcount
-            c.execute("DELETE FROM trace_daily WHERE day < ?", (keep_start_str,))
-            c.execute("DELETE FROM shops WHERE third_shop_id NOT IN (SELECT DISTINCT third_shop_id FROM messages)")
+            # 导入平台(天猫1/2)店铺没有 messages 行、天级数据是人工登记, 裁剪必须排除:
+            # 否则会把导入的天级聚合当过期删掉、把导入店铺删出 shops 表。
+            imp_sql = "(SELECT third_shop_id FROM shops WHERE platform IN (10, 11))"
+            c.execute(
+                f"DELETE FROM trace_daily WHERE day < ? "
+                f"AND third_shop_id NOT IN {imp_sql}",
+                (keep_start_str,),
+            )
+            c.execute(
+                f"DELETE FROM shops WHERE third_shop_id NOT IN "
+                f"(SELECT DISTINCT third_shop_id FROM messages) AND platform NOT IN (10, 11)"
+            )
             c.commit()
             return deleted
         finally:

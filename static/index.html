@@ -192,6 +192,7 @@
   .o-card.c-teal::after { background: var(--cyan); }
   .o-card.c-amber::after { background: var(--amber); }
   .o-card.c-red::after { background: var(--purple); }
+  .o-card.c-green::after { background: var(--green); }
   .o-card .label { font-size: 12px; color: var(--text-sub); margin-bottom: 8px; letter-spacing: .5px; }
   .o-card .value { font-size: 30px; font-weight: 720; font-variant-numeric: tabular-nums; letter-spacing: -.5px; }
   .o-card .trend { font-size: 12px; margin-top: 10px; display: flex; align-items: center; gap: 5px; }
@@ -561,8 +562,10 @@
     </select>
     <button class="btn btn-ghost" id="btnLogin" onclick="openLogin()">🔑 登录更新Cookie</button>
     <span class="cookie-expiry" id="cookieExpiry" title="登录 Cookie 到期时间"></span>
+    <button class="btn btn-ghost" id="btnImport" onclick="openImportPicker()">📤 导入Excel</button>
     <button class="btn btn-primary" id="btnRefresh" onclick="startRefresh()">🔄 刷新数据</button>
   </div>
+  <input type="file" id="importFile" accept=".xlsx" style="display:none" onchange="doImportExcel()">
   <div class="progress-bar" id="progressBar"><div class="fill" id="progressFill"></div></div>
 </header>
 
@@ -591,6 +594,7 @@
     <div class="o-card c-teal"><div class="label">3分钟回复率</div><div class="value">--</div><div class="trend">加载中…</div></div>
     <div class="o-card c-amber"><div class="label">采纳率</div><div class="value">--</div><div class="trend">加载中…</div></div>
     <div class="o-card c-red"><div class="label">生成率</div><div class="value">--</div><div class="trend">加载中…</div></div>
+    <div class="o-card c-green"><div class="label">消息量</div><div class="value">--</div><div class="trend">加载中…</div></div>
   </div>
 
   <!-- 店铺列表 -->
@@ -917,7 +921,7 @@ let staffSyncRunning = false;   // 客服昵称同步进行中
 let staffShopFilterGen = 0;  // 客服池店铺下拉加载代际: 快速切平台/集团时旧响应不得覆写下拉选项
 let staffDataGen = 0;        // 客服数据加载代际: 快速切平台/集团时旧响应不得覆写客服面板
 
-const PLATFORM_NAMES = { 0: '淘宝', 1: '拼多多', 2: '有赞', 4: '快手', 5: '抖音', 7: '京东' };
+const PLATFORM_NAMES = { 0: '淘宝', 1: '拼多多', 2: '有赞', 4: '快手', 5: '抖音', 7: '京东', 10: '天猫1', 11: '天猫2' };
 
 function fmtNum(v, format) {
   if (v === null || v === undefined) return '--';
@@ -967,6 +971,7 @@ async function loadPlatforms() {
     platformInfo = await fetchJSON('/api/platforms');
     const sel = document.getElementById('platformSelect');
     sel.innerHTML = '<option value="">全部平台</option>';
+    // 顶部平台下拉: 抓取平台 + 导入平台(天猫1/2, 标注"(导入)")
     const fetchPlats = platformInfo.fetch || [];
     fetchPlats.forEach(p => {
       const opt = document.createElement('option');
@@ -974,7 +979,13 @@ async function loadPlatforms() {
       opt.textContent = p.name;
       sel.appendChild(opt);
     });
-    // 核算板块的平台筛选下拉: 只列抓取平台
+    (platformInfo.import || []).forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = String(p.id);
+      opt.textContent = p.name + ' (导入)';
+      sel.appendChild(opt);
+    });
+    // 核算板块的平台筛选下拉: 抓取 + 导入平台(导入平台数据靠 Excel, 可核算/客服池)
     const auditSel = document.getElementById('auditPlatform');
     if (auditSel) {
       auditSel.innerHTML = '<option value="">全部平台</option>';
@@ -982,6 +993,12 @@ async function loadPlatforms() {
         const opt = document.createElement('option');
         opt.value = String(p.id);
         opt.textContent = p.name;
+        auditSel.appendChild(opt);
+      });
+      (platformInfo.import || []).forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = String(p.id);
+        opt.textContent = p.name + ' (导入)';
         auditSel.appendChild(opt);
       });
     }
@@ -1158,12 +1175,68 @@ function switchPlatform(value) {
   currentPlatform = value;
   refreshHeaderSub();
   loadShops();
+  loadOverview();  // 顶部平台切换后概览三卡/四卡跟随该平台(含导入平台 10/11)
   // 顶部平台切换联动核算/客服账号池: 账号池是顶部平台的下游视图,
   // 保留"切换后不跟"会造成顶部=京东 而账号池仍在拼多多的错位。
   const auditSel = document.getElementById('auditPlatform');
   if (auditSel && auditSel.value !== value) {
     auditSel.value = value;
     onAuditPlatformChange();  // 复用核算平台切换逻辑: 重置店铺筛选/勾选 + 重载核算缓存 + 客服面板
+  }
+  syncImportPlatformUI();
+}
+
+// 导入平台(天猫1/2): 数据靠 Excel 文档上传, 无在线抓取能力
+function isImportPlatform(p) {
+  const id = Number(p !== undefined ? p : currentPlatform);
+  return id === 10 || id === 11;
+}
+
+// 导入平台 UI 同步: 隐藏"抓取今日数据"按钮(无在线抓取), 顶部展示导入提示
+// 核算板块按钮跟随 auditPlatform, 顶部平台按钮跟随 currentPlatform, 两者都考虑
+function syncImportPlatformUI() {
+  const auditEl = document.getElementById('auditPlatform');
+  const ap = auditEl ? Number(auditEl.value) : NaN;
+  const imp = isImportPlatform() || isImportPlatform(ap);
+  ['btnTodayAudit', 'btnStaffToday'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = imp ? 'none' : '';
+  });
+  const btn = document.getElementById('btnImport');
+  if (btn) btn.style.display = isImportPlatform() ? '' : 'none';
+}
+
+// ---------- 导入平台 Excel 上传(天猫1/2) ----------
+function openImportPicker() {
+  document.getElementById('importFile').click();
+}
+
+async function doImportExcel() {
+  const input = document.getElementById('importFile');
+  const file = input.files && input.files[0];
+  if (!file) return;
+  // 上传目标平台: 当前选中平台为导入平台(10/11)则用之, 否则默认天猫1
+  let plat = Number(currentPlatform);
+  if (plat !== 10 && plat !== 11) plat = 10;
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('platform', String(plat));
+  input.value = '';
+  const infoEl = document.getElementById('overviewDateInfo');
+  if (infoEl) infoEl.textContent = `正在导入 ${file.name} …`;
+  try {
+    const r = await fetchJSON('/api/import/trace', { method: 'POST', body: fd });
+    const w = r.warningCount || 0;
+    toast(`导入完成 ✅ 平台${PLATFORM_NAMES[r.platform]} · ${r.shops}店 ${r.days}天 ${r.staff}客服 ${r.kpis}条KPI${w ? ` · ${w}条告警` : ''}`);
+    if (w) console.warn('导入告警:', (r.warnings || []).slice(0, 10));
+    // 刷新平台视图: 店铺列表 + 概览 + 核算缓存 + 客服池
+    await loadShops();
+    loadOverview();
+    if (typeof reloadCachedAudit === 'function') reloadCachedAudit();
+    if (typeof loadStaffData === 'function') loadStaffData();
+  } catch (e) {
+    toast('导入失败: ' + e.message);
+    if (infoEl) infoEl.textContent = '导入失败';
   }
 }
 
@@ -1272,8 +1345,31 @@ async function loadOverview() {
     overviewRetryLeft = 3;  // 成功即重置重试计数
     const items = overviewData.items || {};
     const cards = document.querySelectorAll('.o-card');
-    if (overviewData.source === 'history') {
+    if (overviewData.source === 'import') {
+      // 导入平台(天猫1/2): 本地库聚合 4 卡(消息量/采纳数/采纳率/生成率), 环比取自相邻口径
+      cards.forEach(c => c.style.display = '');  // 恢复第4卡(生成率)
+      const impOrder = [
+        ['history_msg_total', '消息量', 'integer'],
+        ['history_adopted_total', '采纳数', 'integer'],
+        ['history_accept_rate', '采纳率', 'percent'],
+        ['history_gen_rate', '生成率', 'percent'],
+      ];
+      cards.forEach((card, i) => {
+        const [key, label, fmt] = impOrder[i];
+        const m = items[key];
+        if (!m) {
+          card.querySelector('.value').textContent = '--';
+          card.querySelector('.trend').innerHTML = '<span class="trend note">无数据</span>';
+          return;
+        }
+        card.querySelector('.label').textContent = label;
+        card.querySelector('.value').textContent = fmtNum(m.current, fmt);
+        card.querySelector('.value').style.color = ['#22d3ee', '#fbbf24', '#a78bfa', '#34d399'][i];
+        card.querySelector('.trend').innerHTML = trendHtml(m.comparePercent, { note: '本地库' });
+      });
+    } else if (overviewData.source === 'history') {
       // 历史周: 本地库聚合(消息量/采纳数/采纳率), 无环比
+      cards[3].style.display = 'none';  // 隐藏生成率卡(历史周无此口径)
       const histOrder = [
         ['history_msg_total', '消息量', 'integer'],
         ['history_adopted_total', '采纳数', 'integer'],
@@ -1293,6 +1389,7 @@ async function loadOverview() {
         card.querySelector('.trend').innerHTML = '<span class="trend note">本地库</span>';
       });
     } else {
+      cards[3].style.display = 'none';  // 隐藏生成率卡(tanyu 概览仅 3 卡)
       const order = [
         'service_3m_response_rate',
         'ai_consult_response_accept_rate',
@@ -1318,7 +1415,9 @@ async function loadOverview() {
     // summary 为 tanyu 统计口径, 与所选区间无关(见 getStatSemantic); 历史周标注本地库
     const sem = overviewData.source === 'history'
       ? '历史周 · 基于本地库'
-      : getStatSemantic(overviewData.statType || currentStatType());
+      : overviewData.source === 'import'
+        ? 'Excel 导入数据 · 本地库'
+        : getStatSemantic(overviewData.statType || currentStatType());
     infoEl.textContent = `${overviewDaysLabel()}(${statTypeRangeShort()}) · ${overviewData.platformName || ''} · ${sem}`;
     // 顶栏同步显示当前口径说明
     const headerInfo = document.getElementById('dateInfo');
@@ -1476,17 +1575,22 @@ async function openDetail(shopId, tab) {
       fetchJSON(`/api/shop/${shopId}?${q}`),
       fetchJSON(`/api/trace/messages/${shopId}?days=7`),
     ]);
-    renderDetailMetrics(data.items);
+    renderDetailMetrics(data.items, data.source);
     const isHist = data.source === 'history';
-    const detailSem = isHist ? '历史周 · 基于本地库' : getStatSemantic(data.statType || currentStatType());
+    const isImp = data.source === 'import';
+    const detailSem = isHist ? '历史周 · 基于本地库'
+      : isImp ? 'Excel 导入 · 本地库' : getStatSemantic(data.statType || currentStatType());
     let detailDateTxt = isHist
       ? `${data.startDate} ~ ${data.endDate} · ${detailSem}`
       : `${overviewDaysLabel()} · ${detailSem} · ${data.startDate} ~ ${data.endDate}`;
     if (isHist && data.missing_days && data.missing_days.length) {
       detailDateTxt += ` · <span class="missing-badge">缺${data.missing_days.length}天(${data.missing_days.join(', ')})</span>`;
     }
+    if (isImp) {
+      detailDateTxt += ` · <span class="missing-badge">导入数据 · 天级粒度</span>`;
+    }
     document.getElementById('detailDate').innerHTML = detailDateTxt;
-    renderCharts(traceData);
+    renderCharts(traceData, isImp);
   } catch (e) {
     document.getElementById('detailMetrics').innerHTML = `<div class="empty">详情加载失败: ${e.message}</div>`;
   }
@@ -1551,6 +1655,12 @@ async function loadTraceMessages(force) {
     traceMessages = data.messages || [];
     tracePage = 0;
     traceLoaded = true;
+    if (data.imported) {
+      // 导入平台(天猫1/2): 数据来自 Excel, 无原始消息; daily 仍可画折线
+      document.getElementById('traceCount').textContent = `共 ${data.total.toLocaleString()} 条消息 · Excel 导入`;
+      listEl.innerHTML = '<div class="msg-empty">导入平台数据来自 Excel 文档, 无原始消息可查。核算/采纳率在下方折线图展示。</div>';
+      return;
+    }
     document.getElementById('traceCount').textContent = `共 ${data.total.toLocaleString()} 条消息`;
     if (start && end) document.getElementById('detailDate').textContent = `${data.startDate} ~ ${data.endDate}`;
     renderTraceList();
@@ -1675,12 +1785,31 @@ function esc(s) {
   return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function renderDetailMetrics(items) {
+function renderDetailMetrics(items, source) {
   const colors = {
     service_3m_response_rate: '#22d3ee',
     ai_consult_response_accept_rate: '#fbbf24',
     ai_consult_response_rate: '#a78bfa'
   };
+  // 导入平台(天猫1/2): 本地库 4 卡(消息量/采纳数/采纳率/生成率), 无 tanyu 专属指标
+  if (source === 'import') {
+    const impCards = [
+      ['history_msg_total', '消息量', 'integer', '#22d3ee'],
+      ['history_adopted_total', '采纳数', 'integer', '#fbbf24'],
+      ['history_accept_rate', '采纳率', 'percent', '#a78bfa'],
+      ['history_gen_rate', '生成率', 'percent', '#34d399'],
+    ];
+    document.getElementById('detailMetrics').innerHTML = impCards.map(([key, title, fmt, color]) => {
+      const v = items[key];
+      return `<div class="d-card">
+        <div class="label">${title}</div>
+        <div class="value" style="color:${color}">${v ? fmtNum(v.current, fmt) : '--'}</div>
+        <div class="vs">${v && v.comparePercent != null ? trendHtml(v.comparePercent) : '<span class="trend note">本地库</span>'}</div>
+        <div class="prev">Excel 导入 · 本地库</div>
+      </div>`;
+    }).join('');
+    return;
+  }
   // 历史周: 本地消息量/采纳数/采纳率 + tanyu 专属指标"历史不可用"
   if (isHistoryWeek() && items.history_msg_total) {
     const histCards = [
@@ -1829,6 +1958,7 @@ function onAuditPlatformChange() {
   renderStaffShopFilter();  // 客服池店铺下拉跟随平台刷新
   reloadCachedAudit();
   loadStaffData();
+  syncImportPlatformUI();  // 导入平台: 隐藏今日抓取按钮
 }
 
 // 区间是否含今天 => 后端返回 live:true 时给状态栏加"实时"徽标
@@ -2764,6 +2894,7 @@ function pollLogin() {
   document.getElementById('staffTodayEnd').value = nowHm;
   loadOverview();
   checkRisk();
+  syncImportPlatformUI();  // 首次加载: 按当前平台隐藏/显示导入 UI
   loadCookieExpiry();  // 顶部登录按钮旁的 Cookie 到期提示
   // 先加载最近一次核算结果(只读缓存, 快路径: 不依赖店铺/集团, 秒开; 不触发新核算)
   await reloadCachedAudit();
