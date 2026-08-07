@@ -88,6 +88,15 @@
   .platform-select:focus { border-color: var(--blue); }
   .platform-select option { color: var(--text); background: var(--card); }
 
+  /* 今日时刻筛选 */
+  .time-input {
+    border: 1px solid var(--border); border-radius: 8px; padding: 7px 8px; font-size: 12.5px;
+    background: var(--card); color: var(--text); font-family: inherit; outline: none;
+    color-scheme: dark; width: 96px;
+  }
+  .time-input:focus { border-color: var(--blue); }
+  .today-sep { color: var(--muted); font-size: 12px; margin: 0 2px; }
+
   /* 集团选择器 */
   .group-select {
     display: inline-flex; align-items: center; gap: 6px;
@@ -288,6 +297,21 @@
     padding: 24px; text-align: center; color: var(--muted); font-size: 13px;
   }
   .msg-count { font-size: 12px; color: var(--muted); }
+  /* 抽屉日志列表 */
+  .log-list { font-family: Consolas, Menlo, monospace; font-size: 11.5px; line-height: 1.7; }
+  .log-item {
+    display: flex; gap: 8px; padding: 4px 10px; align-items: baseline;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .log-item:hover { background: var(--hover); }
+  .log-ts { color: var(--muted); white-space: nowrap; flex-shrink: 0; }
+  .log-tag { font-weight: 600; white-space: nowrap; flex-shrink: 0; }
+  .log-msg { color: var(--text); word-break: break-all; }
+  .log-autoscroll {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 12px; color: var(--muted); margin-left: 8px; cursor: pointer;
+  }
+  .log-autoscroll input { accent-color: var(--blue); }
 
   /* 抽屉 tab */
   .drawer-tabs {
@@ -590,6 +614,11 @@
           <span class="sep">~</span>
           <input type="date" id="auditEnd" value="" onchange="onAuditDateInput()">
         </div>
+        <span class="today-sep">┊</span>
+        <input type="time" id="todayStart" value="00:00" class="time-input" title="今日抓取开始时刻">
+        <span class="sep">~</span>
+        <input type="time" id="todayEnd" class="time-input" title="今日抓取结束时刻">
+        <button class="btn btn-primary" id="btnTodayAudit" onclick="startTodayAudit()">⚡ 抓取今日数据</button>
         <span class="audit-sel-label" id="auditSelLabel" style="display:none"></span>
         <button class="btn btn-ghost" id="btnAuditSel" onclick="auditSelected()" style="display:none">🧮 核算所选</button>
         <button class="btn btn-ghost" id="btnAuditClearSel" onclick="clearAuditSel()" style="display:none">✕ 清除</button>
@@ -642,6 +671,11 @@
                 <span class="sep">~</span>
                 <input type="date" id="staffEnd" value="" onchange="loadStaffData()">
               </div>
+              <span class="today-sep">┊</span>
+              <input type="time" id="staffTodayStart" value="00:00" class="time-input" title="今日抓取开始时刻">
+              <span class="sep">~</span>
+              <input type="time" id="staffTodayEnd" class="time-input" title="今日抓取结束时刻">
+              <button class="btn btn-primary" id="btnStaffToday" onclick="startStaffToday()">⚡ 抓取今日数据</button>
               <span class="staff-filter-hint" id="staffFilterHint"></span>
             </div>
             <div class="staff-pool table-wrap" style="border:1px solid var(--border-soft);border-radius:10px;padding:10px">
@@ -671,6 +705,7 @@
     <div class="drawer-tabs">
       <button class="dtab active" id="tabMetrics" onclick="switchDrawerTab('metrics')">📈 指标趋势</button>
       <button class="dtab" id="tabTrace" onclick="switchDrawerTab('trace')">📋 原始消息</button>
+      <button class="dtab" id="tabLogs" onclick="switchDrawerTab('logs')">🪵 日志</button>
     </div>
     <div id="paneMetrics">
       <div class="detail-metrics" id="detailMetrics"><div class="loading"><div class="spinner"></div>加载详情…</div></div>
@@ -699,6 +734,26 @@
         <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px" id="btnLoadTrace" onclick="loadTraceMessages(true)">🔄 重新抓取</button>
       </div>
       <div class="msg-list" id="traceList"><div class="msg-empty">点击"原始消息"标签加载消息记录</div></div>
+    </div>
+    <div id="paneLogs" style="display:none">
+      <div class="msg-toolbar">
+        <div class="msg-filter">
+          标签:
+          <select id="logTag" onchange="loadDrawerLogs()">
+            <option value="">全部</option>
+            <option value="trace">trace</option>
+            <option value="refresh">refresh</option>
+            <option value="today">today</option>
+            <option value="group">group</option>
+            <option value="risk">risk</option>
+            <option value="db">db</option>
+          </select>
+        </div>
+        <span class="msg-count" id="logCount"></span>
+        <label class="log-autoscroll"><input type="checkbox" id="logAutoScroll" checked> 自动滚动</label>
+        <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px" onclick="loadDrawerLogs()">🔄 刷新</button>
+      </div>
+      <div class="msg-list log-list" id="logList"><div class="msg-empty">加载日志…</div></div>
     </div>
   </div>
 </div>
@@ -1136,6 +1191,7 @@ async function openDetail(shopId, tab) {
   document.getElementById('shopDrawer').classList.add('show');
   document.getElementById('detailMetrics').innerHTML = '<div class="loading"><div class="spinner"></div>加载详情…</div>';
   traceLoaded = false;
+  startLogAutoRefresh();
   switchDrawerTab(tab || 'metrics');
 
   Object.values(charts).forEach(c => c.destroy());
@@ -1157,12 +1213,18 @@ async function openDetail(shopId, tab) {
 
 function switchDrawerTab(tab) {
   const metrics = tab === 'metrics';
+  const logs = tab === 'logs';
   document.getElementById('tabMetrics').classList.toggle('active', metrics);
-  document.getElementById('tabTrace').classList.toggle('active', !metrics);
+  document.getElementById('tabTrace').classList.toggle('active', tab === 'trace');
+  document.getElementById('tabLogs').classList.toggle('active', logs);
   document.getElementById('paneMetrics').style.display = metrics ? '' : 'none';
-  document.getElementById('paneTrace').style.display = metrics ? 'none' : '';
-  if (!metrics && selectedShop && !traceLoaded) {
+  document.getElementById('paneTrace').style.display = tab === 'trace' ? '' : 'none';
+  document.getElementById('paneLogs').style.display = logs ? '' : 'none';
+  if (tab === 'trace' && selectedShop && !traceLoaded) {
     loadTraceMessages(false);
+  }
+  if (logs) {
+    loadDrawerLogs();
   }
 }
 
@@ -1275,6 +1337,59 @@ function loadMoreTrace() {
   renderTraceList();
 }
 
+// ---------- 抽屉日志窗口 ----------
+let logTimer = null;
+
+const LOG_TAG_COLORS = {
+  trace: '#22d3ee',
+  refresh: '#34d399',
+  today: '#fbbf24',
+  group: '#a78bfa',
+  risk: '#f87171',
+  db: '#60a5fa',
+  rate: '#f472b6',
+};
+
+async function loadDrawerLogs() {
+  const listEl = document.getElementById('logList');
+  const tag = document.getElementById('logTag').value;
+  try {
+    const d = await fetchJSON(`/api/logs?limit=300&tag=${encodeURIComponent(tag)}`);
+    document.getElementById('logCount').textContent = `共 ${d.total} 条`;
+    const logs = d.logs || [];
+    if (!logs.length) {
+      listEl.innerHTML = '<div class="msg-empty">暂无日志</div>';
+      return;
+    }
+    const atBottom = !document.getElementById('logAutoScroll').checked
+      || (listEl.scrollTop + listEl.clientHeight >= listEl.scrollHeight - 30);
+    listEl.innerHTML = logs.map(e => {
+      const color = LOG_TAG_COLORS[e.tag] || '#94a3b8';
+      return `<div class="log-item">
+        <span class="log-ts">${esc(e.ts)}</span>
+        <span class="log-tag" style="color:${color}">[${esc(e.tag)}]</span>
+        <span class="log-msg">${esc(e.msg)}</span>
+      </div>`;
+    }).join('');
+    if (atBottom) listEl.scrollTop = listEl.scrollHeight;
+  } catch (e) {
+    listEl.innerHTML = `<div class="msg-empty">日志加载失败: ${e.message}</div>`;
+  }
+}
+
+function startLogAutoRefresh() {
+  if (logTimer) return;
+  logTimer = setInterval(() => {
+    // 只在日志面板可见时轮询(切到指标/消息标签时停)
+    const pane = document.getElementById('paneLogs');
+    if (pane && pane.style.display !== 'none') loadDrawerLogs();
+  }, 3000);
+}
+
+function stopLogAutoRefresh() {
+  if (logTimer) { clearInterval(logTimer); logTimer = null; }
+}
+
 function esc(s) {
   return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -1354,6 +1469,7 @@ function renderCharts(traceData) {
 
 function closeDetail() {
   selectedShop = null;
+  stopLogAutoRefresh();
   document.getElementById('shopDrawer').classList.remove('show');
   document.getElementById('drawerMask').classList.remove('show');
   Object.values(charts).forEach(c => c.destroy());
@@ -1538,6 +1654,123 @@ async function loadStaffData() {
   } catch (e) {
     gridEl.innerHTML = `<span class="empty">客服数据加载失败: ${e.message}</span>`;
   }
+}
+
+// ---------- 抓取今日数据(核算板块 / 人工客服板块共用) ----------
+let todayPolling = false;
+let todayTimer = null;
+let todayMode = '';   // 'audit' 抓今日进核算表格, 'staff' 抓今日进客服网格
+
+function todayQueryParams() {
+  const startEl = document.getElementById(todayMode === 'staff' ? 'staffTodayStart' : 'todayStart');
+  const endEl = document.getElementById(todayMode === 'staff' ? 'staffTodayEnd' : 'todayEnd');
+  const st = startEl && startEl.value ? startEl.value : '00:00';
+  const et = endEl && endEl.value ? endEl.value : '';
+  let q = `start_ts=${st}&end_ts=${et}`;
+  // 店铺范围: 与核算/客服面板一致的平台 + 勾选店铺(单/多/全)
+  if (auditPlatform) q += `&platform=${auditPlatform}`;
+  if (auditSelShops.length) q += `&shop_ids=${auditSelShops.join(',')}`;
+  return q;
+}
+
+async function startTodayAudit() {
+  todayMode = 'audit';
+  await kickTodayFetch('⚡ 正在抓取今日数据, 将更新核算表格…');
+}
+
+async function startStaffToday() {
+  todayMode = 'staff';
+  await kickTodayFetch('⚡ 正在抓取今日客服数据…');
+}
+
+async function kickTodayFetch(msg) {
+  if (todayPolling) { toast('今日抓取任务进行中, 请稍候…'); return; }
+  todayPolling = true;
+  document.getElementById('btnTodayAudit').disabled = true;
+  document.getElementById('btnStaffToday').disabled = true;
+  toast(msg);
+  try {
+    const r = await fetchJSON(`/api/trace/today?${todayQueryParams()}`, { method: 'POST' });
+    if (r.status === 'done' && r.result) {
+      applyTodayResult(r.result);
+      todayPolling = false;
+      document.getElementById('btnTodayAudit').disabled = false;
+      document.getElementById('btnStaffToday').disabled = false;
+    } else if (r.status === 'running') {
+      pollToday();
+    } else {
+      todayPolling = false;
+      document.getElementById('btnTodayAudit').disabled = false;
+      document.getElementById('btnStaffToday').disabled = false;
+      toast('今日抓取未启动(无结果)');
+    }
+  } catch (e) {
+    todayPolling = false;
+    document.getElementById('btnTodayAudit').disabled = false;
+    document.getElementById('btnStaffToday').disabled = false;
+    toast('今日抓取启动失败: ' + e.message);
+    checkRisk();
+  }
+}
+
+function pollToday() {
+  if (todayTimer) clearInterval(todayTimer);
+  todayTimer = setInterval(async () => {
+    try {
+      const t = await fetchJSON('/api/trace/today/status');
+      const p = t.progress || {};
+      if (p.total > 0) {
+        document.getElementById('auditProgressFill').style.width = Math.round(p.done / p.total * 100) + '%';
+        document.getElementById('auditProgress').classList.add('show');
+        document.getElementById('auditStatus').textContent =
+          `今日抓取中: ${p.done}/${p.total} 家店铺 · ${p.current || ''}`;
+      }
+      if (t.result) {
+        // 边抓边展示已完成店铺
+        if (todayMode === 'audit') renderShopRows(t.result.shopList || []);
+      }
+      if (!t.running) {
+        clearInterval(todayTimer);
+        todayTimer = null;
+        todayPolling = false;
+        document.getElementById('btnTodayAudit').disabled = false;
+        document.getElementById('btnStaffToday').disabled = false;
+        document.getElementById('auditProgress').classList.remove('show');
+        if (t.error) {
+          document.getElementById('auditStatus').textContent = '今日抓取失败: ' + t.error;
+          toast('今日抓取失败: ' + t.error);
+          checkRisk();
+          return;
+        }
+        applyTodayResult(t.result);
+      }
+    } catch (e) {
+      clearInterval(todayTimer);
+      todayTimer = null;
+      todayPolling = false;
+      document.getElementById('btnTodayAudit').disabled = false;
+      document.getElementById('btnStaffToday').disabled = false;
+      toast('今日抓取状态获取失败');
+    }
+  }, 2000);
+}
+
+function applyTodayResult(result) {
+  const scopeTxt = auditSelShops.length ? ` · 所选${auditSelShops.length}店` : '';
+  const platformTxt = auditPlatform ? ` · ${PLATFORM_NAMES[auditPlatform] || ''}` : '';
+  const rangeTxt = `${result.startTs || '00:00'} ~ ${result.endTs || '现在'}`;
+  if (todayMode === 'audit') {
+    document.getElementById('auditStatus').className = 'audit-status done';
+    document.getElementById('auditStatus').innerHTML =
+      `今日抓取完成 ✅ ${rangeTxt}${platformTxt}${scopeTxt} · 总条数 ${(result.total || 0).toLocaleString()} · 采纳率 ${(result.rate || 0).toFixed(2)}% <span class="live-badge">实时</span>`;
+    renderAudit(result);
+  } else {
+    document.getElementById('auditStatus').className = 'audit-status done';
+    document.getElementById('auditStatus').innerHTML =
+      `今日客服数据已更新 ✅ ${rangeTxt}${platformTxt}${scopeTxt} <span class="live-badge">实时</span>`;
+    renderStaffGrid(result.byStaff || []);
+  }
+  toast(`今日抓取完成 ✅ 共 ${(result.total || 0).toLocaleString()} 条消息`);
 }
 
 async function startAudit(force) {
@@ -2007,7 +2240,12 @@ function pollLogin() {
 (async function init() {
   // 平台列表是纯本地配置, 快; 集团下拉涉及远程 detail 请求(可能排队), 不阻塞核算渲染
   await loadPlatforms();
-  loadGroups();  // 异步: 集团下拉后台加载
+  // 集团→平台联动前置: 概览三卡跟随当前集团(否则首次加载猜错平台会返回空)
+  await loadGroups();
+  // 今日时刻筛选默认结束时刻 = 当前时间
+  const nowHm = `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`;
+  document.getElementById('todayEnd').value = nowHm;
+  document.getElementById('staffTodayEnd').value = nowHm;
   loadOverview();
   checkRisk();
   // 先加载最近一次核算结果(只读缓存, 快路径: 不依赖店铺/集团, 秒开; 不触发新核算)

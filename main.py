@@ -13,6 +13,7 @@
 数据源: https://agent.tanyuai.com/api/data-service/business/compass/*
 """
 import asyncio
+import collections
 import datetime
 import json
 import os
@@ -83,6 +84,26 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ---------- 进程内日志环形缓冲(供抽屉日志窗口展示) ----------
+LOG_RING_MAX = 500
+_log_ring = collections.deque(maxlen=LOG_RING_MAX)
+_log_lock = threading.Lock()
+
+
+def log_line(tag, msg):
+    """写一条带时间戳的日志: 进环形缓冲(抽屉可查) + 打印到 stdout(server.log 追加)。
+
+    绝不写入 cookie 值——所有日志内容只允许业务描述, 禁止任何凭据/密钥字段。
+    """
+    entry = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "tag": tag, "msg": msg}
+    try:
+        with _log_lock:
+            _log_ring.append(entry)
+    except Exception:
+        pass
+    print(f"[{tag}] {msg}")
 
 
 # ---------- 配置 ----------
@@ -383,12 +404,16 @@ def refresh_one(shop, start, end):
             table = fetch_section_table(payload)
             save_cache("table", f"{shop_id}__{section}", {"fetched_at": time.time(), "data": table})
         except Exception as e:
-            print(f"[refresh] {shop['shopName']} section={section} 失败: {e}")
+            log_line("refresh", f"{shop['shopName']} section={section} 失败: {e}")
     return shop_id
 
 
-def refresh_all_async(start, end):
-    """后台线程: 遍历抓取平台(拼多多/抖音)的全部店铺刷新"""
+def refresh_all_async(start, end, shops=None):
+    """后台线程: 刷新给定店铺列表(默认当前激活集团的店铺, 限抓取平台)
+
+    shops: 可选店铺列表(跨集团刷新时由 refresh_all_groups_async 逐集团传入),
+           为空时用 load_shops()(当前激活集团)过滤抓取平台。
+    """
 
     def worker():
         with _lock:
@@ -398,7 +423,8 @@ def refresh_all_async(start, end):
             _refresh_state["error"] = None
         try:
             # 只抓取启用的平台
-            shops = [s for s in load_shops() if s.get("platform") in FETCH_PLATFORMS]
+            if shops is None:
+                shops = [s for s in load_shops() if s.get("platform") in FETCH_PLATFORMS]
             total = len(shops)
             _refresh_state["progress"] = {"done": 0, "total": total, "current": ""}
             for i, shop in enumerate(shops, 1):
@@ -409,17 +435,101 @@ def refresh_all_async(start, end):
                     refresh_one(shop, start, end)
                 except RiskTriggered as e:
                     # 风控/登录失效: 立即停止
-                    print(f"[refresh] ⛔ 风控触发, 停止剩余 {total - i} 家店铺: {e}")
+                    log_line("refresh", f"⛔ 风控触发, 停止剩余 {total - i} 家店铺: {e}")
                     _refresh_state["error"] = f"风控/登录失效, 已停止: {e}"
                     break
                 except Exception as e:
-                    print(f"[refresh] {shop['shopName']} 失败: {e}")
+                    log_line("refresh", f"{shop['shopName']} 失败: {e}")
                 _refresh_state["progress"]["done"] = i
             _refresh_state["last_run"] = time.time()
         except Exception as e:
             _refresh_state["error"] = str(e)
         finally:
             _refresh_state["running"] = False
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def refresh_all_groups_async(start, end):
+    """后台线程: 按集团切换轮询刷新全部三个集团(pdd/jd/douyin)的店铺 summary
+
+    与夜间预抓同模式: 逐集团 switch_group → sync_shops_from_tanyu →
+    refresh_all_async(该集团店铺) → 下一集团。结束后恢复进入前的激活集团,
+    让常驻看板继续服务原集团。风控/登录失效立即整体停止。
+    """
+    cfg = load_config()
+    platform_order = cfg.get("prefetch_platforms") or [1, 5, 7]
+    plat_rank = {p: i for i, p in enumerate(platform_order)}
+    ordered = sorted(
+        [g for g in cfg.get("groups", []) if g.get("groupId") and g.get("accountId")],
+        key=lambda g: plat_rank.get(g.get("platform"), 99),
+    )
+    if not ordered:
+        log_line("refresh", "⚠️ config.groups 为空或无可用集团, 仅刷新当前激活集团")
+        refresh_all_async(start, end)
+        return
+    # 记录进入前的激活集团, 结束后切回
+    orig_gid = cfg.get("cookies", {}).get("tanyu-group-id")
+
+    def worker():
+        try:
+            for g in ordered:
+                if _risk_state.get("triggered"):
+                    log_line("refresh", "⛔ 风控/登录失效, 整体停止")
+                    break
+                try:
+                    switch_group(g["groupId"])
+                except RiskTriggered:
+                    log_line("refresh", "⛔ 风控触发于切换集团, 整体停止")
+                    _refresh_state["error"] = _risk_state.get("reason") or "风控/登录失效"
+                    return
+                except Exception as e:
+                    log_line("refresh", f"⚠️ 集团「{g.get('groupName')}」切换失败, 跳过: {e}")
+                    continue
+                group_shops = [s for s in load_shops() if s.get("platform") in FETCH_PLATFORMS]
+                if not group_shops:
+                    log_line("refresh", f"集团「{g.get('groupName')}」无抓取平台店铺, 跳过")
+                    continue
+                # 用该集团店铺子集跑一次刷新(不带新线程, 直接在当前 worker 内循环)
+                with _lock:
+                    if _refresh_state["running"]:
+                        log_line("refresh", "已有刷新任务进行中, 跳过")
+                        return
+                    _refresh_state["running"] = True
+                    _refresh_state["error"] = None
+                try:
+                    total = len(group_shops)
+                    _refresh_state["progress"] = {"done": 0, "total": total, "current": ""}
+                    for i, shop in enumerate(group_shops, 1):
+                        _refresh_state["progress"]["current"] = (
+                            f"集团[{g.get('groupName')}] {shop['platformName']} · "
+                            f"{shop['shopName']} ({i}/{total})")
+                        if i > 1:
+                            sleep_trace_shop()
+                        try:
+                            refresh_one(shop, start, end)
+                        except RiskTriggered as e:
+                            log_line("refresh", f"⛔ 风控触发于集团[{g.get('groupName')}], 停止: {e}")
+                            _refresh_state["error"] = f"风控/登录失效, 已停止: {e}"
+                            return
+                        except Exception as e:
+                            log_line("refresh", f"{shop['shopName']} 失败: {e}")
+                        _refresh_state["progress"]["done"] = i
+                    _refresh_state["last_run"] = time.time()
+                finally:
+                    _refresh_state["running"] = False
+            log_line("refresh", "全部集团刷新完成")
+        finally:
+            # 恢复原激活集团(风控时不强行切换, 仅告警)
+            if orig_gid and not _risk_state.get("triggered"):
+                try:
+                    if orig_gid != load_config().get("cookies", {}).get("tanyu-group-id"):
+                        switch_group(orig_gid)
+                        log_line("refresh", f"已恢复原激活集团 {orig_gid}")
+                except Exception as e:
+                    log_line("refresh", f"⚠️ 恢复原集团失败: {e}")
+            elif _risk_state.get("triggered"):
+                log_line("refresh", "⚠️ 风控触发, 未恢复原集团(需重新登录后手工切换)")
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -462,6 +572,10 @@ def get_group_list():
             save_config(cfg)
         for g in groups:
             g["current"] = g.get("groupId") == cur["id"]
+        # 给 current 对象补上平台字段(前端集团→平台联动不再需要从列表猜测)
+        cur_g = next((g for g in groups if g.get("current")), None)
+        if cur_g and "platform" in cur_g and cur["id"] == cur_g.get("groupId"):
+            cur["platform"] = cur_g["platform"]
     return {"groups": groups, "current": cur}
 
 
@@ -493,6 +607,7 @@ def switch_group(group_id):
     save_config(cfg)
     # 同步店铺列表
     sync_shops_from_tanyu()
+    log_line("group", f"已切换集团「{g.get('groupName')}」")
     return {"ok": True, "group": get_current_group(), "updated": True}
 
 
@@ -562,8 +677,9 @@ def sync_shops_from_tanyu():
         try:
             trace_store.upsert_shops(shops)
         except Exception as e:
-            print(f"[db] shops 同步失败: {e}")
+            log_line("db", f"shops 同步失败: {e}")
         _invalidate_audit_caches()
+        log_line("group", f"店铺同步完成: {len(shops)} 家")
         return {"count": len(shops), "platforms": {p: sum(1 for s in shops if s["platform"] == p) for p in set(s["platform"] for s in shops)}}
     except Exception as e:
         raise RuntimeError(f"同步店铺失败: {e}")
@@ -596,7 +712,7 @@ def _set_risk(reason, code=None):
             _risk_state["reason"] = reason
             _risk_state["at"] = time.time()
             _risk_state["last_code"] = code
-    print(f"[risk] ⚠️ 检测到风控/登录失效信号: {reason} — 已停止所有抓取任务, 请重新登录")
+    log_line("risk", f"⚠️ 检测到风控/登录失效信号: {reason} — 已停止所有抓取任务, 请重新登录")
 
 
 def _assert_no_risk():
@@ -656,11 +772,13 @@ def _check_risk(resp, data=None):
 
 
 def _assert_no_running_task():
-    """任务互斥: 核算与数据刷新不能同时跑"""
+    """任务互斥: 核算 / 数据刷新 / 今日抓取 不能同时跑"""
     if _refresh_state.get("running"):
         raise RuntimeError("数据刷新任务进行中, 请稍后再试")
     if _trace_state.get("running"):
         raise RuntimeError("核算任务进行中, 请稍后再试")
+    if _today_state.get("running"):
+        raise RuntimeError("今日数据抓取任务进行中, 请稍后再试")
 
 
 # ---------- 核算(消息轨迹) ----------
@@ -956,7 +1074,7 @@ def stat_trace_daily(shop_id, start, end, force=False, force_days=None):
         except RiskTriggered:
             raise
         except Exception as e:
-            print(f"[trace] {shop_id} {ds} 抓取失败: {e}")
+            log_line("trace", f"{shop_id} {ds} 抓取失败: {e}")
             continue
         cached_days[ds] = res
         day_fetched_at[ds] = time.time()
@@ -971,13 +1089,13 @@ def stat_trace_daily(shop_id, start, end, force=False, force_days=None):
         try:
             _upsert_shop_day_db(shop_id, ds, res)
         except Exception as e:
-            print(f"[db] {shop_id} {ds} 写入失败: {e}")
+            log_line("db", f"{shop_id} {ds} 写入失败: {e}")
         _trace_days_cache[shop_id] = (time.time(), {
             "fetched_at": time.time(),
             "day_fetched_at": day_fetched_at,
             "days": cached_days,
         })
-        print(f"[trace] {shop_id} {ds} 抓取完成 {len(res)} 条")
+        log_line("trace", f"{shop_id} {ds} 抓取完成 {len(res)} 条")
 
     # 聚合成与 stat_trace 相同的结构
     counts = {1: 0, 2: 0, 3: 0, None: 0}
@@ -1189,15 +1307,15 @@ def shop_detail(shop_id: str, days: int = 7, start: str | None = None, end: str 
 
 @app.get("/api/refresh")
 def refresh():
-    """触发后台刷新全部店铺"""
+    """触发后台刷新全部店铺数据(轮询三个集团, 恢复原激活集团)"""
     # 任务互斥: 核算进行中不允许同时刷新
     try:
         _assert_no_running_task()
     except RuntimeError as e:
         raise HTTPException(409, str(e))
     start, end = date_range(7)
-    refresh_all_async(start, end)
-    return {"ok": True, "message": "刷新任务已启动"}
+    refresh_all_groups_async(start, end)
+    return {"ok": True, "message": "刷新任务已启动(三集团轮询)"}
 
 
 @app.get("/api/trace/shop/{shop_id}")
@@ -1273,6 +1391,21 @@ _trace_state = {
     "shop_filter": None,   # 本次核算的店铺子集(账号池勾选), None=全部店铺
 }
 _trace_resume_evt = threading.Event()
+
+# 今日实时抓取状态(独立于核算: 抓今天不写库, 供核算/人工客服板块「抓取今日数据」)
+_today_state = {
+    "running": False,
+    "progress": {"done": 0, "total": 0, "current": ""},
+    "result": None,
+    "start_date": None,
+    "end_date": None,
+    "start_ts": "00:00",
+    "end_ts": "",
+    "platform": None,
+    "shop_filter": None,
+    "last_run": None,
+    "error": None,
+}
 
 
 TRACE_OVERVIEW_CACHE_TTL = 6 * 3600   # 总览磁盘缓存有效期(探域数据每日更新)
@@ -1590,7 +1723,7 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
                     _trace_resume_evt.wait(timeout=1.0)
                     _trace_resume_evt.clear()  # 事件用完即清, 防止残留置位导致 wait() 忙等
                 if _trace_state["canceled"]:
-                    print(f"[trace] ⏹ 已取消, 已核算 {i - 1}/{total} 家")
+                    log_line("trace", f"⏹ 已取消, 已核算 {i - 1}/{total} 家")
                     break
                 _trace_state["progress"]["current"] = f"{shop['platformName']} · {shop['shopName']} ({i}/{total})"
                 # 该店在区间内天数全部已缓存 => 纯聚合零请求, 无需限速停顿
@@ -1624,12 +1757,12 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
                         entry["adopted"] += st["adopted"]
                 except RiskTriggered as e:
                     # 风控/登录失效: 立即停止, 不再请求剩余店铺
-                    print(f"[trace] ⛔ 风控触发, 停止剩余 {total - i} 家店铺: {e}")
+                    log_line("trace", f"⛔ 风控触发, 停止剩余 {total - i} 家店铺: {e}")
                     _trace_state["error"] = f"风控/登录失效, 已停止: {e}"
                     _trace_state["progress"]["current"] = f"已停止: {e}"
                     break
                 except Exception as e:
-                    print(f"[trace] {shop['shopName']} 失败: {e}")
+                    log_line("trace", f"{shop['shopName']} 失败: {e}")
                 _trace_state["progress"]["done"] = i
                 # 边算边展示: 每完成一店就发布部分结果, 前端实时渲染
                 with _lock:
@@ -1637,7 +1770,7 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
             # 被取消/风控中断时: 不写磁盘缓存, 不覆盖 result(保持部分结果可查)
             # 仅风控(非取消)允许 partial_list 作为部分结果供前端展示, 但绝不落盘
             if _trace_state["canceled"] or _trace_state["error"]:
-                print(f"[trace] 中断不写缓存: canceled={_trace_state['canceled']} error={_trace_state['error']}")
+                log_line("trace", f"中断不写缓存: canceled={_trace_state['canceled']} error={_trace_state['error']}")
                 return
             staff_list = _staff_list_from_agg(staff_agg)
             completed = {
@@ -1697,6 +1830,190 @@ def trace_staff(days: int = 7, start: str | None = None, end: str | None = None,
         result["adopted"] = sum(s["adopted"] for s in staff_list)
         result["rate"] = round(result["adopted"] / result["total"] * 100, 2) if result["total"] else 0
     return result
+
+
+# ---------- 今日实时抓取(核算/人工客服「抓取今日数据」) ----------
+def _parse_hhmm(ts, default="00:00"):
+    """解析 HH:MM, 非法返回 default"""
+    try:
+        h, m = str(ts).strip().split(":")
+        return f"{int(h):02d}:{int(m):02d}"
+    except Exception:
+        return default
+
+
+def _today_target_shops(platform=None, shop_filter=None):
+    """按平台/店铺子集解析目标店铺集合(跨全部 config.groups)
+
+    返回 [(groupId, group, [shops...]), ...]: 每个集团一组店铺, 便于 worker 逐集团切换抓取。
+    platform 为 None 时含全部抓取平台集团; shop_filter 只保留集合内的店铺。
+    """
+    cfg = load_config()
+    platform_order = cfg.get("prefetch_platforms") or [1, 5, 7]
+    plat_rank = {p: i for i, p in enumerate(platform_order)}
+    ordered = sorted(
+        [g for g in cfg.get("groups", []) if g.get("groupId") and g.get("accountId")],
+        key=lambda g: plat_rank.get(g.get("platform"), 99),
+    )
+    out = []
+    for g in ordered:
+        if platform is not None and g.get("platform") != platform:
+            continue
+        # 每家集团切过去后 load_shops 才读对(switch_group 内部会 sync_shops_from_tanyu),
+        # 这里用 SQLite shops 表(全部集团店铺已入库)解析, 不依赖当前激活集团
+        import trace_store as _ts
+        try:
+            shops = _ts.get_shops()
+        except Exception:
+            shops = []
+        if not shops:
+            continue
+        # SQLite shops 表含全部集团店铺; 每家集团只取本平台店铺, 否则 scoped
+        # shop_filter 会被错误地塞进每个集团重复抓取(单店被抓 3 次的 bug)
+        shops = [s for s in shops if s.get("platform") == g.get("platform")]
+        if shop_filter is not None:
+            shops = [s for s in shops if s["thirdShopId"] in shop_filter]
+        if shops:
+            out.append((g["groupId"], g, shops))
+    return out
+
+
+@app.post("/api/trace/today")
+def trace_today(platform: int | None = None, shop_ids: str | None = None,
+                start_ts: str = "00:00", end_ts: str | None = None):
+    """抓取今日数据(实时, 不写库): 按集团切换轮询, 支持平台/店铺子集筛选
+
+    - start_ts/end_ts: 今天内的起止时刻(HH:MM), 默认全天 00:00 ~ 当前时刻
+    - shop_ids: 逗号分隔店铺子集, 空=全部店铺(含平台筛选)
+    - 逐集团 switch_group → 抓今天 → 恢复原集团; 风控立即停止
+    """
+    try:
+        _assert_no_running_task()
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+    today_str = datetime.date.today().isoformat()
+    start_ts = _parse_hhmm(start_ts, "00:00")
+    end_ts = _parse_hhmm(end_ts, datetime.datetime.now().strftime("%H:%M")) if end_ts else datetime.datetime.now().strftime("%H:%M")
+    if end_ts < start_ts:
+        raise HTTPException(400, "结束时刻不能早于开始时刻")
+    shop_filter = {s for s in shop_ids.split(",") if s.strip()} if shop_ids else None
+    groups_target = _today_target_shops(platform, shop_filter)
+    if not groups_target:
+        return {"status": "done", "startDate": today_str, "endDate": today_str,
+                "startTs": start_ts, "endTs": end_ts,
+                "result": {"startDate": today_str, "endDate": today_str,
+                           "startTs": start_ts, "endTs": end_ts, "platform": platform,
+                           "total": 0, "adopted": 0, "rate": 0, "byStaff": [],
+                           "shopList": [], "live": True}}
+    with _lock:
+        _today_state["running"] = True
+        _today_state["start_date"] = today_str
+        _today_state["end_date"] = today_str
+        _today_state["start_ts"] = start_ts
+        _today_state["end_ts"] = end_ts
+        _today_state["platform"] = platform
+        _today_state["shop_filter"] = shop_filter
+        _today_state["result"] = None
+        _today_state["last_run"] = None
+        _today_state["error"] = None
+        _today_state["progress"] = {"done": 0, "total": 0, "current": "准备中"}
+    total_plan = sum(len(shops) for _, _, shops in groups_target)
+    _today_state["progress"]["total"] = total_plan
+    orig_gid = load_config().get("cookies", {}).get("tanyu-group-id")
+
+    def worker():
+        try:
+            shop_list = []
+            staff_agg = {}
+            agg_total = agg_adopted = 0
+            done = 0
+            for gid, g, shops in groups_target:
+                if _risk_state.get("triggered"):
+                    log_line("today", "⛔ 风控/登录失效, 整体停止")
+                    _today_state["error"] = _risk_state.get("reason") or "风控/登录失效"
+                    return
+                try:
+                    switch_group(gid)
+                except RiskTriggered:
+                    log_line("today", "⛔ 风控触发于切换集团, 整体停止")
+                    _today_state["error"] = _risk_state.get("reason") or "风控/登录失效"
+                    return
+                except Exception as e:
+                    log_line("today", f"⚠️ 集团「{g.get('groupName')}」切换失败, 跳过: {e}")
+                    continue
+                for i, shop in enumerate(shops, 1):
+                    if _risk_state.get("triggered"):
+                        log_line("today", "⛔ 风控/登录失效, 停止")
+                        _today_state["error"] = _risk_state.get("reason") or "风控/登录失效"
+                        return
+                    _today_state["progress"]["current"] = (
+                        f"集团[{g.get('groupName')}] {shop.get('platformName', '')} · "
+                        f"{shop.get('shopName', '')} ({done + i}/{total_plan})")
+                    if done > 0 or i > 1:
+                        sleep_trace_shop()
+                    try:
+                        res = _fetch_trace_range(
+                            shop["thirdShopId"],
+                            f"{today_str} {start_ts}:00",
+                            f"{today_str} {end_ts}:59",
+                        )
+                        msgs = [_trim_trace_msg(m) for m in (res or [])]
+                        stat = _aggregate_stat_rows(msgs, today_str, today_str)
+                        shop_list.append(
+                            {"shop": shop, "total": stat["total"], "adopted": stat["adopted"],
+                             "rate": stat["rate"], "startDate": today_str, "endDate": today_str}
+                        )
+                        agg_total += stat["total"]
+                        agg_adopted += stat["adopted"]
+                        for st in stat.get("byStaff", []):
+                            entry = staff_agg.setdefault(st["account"], {"total": 0, "adopted": 0})
+                            entry["total"] += st["total"]
+                            entry["adopted"] += st["adopted"]
+                        if stat["total"]:
+                            log_line("today", f"{shop.get('shopName', '')} 今日 {stat['total']} 条 / 采纳 {stat['adopted']}")
+                    except RiskTriggered as e:
+                        log_line("today", f"⛔ 风控触发, 停止: {e}")
+                        _today_state["error"] = f"风控/登录失效, 已停止: {e}"
+                        return
+                    except Exception as e:
+                        log_line("today", f"{shop.get('shopName', '')} 今日抓取失败: {e}")
+                    done += 1
+                    _today_state["progress"]["done"] = done
+                    with _lock:
+                        _today_state["result"] = {
+                            "startDate": today_str, "endDate": today_str,
+                            "startTs": start_ts, "endTs": end_ts, "platform": platform,
+                            "total": agg_total, "adopted": agg_adopted,
+                            "rate": round(agg_adopted / agg_total * 100, 2) if agg_total else 0,
+                            "shopList": list(shop_list),
+                            "byStaff": _staff_list_from_agg(staff_agg),
+                            "live": True,
+                        }
+            _today_state["last_run"] = time.time()
+            log_line("today", f"今日抓取完成: {agg_total} 条 / 采纳 {agg_adopted} / {total_plan} 家店铺")
+        except Exception as e:
+            _today_state["error"] = str(e)
+        finally:
+            _today_state["running"] = False
+            # 恢复原激活集团(风控时不强行切换)
+            if orig_gid and not _risk_state.get("triggered"):
+                try:
+                    if orig_gid != load_config().get("cookies", {}).get("tanyu-group-id"):
+                        switch_group(orig_gid)
+                        log_line("today", f"已恢复原激活集团 {orig_gid}")
+                except Exception as e:
+                    log_line("today", f"⚠️ 恢复原集团失败: {e}")
+
+    threading.Thread(target=worker, daemon=True).start()
+    return {"status": "running", "startDate": today_str, "endDate": today_str,
+            "startTs": start_ts, "endTs": end_ts, "progress": _today_state["progress"]}
+
+
+@app.get("/api/trace/today/status")
+def trace_today_status():
+    """今日实时抓取任务状态/结果"""
+    with _lock:
+        return dict(_today_state)
 
 
 @app.get("/api/trace/overview/status")
@@ -1824,6 +2141,18 @@ def risk_status():
 def task_status():
     with _lock:
         return dict(_refresh_state)
+
+
+@app.get("/api/logs")
+def logs_list(tag: str | None = None, limit: int = 200):
+    """抽屉日志窗口: 返回进程内环形缓冲的最近日志(不含任何 cookie/凭据)"""
+    limit = max(1, min(int(limit), 500))
+    with _log_lock:
+        entries = list(_log_ring)
+    if tag and tag.strip():
+        wanted = {t for t in tag.split(",") if t.strip()}
+        entries = [e for e in entries if e["tag"] in wanted]
+    return {"logs": entries[-limit:], "total": len(entries), "limit": limit, "tag": tag or ""}
 
 
 @app.post("/api/cookies")
