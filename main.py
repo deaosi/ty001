@@ -42,7 +42,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-import trace_store  # SQLite 消息轨迹存储层(30 天滚动窗口)
+import trace_store  # SQLite 消息轨迹存储层(35 天滚动窗口, 全平台)
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -1572,7 +1572,7 @@ def stat_trace_daily(shop_id, start, end, force=False, force_days=None):
             "day_fetched_at": day_fetched_at,
             "days": cached_days,
         })
-        # 同步写入 SQLite(30 天滚动窗口), 供核算/展示纯本地聚合
+        # 同步写入 SQLite(35 天滚动窗口, 全平台), 供核算/展示纯本地聚合
         try:
             _upsert_shop_day_db(shop_id, ds, res)
         except Exception as e:
@@ -3130,7 +3130,7 @@ def prefetch_trace_window(days=None):
       不进库); 完成后 prune_window 按整日边界裁剪。
     trace API 以激活集团(cookie tanyu-group-id)为作用域, 所以多平台预抓逐集团:
       switch_group → sync_shops_from_tanyu → stat_trace_daily(该集团店铺) → 下一个。
-    窗口: 已抓满 30 天的平台(抖音)保留 30 天; 其余平台(拼多多/京东)抓近 7 天。
+    窗口: 全平台保留 35 天(窗口上限, 每晚滚动: 新增昨天、超窗口的最老完整日被裁剪)。
       集团窗口取 config.prefetch_windows{platform: days}, 未配置的集团用
       config.prefetch_days(默认 7)。已抓的天命中缓存零请求(增量)。
     强制重抓: config.prefetch_force_days(默认 1)指定窗口最近 N 天即使缓存有效也
@@ -3165,7 +3165,7 @@ def prefetch_trace_window(days=None):
             if _risk_state.get("triggered"):
                 print("[prefetch] ⛔ 风控/登录失效, 整体停止")
                 raise RiskTriggered(_risk_state.get("reason") or "风控触发")
-            # 集团窗口: 优先按平台映射(PDD/JD=7 天), 未映射的集团用默认 days
+            # 集团窗口: 按平台映射取保留天数(PDD/JD/DY 均 35 天), 未映射的集团用默认 days
             gid = g["groupId"]
             g_days = int(window_map.get(g.get("platform"), days))
             kept_days = max(kept_days, g_days)
@@ -3196,7 +3196,7 @@ def prefetch_trace_window(days=None):
             repair_platform_attribution()
         except Exception as e:
             print(f"[repair] 兜底修复异常: {e}")
-        # 裁剪窗口到已抓数据的最大集团窗口(抖音 30 天, PDD/JD 7 天)
+        # 裁剪窗口到已抓数据的最大集团窗口(全平台 35 天)
         try:
             deleted = trace_store.prune_window(keep_days=kept_days)
             print(f"[prefetch] 裁剪完成(保留 {kept_days} 天): 删除 {deleted} 条过期消息")
