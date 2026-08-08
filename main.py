@@ -37,6 +37,14 @@ if sys.stderr and hasattr(sys.stderr, "reconfigure"):
         pass
 
 import requests
+
+# 跨进程存活探测用 psutil.pid_exists(Windows 的 os.kill(pid,0) 对已死进程误报存活)。
+# psutil 是轻量纯查询(不联网), 每次 _nightly_fetch_active 调用 import 一次有开销,
+# 提前到模块级只 import 一次; 未安装时不阻断(退化 os.kill+TTL 兜底)。
+try:
+    import psutil as _psutil
+except ImportError:
+    _psutil = None
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -198,49 +206,75 @@ def save_config(cfg):
 # nightly_fetch.py 是独立进程, 逐集团改写 config.json 的 tanyu-group-id cookie
 # (切换激活集团, 10~40 分钟/晚)。期间 8080 常驻的任何直连 tanyu 请求若带错误
 # 激活集团 cookie 出网, 会返回错集团数据(跨集团串数据)并被 6h TTL 缓存放大。
-# 缓解: 夜间进程在 config.json 写 nightly_fetch_active{pid,at}, 常驻检测到该标志
+# 缓解: 夜间进程写独立标志文件 data/nightly_fetch_active.json{pid,at}, 常驻检测到
 # (且非本进程发起)时, 直连请求立即返回"繁忙"(503/请稍后), 不向 tanyu 出网。
+# 独立小文件而非 config.json 键: 标志 set/clear 不再与 switch_group/登录回调等
+# config 写者共享 read-modify-write 路径, 从根上消除写侧 TOCTOU(标志被并发覆盖丢)。
 
 NIGHTLY_FETCH_FLAG_TTL = 7 * 3600  # 标志最长有效期(计划任务执行时限 6h 上限的裕量)
+NIGHTLY_FETCH_FLAG_FILE = DATA_DIR / "nightly_fetch_active.json"
 
 
 def set_nightly_fetch_flag():
-    """夜间抓取进程在抓取开始前调用: 写入跨进程标志(pid+时间戳)"""
+    """夜间抓取进程在抓取开始前调用: 原子写独立标志文件(pid+时间戳)"""
     try:
-        cfg = load_config()
-        cfg["nightly_fetch_active"] = {"pid": os.getpid(), "at": time.time()}
-        save_config(cfg)
+        _atomic_write_text(NIGHTLY_FETCH_FLAG_FILE, json.dumps(
+            {"pid": os.getpid(), "at": time.time()}, ensure_ascii=False))
     except Exception as e:
         print(f"[prefetch] ⚠️ 写夜间抓取标志失败: {e}")
 
 
 def clear_nightly_fetch_flag():
-    """夜间抓取结束/异常时调用: 清除跨进程标志(残留标志 7h 后自动失效兜底)"""
+    """夜间抓取结束/异常时调用: 删除标志文件(仅限本进程写入的标志)"""
     try:
-        cfg = load_config()
-        if cfg.get("nightly_fetch_active", {}).get("pid") == os.getpid():
-            cfg.pop("nightly_fetch_active", None)
-            save_config(cfg)
+        data = json.loads(NIGHTLY_FETCH_FLAG_FILE.read_text(encoding="utf-8"))
+        if data.get("pid") == os.getpid():
+            NIGHTLY_FETCH_FLAG_FILE.unlink(missing_ok=True)
+    except FileNotFoundError:
+        pass
     except Exception:
         pass
 
 
 def _nightly_fetch_active():
-    """8080 常驻判断夜间抓取是否正在占用激活集团 cookie(阻塞直连请求)"""
+    """8080 常驻判断夜间抓取是否正在占用激活集团 cookie(阻塞直连请求)
+
+    三重失效兜底, 缺一不可:
+      1) pid==os.getpid(): 本进程就是夜间抓取, 不阻塞自己
+      2) 进程存活探测(os.kill(pid,0)): 硬杀(taskkill /F/断电/蓝屏/os._exit)
+         不走 prefetch 的 finally 清除标志, 死进程残留标志立即失效, 无需等 7h TTL
+         (与 nightly_fetch._lock 的存活探测同模式)
+      3) TTL: 7h 硬上界(pid 复用可能让存活探测误报存活, 时间兜底保证绝对自愈)
+    标志是独立小文件(data/nightly_fetch_active.json), 与 config.json 解耦,
+    不与 switch_group 等 config 写者共享读改写路径(无写侧 TOCTOU 覆盖丢失)。
+    """
     try:
-        cfg = load_config()
-        nf = cfg.get("nightly_fetch_active") or {}
-        pid = nf.get("pid")
-        at = nf.get("at")
-        if not pid or not at:
-            return False
-        if pid == os.getpid():
-            return False  # 本进程就是夜间抓取, 不阻塞自己
-        if time.time() - float(at) > NIGHTLY_FETCH_FLAG_TTL:
-            return False  # 残留标志超时, 不再阻塞
-        return True
+        data = json.loads(NIGHTLY_FETCH_FLAG_FILE.read_text(encoding="utf-8"))
     except Exception:
         return False
+    pid = data.get("pid")
+    at = data.get("at")
+    if not pid or not at:
+        return False
+    if pid == os.getpid():
+        return False  # 本进程就是夜间抓取, 不阻塞自己
+    if time.time() - float(at) > NIGHTLY_FETCH_FLAG_TTL:
+        return False  # 残留标志超时, 不再阻塞
+    # 写入方进程存活探测: 进程已死视为标志失效, 立即解除 8080 阻塞(不等 7h TTL)。
+    # Windows 的 os.kill(pid,0) 对已死进程仍返回成功(误报存活), 故优先 psutil。
+    # pid_exists 精确(查进程是否真实存在); 未装 psutil 时退化 os.kill+TTL 兜底。
+    if _psutil is not None:
+        try:
+            if not _psutil.pid_exists(int(pid)):
+                return False
+        except Exception:
+            return False
+    else:
+        try:
+            os.kill(int(pid), 0)
+        except OSError:
+            return False
+    return True
 
 
 # ---------- 数据访问 ----------
@@ -640,6 +674,11 @@ def refresh_all_async(start, end, shops=None):
                     log_line("refresh", f"⛔ 风控触发, 停止剩余 {total - i} 家店铺: {e}")
                     _refresh_state["error"] = f"风控/登录失效, 已停止: {e}"
                     break
+                except BusyQueueError as e:
+                    # 夜间抓取占用激活集团 cookie: 停止, 不写零值缓存
+                    log_line("refresh", f"⏸ 夜间抓取进行中, 停止刷新: {e}")
+                    _refresh_state["error"] = f"夜间抓取进行中, 请稍后重试: {e}"
+                    break
                 except Exception as e:
                     log_line("refresh", f"{shop['shopName']} 失败: {e}")
                 _refresh_state["progress"]["done"] = i
@@ -713,6 +752,11 @@ def refresh_all_groups_async(start, end):
                         except RiskTriggered as e:
                             log_line("refresh", f"⛔ 风控触发于集团[{g.get('groupName')}], 停止: {e}")
                             _refresh_state["error"] = f"风控/登录失效, 已停止: {e}"
+                            return
+                        except BusyQueueError as e:
+                            # 夜间抓取占用激活集团 cookie: 停止, 不写零值缓存
+                            log_line("refresh", f"⏸ 夜间抓取进行中, 停止刷新: {e}")
+                            _refresh_state["error"] = f"夜间抓取进行中, 请稍后重试: {e}"
                             return
                         except Exception as e:
                             log_line("refresh", f"{shop['shopName']} 失败: {e}")
@@ -1317,6 +1361,11 @@ def fetch_trace_page(shop_id, begin, end, page_index, page_size=TRACE_PAGE_SIZE)
         "endTime": end,
     }
     _assert_no_risk()
+    # 夜间抓取进程正在逐集团切激活集团 cookie → 轨迹直连请求不发(否则带错集团
+    # cookie 出网会跨集团串数据, 正是夜间标志要防的; 核算/今日/单店都经此路径)。
+    # pid==os.getpid() 自排除, 夜间进程自身抓取不受影响。
+    if _nightly_fetch_active():
+        raise BusyQueueError("夜间抓取进行中, 请稍后重试")
     _rate_limit()
     resp = requests.post(TRACE_API, json=payload, headers=get_headers(), timeout=20)
     data = resp.json()
@@ -1613,6 +1662,8 @@ def _fetch_trace_range(shop_id, begin, end):
             _, batch = fetch_trace_page(shop_id, begin, end, page)
         except RiskTriggered:
             raise
+        except BusyQueueError:
+            raise  # 夜间抓取占用激活集团 cookie: 不得吞掉(否则门控被绕过返回空结果)
         except Exception as e:
             print(f"[trace] {shop_id} {begin[:10]} page={page} 失败: {e}")
             break
@@ -1718,6 +1769,8 @@ def stat_trace_daily(shop_id, start, end, force=False, force_days=None, trim_ms=
             res = [_trim_trace_msg(r) for r in _fetch_trace_day(shop_id, ds)]
         except RiskTriggered:
             raise
+        except BusyQueueError:
+            raise  # 夜间抓取占用激活集团 cookie: 不得吞掉(否则门控被绕过返回空结果)
         except Exception as e:
             log_line("trace", f"{shop_id} {ds} 抓取失败: {e}")
             continue
@@ -2853,6 +2906,8 @@ def trace_shop(shop_id: str, days: int = 7, force: int = 0, start: str | None = 
                     "fetchedAt": time.time(), "stat": stat}
     try:
         stat = stat_trace_daily(shop_id, start, end, force=bool(force), trim_ms=(_sms, _ems))
+    except BusyQueueError as e:
+        raise HTTPException(503, str(e))  # 夜间抓取进行中
     except RuntimeError as e:
         raise HTTPException(502, str(e))
     return {"shop": shop, "startDate": start, "endDate": end, "fetchedAt": time.time(), "stat": stat}
@@ -3376,6 +3431,12 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
                     _trace_state["error"] = f"风控/登录失效, 已停止: {e}"
                     _trace_state["progress"]["current"] = f"已停止: {e}"
                     break
+                except BusyQueueError as e:
+                    # 夜间抓取占用激活集团 cookie: 停止, 不写零值缓存(避免跨集团串数据)
+                    log_line("trace", f"⏸ 夜间抓取进行中, 停止核算: {e}")
+                    _trace_state["error"] = f"夜间抓取进行中, 请稍后重试: {e}"
+                    _trace_state["progress"]["current"] = f"已停止: {e}"
+                    break
                 except Exception as e:
                     log_line("trace", f"{shop['shopName']} 失败: {e}")
                 _trace_state["progress"]["done"] = i
@@ -3618,6 +3679,11 @@ def trace_today(platform: int | None = None, shop_ids: str | None = None,
                         log_line("today", f"⛔ 风控触发, 停止: {e}")
                         _today_state["error"] = f"风控/登录失效, 已停止: {e}"
                         return
+                    except BusyQueueError as e:
+                        # 夜间抓取占用激活集团 cookie: 停止, 不写零值缓存
+                        log_line("today", f"⏸ 夜间抓取进行中, 停止今日抓取: {e}")
+                        _today_state["error"] = f"夜间抓取进行中, 请稍后重试: {e}"
+                        return
                     except Exception as e:
                         log_line("today", f"{shop.get('shopName', '')} 今日抓取失败: {e}")
                     done += 1
@@ -3774,6 +3840,8 @@ def trace_messages(shop_id: str, days: int = 7, force: int = 0,
                     "messages": stat.get("messages", [])}
     try:
         stat = stat_trace_daily(shop_id, start, end, force=bool(force), trim_ms=(_sms, _ems))
+    except BusyQueueError as e:
+        raise HTTPException(503, str(e))  # 夜间抓取进行中
     except RuntimeError as e:
         raise HTTPException(502, str(e))
     return {"shop": shop, "startDate": start, "endDate": end,
