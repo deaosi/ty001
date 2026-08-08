@@ -4044,11 +4044,15 @@ def dingtalk_status():
 
 
 @app.get("/api/dingtalk/push")
-def dingtalk_push(platform: int | None = None, stat_type: str = "natural_week", week: str | None = None):
-    """方式A: 把平台概览推送到钉钉群(自定义机器人 webhook)"""
+def dingtalk_push(platform: str | None = None, stat_type: str = "natural_week", week: str | None = None):
+    """方式A: 把平台概览推送到钉钉群(自定义机器人 webhook)
+
+    platform: 平台号(如 10)或 all(全部); 留空默认 all。
+    """
     if not HAVE_DINGTALK:
         raise HTTPException(503, "钉钉模块未加载")
-    return dingtalk_bot.push_overview_to_group(platform, stat_type, week)
+    plat = _parse_dingtalk_platform(platform)
+    return dingtalk_bot.push_overview_to_group(plat, stat_type, week)
 
 
 @app.post("/api/dingtalk/config")
@@ -4087,12 +4091,23 @@ def dingtalk_stream_stop():
 
 
 @app.get("/api/dingtalk/preview")
-def dingtalk_preview(platform: int | None = None, stat_type: str = "natural_week", week: str | None = None):
+def dingtalk_preview(platform: str | None = None, stat_type: str = "natural_week", week: str | None = None):
     """预览将要推送到钉钉的 markdown 文本(不实际发送)"""
     if not HAVE_DINGTALK:
         raise HTTPException(503, "钉钉模块未加载")
-    txt, detail = dingtalk_bot._overview_cards(platform, stat_type, week)
+    plat = _parse_dingtalk_platform(platform)
+    txt, detail = dingtalk_bot._overview_cards(plat, stat_type, week)
     return {"markdown": txt, "platforms": detail}
+
+
+def _parse_dingtalk_platform(p):
+    """钉钉推送的 platform 参数: 数字平台号或 all/None -> int 或 'all'"""
+    if p is None or str(p).strip().lower() in ("", "all", "全部"):
+        return "all"
+    try:
+        return int(str(p).strip())
+    except (TypeError, ValueError):
+        return "all"
 
 
 if __name__ == "__main__":

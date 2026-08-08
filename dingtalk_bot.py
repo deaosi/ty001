@@ -119,12 +119,17 @@ def _overview_cards(platform: int | None, stat_type: str, week: str | None):
     """聚合平台概览为 markdown 文本(与 /api/overview 同口径: 日=昨天vs前天 等)。
 
     复用 main.overview 的逻辑: 为避免循环 import, 运行时才 import main。
-    返回 (markdown 文本, [{platform, name, cards}])。
+    platform: 单个平台号; 为 "all"/None 时遍历全部已启用平台。
+    返回 (markdown 文本, [{platform, name, start_date, end_date, cards}]).
     """
     import main as M
     lines = []
     detail = []
-    plats = [platform] if platform is not None else M.FETCH_PLATFORMS + M.IMPORT_PLATFORMS
+    # 默认全推顺序: 天猫1/2 优先(导入数据稳定), 再抓取平台
+    if platform in (None, "all"):
+        plats = M.IMPORT_PLATFORMS + M.FETCH_PLATFORMS
+    else:
+        plats = [int(platform)]
     for p in plats:
         try:
             d = M.overview(platform=p, stat_type=stat_type, week=week)
@@ -135,20 +140,25 @@ def _overview_cards(platform: int | None, stat_type: str, week: str | None):
         items = d.get("items", {})
         name = d.get("platformName") or PLATFORM_NAMES.get(p, str(p))
         source = d.get("source", "")
+        sdate = d.get("startDate")
+        edate = d.get("endDate")
         cur = items.get("history_msg_total", {}).get("current")
         adp = items.get("history_adopted_total", {}).get("current")
         acc = items.get("history_accept_rate", {}).get("current")
         gen = items.get("history_gen_rate", {}).get("current")
-        line = (f"### {name}\n"
-                f"- 消息量: **{cur:,}**\n"
-                f"- 采纳数: **{adp:,}**\n"
-                f"- 采纳率: **{acc}%**" if acc is not None else "- 采纳率: —")
+        # 日期区间随平台展示(概览口径: 日=昨天 周=本周 月=本月; 历史周=实际区间)
+        date_str = f"{sdate} ~ {edate}" if sdate and edate else ""
+        line = f"### {name} `{date_str}`\n" if date_str else f"### {name}\n"
+        line += f"- 消息量: **{cur:,}**\n" if cur is not None else "- 消息量: —\n"
+        line += f"- 采纳数: **{adp:,}**\n" if adp is not None else "- 采纳数: —\n"
+        line += f"- 采纳率: **{acc}%**\n" if acc is not None else "- 采纳率: —\n"
         if gen is not None:
-            line += f"\n- 生成率: **{gen}%**"
+            line += f"- 生成率: **{gen}%**\n"
         if source:
-            line += f"\n> 数据源: {source}"
+            line += f"> 数据源: {source}"
         lines.append(line)
-        detail.append({"platform": p, "name": name, "source": source,
+        detail.append({"platform": p, "name": name, "start_date": sdate, "end_date": edate,
+                       "source": source,
                        "msg_total": cur, "adopted": adp, "accept_rate": acc, "gen_rate": gen})
     return "\n\n".join(lines), detail
 
