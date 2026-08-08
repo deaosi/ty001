@@ -4005,6 +4005,96 @@ def db_status():
     return info
 
 
+# ---------- 钉钉机器人接入 ----------
+# 两种方式: A=自定义机器人Webhook推送, B=Stream长连接交互。
+# 独立模块 dingtalk_bot.py + 独立配置 dingtalk_config.json(已 gitignore)。
+# 未配置 webhook/stream 凭据时所有端点安全降级(返回未配置), 不影响看板主流程。
+try:
+    import dingtalk_bot
+    HAVE_DINGTALK = True
+except Exception as e:
+    HAVE_DINGTALK = False
+    print(f"[dingtalk] 模块加载失败(钉钉功能禁用): {e}")
+
+
+class DingTalkConfigBody(BaseModel):
+    webhook_url: str | None = None
+    stream_client_id: str | None = None
+    stream_client_secret: str | None = None
+
+
+@app.get("/api/dingtalk/status")
+def dingtalk_status():
+    """钉钉接入状态(是否配置/连接是否建立), 不暴露任何凭据值"""
+    if not HAVE_DINGTALK:
+        return {"enabled": False, "error": "模块未加载"}
+    cfg = dingtalk_bot.load_config()
+    web = bool((cfg.get("webhook") or {}).get("url"))
+    st = cfg.get("stream") or {}
+    stream_ok = bool(st.get("client_id") and st.get("client_secret"))
+    return {
+        "enabled": True,
+        "webhook_configured": web,
+        "stream_configured": stream_ok,
+        "stream_running": dingtalk_bot._stream_state.get("running", False),
+        "stream_error": dingtalk_bot._stream_state.get("error"),
+        "stream_conn_at": dingtalk_bot._stream_state.get("conn_at"),
+        "note": "凭据只存于 dingtalk_config.json(不入 git)",
+    }
+
+
+@app.get("/api/dingtalk/push")
+def dingtalk_push(platform: int | None = None, stat_type: str = "natural_week", week: str | None = None):
+    """方式A: 把平台概览推送到钉钉群(自定义机器人 webhook)"""
+    if not HAVE_DINGTALK:
+        raise HTTPException(503, "钉钉模块未加载")
+    return dingtalk_bot.push_overview_to_group(platform, stat_type, week)
+
+
+@app.post("/api/dingtalk/config")
+def dingtalk_set_config(body: DingTalkConfigBody):
+    """保存钉钉配置(webhook / stream 凭据); 会写 dingtalk_config.json(不入 git)"""
+    if not HAVE_DINGTALK:
+        raise HTTPException(503, "钉钉模块未加载")
+    cfg = dingtalk_bot.load_config()
+    cfg.setdefault("webhook", {})
+    cfg.setdefault("stream", {})
+    if body.webhook_url is not None:
+        cfg["webhook"]["url"] = body.webhook_url.strip() or None
+    if body.stream_client_id is not None:
+        cfg["stream"]["client_id"] = body.stream_client_id.strip() or None
+    if body.stream_client_secret is not None:
+        cfg["stream"]["client_secret"] = body.stream_client_secret.strip() or None
+    dingtalk_bot.save_config(cfg)
+    return {"ok": True, "saved": "dingtalk_config.json"}
+
+
+@app.post("/api/dingtalk/stream/start")
+def dingtalk_stream_start():
+    """方式B: 启动 Stream 长连接(后台线程)"""
+    if not HAVE_DINGTALK:
+        raise HTTPException(503, "钉钉模块未加载")
+    return dingtalk_bot.ensure_stream()
+
+
+@app.post("/api/dingtalk/stream/stop")
+def dingtalk_stream_stop():
+    """方式B: 停止 Stream 长连接"""
+    if not HAVE_DINGTALK:
+        raise HTTPException(503, "钉钉模块未加载")
+    dingtalk_bot.stop_stream()
+    return {"ok": True, "running": False}
+
+
+@app.get("/api/dingtalk/preview")
+def dingtalk_preview(platform: int | None = None, stat_type: str = "natural_week", week: str | None = None):
+    """预览将要推送到钉钉的 markdown 文本(不实际发送)"""
+    if not HAVE_DINGTALK:
+        raise HTTPException(503, "钉钉模块未加载")
+    txt, detail = dingtalk_bot._overview_cards(platform, stat_type, week)
+    return {"markdown": txt, "platforms": detail}
+
+
 if __name__ == "__main__":
     if "--backfill" in sys.argv:
         backfill_trace_db()
