@@ -116,8 +116,14 @@ def push_overview_to_group(platform: int | None = None, stat_type: str = "natura
     platform=None 推全部已启用平台。
     """
     cards_text, detail = _overview_cards(platform, stat_type, week)
+    # 正文顶部加一级大标题「本周数据快报」+ 本周起止区间 + 抓取时间
+    # (钉钉 markdown 最高 # 一级; 抓取时间=推送生成时刻, 便于核对数据时点)
+    import main as M
+    ws, we = M._stat_type_range("natural_week")
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    heading = f"# 📊 本周数据快报 `{ws} ~ {we}`\n> 数据抓取时间: **{ts}**\n\n"
     title = f"📊 探域看板播报 {datetime.date.today().isoformat()}"
-    ok, err = _push_markdown(title, cards_text)
+    ok, err = _push_markdown(title, heading + cards_text)
     return {"ok": ok, "error": err, "platforms": detail}
 
 
