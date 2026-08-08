@@ -148,7 +148,14 @@ def _overview_cards(platform: int | None, stat_type: str, week: str | None):
         plats = [int(platform)]
     for p in plats:
         try:
-            d = M.overview(platform=p, stat_type=stat_type, week=week)
+            # 导入平台(天猫1/2)传 cap_to_data_end=True: 表滞后(未导入昨天)时数值
+            # 聚合截止到表末天, 与 data_end 显示区间对齐(否则"显示 06-01~08-06
+            # 但消息量按昨天聚合=0"自相矛盾)。抓取平台不受影响。
+            if p in M.IMPORT_PLATFORMS:
+                d = M.overview(platform=p, stat_type=stat_type, week=week,
+                               cap_to_data_end=True)
+            else:
+                d = M.overview(platform=p, stat_type=stat_type, week=week)
         except Exception as e:
             lines.append(f"### {PLATFORM_NAMES.get(p, p)}: 取数失败 {e}")
             detail.append({"platform": p, "name": PLATFORM_NAMES.get(p, str(p)), "error": str(e)})
@@ -171,6 +178,17 @@ def _overview_cards(platform: int | None, stat_type: str, week: str | None):
         source = d.get("source", "")
         sdate = d.get("startDate")
         edate = d.get("endDate")
+        # 导入平台(天猫1/2): 数据截止按导入表格实际范围(trace_daily data_end),
+        # 不是自然日口径默认区间(周=本周一~今天 会显示未导入的未来天)。
+        # _import_overview_summary 返回 data_start/data_end; 有则优先用。
+        dstart = d.get("data_start")
+        dend = d.get("data_end")
+        if p in M.IMPORT_PLATFORMS and dend:
+            sdate, edate = dstart, dend
+        elif p in M.IMPORT_PLATFORMS:
+            # 导入平台但无数据(data_start/end 均 None, 如天猫2 尚未导入任何表格):
+            # 不显示自然日默认区间(周=本周一~周日 会含未来周日, 误导"数据到未来")。
+            sdate = edate = None
         cur = items.get("history_msg_total", {}).get("current")
         adp = items.get("history_adopted_total", {}).get("current")
         acc = items.get("history_accept_rate", {}).get("current")

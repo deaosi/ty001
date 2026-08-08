@@ -194,6 +194,55 @@ def save_config(cfg):
     _atomic_write_text(CONFIG_FILE, json.dumps(cfg, ensure_ascii=False, indent=2))
 
 
+# ---------- 夜间抓取跨进程标志 ----------
+# nightly_fetch.py 是独立进程, 逐集团改写 config.json 的 tanyu-group-id cookie
+# (切换激活集团, 10~40 分钟/晚)。期间 8080 常驻的任何直连 tanyu 请求若带错误
+# 激活集团 cookie 出网, 会返回错集团数据(跨集团串数据)并被 6h TTL 缓存放大。
+# 缓解: 夜间进程在 config.json 写 nightly_fetch_active{pid,at}, 常驻检测到该标志
+# (且非本进程发起)时, 直连请求立即返回"繁忙"(503/请稍后), 不向 tanyu 出网。
+
+NIGHTLY_FETCH_FLAG_TTL = 7 * 3600  # 标志最长有效期(计划任务执行时限 6h 上限的裕量)
+
+
+def set_nightly_fetch_flag():
+    """夜间抓取进程在抓取开始前调用: 写入跨进程标志(pid+时间戳)"""
+    try:
+        cfg = load_config()
+        cfg["nightly_fetch_active"] = {"pid": os.getpid(), "at": time.time()}
+        save_config(cfg)
+    except Exception as e:
+        print(f"[prefetch] ⚠️ 写夜间抓取标志失败: {e}")
+
+
+def clear_nightly_fetch_flag():
+    """夜间抓取结束/异常时调用: 清除跨进程标志(残留标志 7h 后自动失效兜底)"""
+    try:
+        cfg = load_config()
+        if cfg.get("nightly_fetch_active", {}).get("pid") == os.getpid():
+            cfg.pop("nightly_fetch_active", None)
+            save_config(cfg)
+    except Exception:
+        pass
+
+
+def _nightly_fetch_active():
+    """8080 常驻判断夜间抓取是否正在占用激活集团 cookie(阻塞直连请求)"""
+    try:
+        cfg = load_config()
+        nf = cfg.get("nightly_fetch_active") or {}
+        pid = nf.get("pid")
+        at = nf.get("at")
+        if not pid or not at:
+            return False
+        if pid == os.getpid():
+            return False  # 本进程就是夜间抓取, 不阻塞自己
+        if time.time() - float(at) > NIGHTLY_FETCH_FLAG_TTL:
+            return False  # 残留标志超时, 不再阻塞
+        return True
+    except Exception:
+        return False
+
+
 # ---------- 数据访问 ----------
 def get_headers():
     cfg = load_config()
@@ -212,6 +261,9 @@ def get_headers():
 def post_api(path, payload, timeout=20):
     """POST 请求探域接口, 返回解析后的 JSON; 带限速+风控检测"""
     _assert_no_risk()
+    # 夜间抓取进程正在逐集团切激活集团 cookie, 此刻出网会串集团数据 → 直接阻塞
+    if _nightly_fetch_active():
+        raise BusyQueueError("夜间抓取进行中, 请稍后重试")
     _rate_limit()
     resp = requests.post(API_BASE + path, json=payload, headers=get_headers(), timeout=timeout)
     data = resp.json()
@@ -259,6 +311,9 @@ def post_api_interactive(path, payload, timeout=20):
     if cached is not None:
         return cached
     _assert_no_risk()
+    # 夜间抓取进程正在切激活集团 cookie → 交互直连请求不发, 前端显示"请稍后"
+    if _nightly_fetch_active():
+        raise BusyQueueError("夜间抓取进行中, 请稍后重试")
     if not _rate_limit_available():
         raise BusyQueueError("后台抓取任务进行中, 请稍后重试")
     resp = requests.post(API_BASE + path, json=payload, headers=get_headers(), timeout=timeout)
@@ -904,7 +959,9 @@ def sync_shops_from_tanyu():
             raise RuntimeError("接口返回空店铺列表")
         for s in shops:
             s["platformName"] = PLATFORM_NAMES.get(s.get("platform"), str(s.get("platform")))
-        SHOPS_FILE.write_text(json.dumps({"data": shops}, ensure_ascii=False, indent=2), encoding="utf-8")
+        # 原子写 shops.json: 与 8080 常驻并发写时互不读到半截 JSON(直接 write_text
+        # 会截断写, 另一进程 load_shops 可能读到空/半截列表)
+        _atomic_write_text(SHOPS_FILE, json.dumps({"data": shops}, ensure_ascii=False, indent=2))
         # 店铺集合已变: 同步 SQLite 店铺维度表, 并清掉核算缓存, 避免旧集团结果串到新集团
         try:
             trace_store.upsert_shops(shops)
@@ -1616,7 +1673,8 @@ def _upsert_shop_day_db(shop_id, day_str, msgs):
     trace_store.upsert_shop_day(shop_id, platform, day_str, msgs)
 
 
-def stat_trace_daily(shop_id, start, end, force=False, force_days=None, trim_ms=None):
+def stat_trace_daily(shop_id, start, end, force=False, force_days=None, trim_ms=None,
+                     history_mode=False):
     """按天遍历消息轨迹, 逐日缓存, 支持增量更新
 
     - 已缓存的天直接复用(零请求)
@@ -1624,6 +1682,10 @@ def stat_trace_daily(shop_id, start, end, force=False, force_days=None, trim_ms=
     - force=True 时忽略缓存重新抓取全部天(用于"重新抓取"按钮)
     - force_days: 这些天即使缓存有效也强制重抓(如"昨天"防采纳口径漂移:
       tanyu 会对已抓消息回溯更新 sendType, 不重抓则昨天采纳数停在预抓时刻)
+    - history_mode: 夜间预抓专设。历史天缓存"已抓就复用"(不按 7 天 TTL 判过期),
+      使每晚增量只抓昨天(未缓存/缺格天仍会补抓), 避免每晚周期性重抓整窗旧天
+      (7 天 TTL 会把超过 7 天未重抓的历史天判过期→整窗重抓, 违背"只抓昨天"契约)。
+      普通用户/核算请求不传此参数, 保持既有 TTL 保鲜语义。
     - trim_ms=(start_ms, end_ms): 秒级核算区间, 聚合前按消息 msg_time(毫秒)过滤
       (trace_daily 只有整天聚合, 秒级边界必须落到原始消息时间戳)
     - 返回聚合 stat(messages/daily 齐全, 供折线图/核算/原始消息)
@@ -1643,9 +1705,15 @@ def stat_trace_daily(shop_id, start, end, force=False, force_days=None, trim_ms=
     total_results = []
 
     for ds in day_strs:
-        if not force and ds not in force_days and _cached_days_usable(cache, ds):
-            total_results.extend(cached_days[ds])
-            continue
+        if not force and ds not in force_days:
+            if history_mode:
+                # 夜间预抓: 历史天"已抓就复用"(不判 TTL 过期); 只补未抓的缺格天
+                if ds in cached_days:
+                    total_results.extend(cached_days[ds])
+                    continue
+            elif _cached_days_usable(cache, ds):
+                total_results.extend(cached_days[ds])
+                continue
         try:
             res = [_trim_trace_msg(r) for r in _fetch_trace_day(shop_id, ds)]
         except RiskTriggered:
@@ -2331,7 +2399,7 @@ def _aggregate_shop_gen_rate(platform, stat_type, anchor=None):
     return cur, prev
 
 
-def _import_overview_summary(platform, stat_type, week_anchor=None):
+def _import_overview_summary(platform, stat_type, week_anchor=None, cap_to_data_end=False):
     """导入平台(天猫1/2)平台维度汇总: 纯本地 trace_daily 聚合, 零上游请求
 
     与 overview 返回同构(source="import"), 口径与 tanyu summary 一致(忽略日期):
@@ -2340,27 +2408,58 @@ def _import_overview_summary(platform, stat_type, week_anchor=None):
       natural_month = 本月(1~昨天) vs 上月
     4 张卡: 消息量/采纳数/采纳率/生成率(generation_rate 来自导入 Excel 生成率列)。
     统计字段: 消息量/采纳数直接聚合, 采纳率=adopted/total, 生成率=trace_daily.generation_rate。
+    返回额外带 data_start/data_end = 该平台 trace_daily 实际数据范围(按导入表格),
+    供钉钉推送等按"导入表格截止"显示数据截止, 而非自然日口径默认区间。
+
+    cap_to_data_end: 钉钉推送等"按导入表截止显示"的场景传 True。当导入表滞后
+    (data_end < 昨天)时, 数值聚合窗口截止到表末天, 避免"显示 06-01~08-06 但
+    数值按昨天聚合=0"的自相矛盾(表还没导入昨天, 却显示昨天 0 消息)。
+    默认 False 保持既有 natural 口径(看板页面不改变行为)。
     """
     today = datetime.date.today()
     one_day = datetime.timedelta(days=1)
     yesterday = today - one_day
+
+    # 该平台 trace_daily 实际数据范围(按导入表格覆盖到哪天, 而非自然日默认区间)
+    data_start = data_end = None
+    try:
+        row = trace_store._conn().execute(
+            """SELECT MIN(d.day) m, MAX(d.day) x FROM trace_daily d
+               JOIN shops s ON s.third_shop_id = d.third_shop_id
+               WHERE s.platform = ?""", (platform,)
+        ).fetchone()
+        if row:
+            data_start, data_end = row["m"], row["x"]
+    except Exception:
+        pass
+
+    # 数值聚合截止天: 默认昨天; cap_to_data_end 且表滞后时用表末天(见 docstring)
+    win_end = yesterday
+    if cap_to_data_end and data_end:
+        try:
+            de = datetime.date.fromisoformat(data_end)
+            if de < yesterday:
+                win_end = de
+        except Exception:
+            pass
+
     if stat_type == "natural_week":
-        cur_ws = today - datetime.timedelta(days=today.weekday())
-        # 周一当天: cur_ws==今天(周一) > yesterday(上周日), 区间反转会让 BETWEEN
-        # 匹配零行、本周四卡全空。归一为 min(周一, 昨天)..昨天(周一当天=昨天单日)。
-        cur_start = min(cur_ws.isoformat(), yesterday.isoformat())
-        cur_end = yesterday.isoformat()
+        cur_ws = win_end - datetime.timedelta(days=win_end.weekday())
+        # 周一当天: cur_ws==win_end(周一) > 上一窗口末, 区间反转会让 BETWEEN
+        # 匹配零行、本周四卡全空。归一为 min(周一, 窗口末)..窗口末(周一当天=单日)。
+        cur_start = min(cur_ws.isoformat(), win_end.isoformat())
+        cur_end = win_end.isoformat()
         prev_start = (cur_ws - datetime.timedelta(days=7)).isoformat()
         prev_end = (cur_ws - one_day).isoformat()
     elif stat_type == "natural_month":
-        # 每月1号: today.replace(day=1)==今天(1号) > yesterday(上月最后一天), 同样反转。
-        cur_start = min(today.replace(day=1).isoformat(), yesterday.isoformat())
-        cur_end = yesterday.isoformat()
-        prev_start = (today.replace(day=1) - one_day).replace(day=1).isoformat()
-        prev_end = (today.replace(day=1) - one_day).isoformat()
+        # 每月1号: win_end.replace(day=1)==1号 > 上一窗口末(上月最后一天), 同样反转。
+        cur_start = min(win_end.replace(day=1).isoformat(), win_end.isoformat())
+        cur_end = win_end.isoformat()
+        prev_start = (win_end.replace(day=1) - one_day).replace(day=1).isoformat()
+        prev_end = (win_end.replace(day=1) - one_day).isoformat()
     else:  # natural_day
-        cur_start = cur_end = yesterday.isoformat()
-        prev_start = prev_end = (yesterday - one_day).isoformat()
+        cur_start = cur_end = win_end.isoformat()
+        prev_start = prev_end = (win_end - one_day).isoformat()
 
     def _agg(s, e):
         agg = trace_store.overview_aggregate(s, e, platform)
@@ -2407,6 +2506,8 @@ def _import_overview_summary(platform, stat_type, week_anchor=None):
         "statType": stat_type,
         "startDate": _stat_type_range(stat_type)[0],
         "endDate": _stat_type_range(stat_type)[1],
+        "data_start": data_start,
+        "data_end": data_end,
         "platform": platform,
         "platformName": PLATFORM_NAMES.get(platform),
         "source": "import",
@@ -2416,7 +2517,7 @@ def _import_overview_summary(platform, stat_type, week_anchor=None):
 
 @app.get("/api/overview")
 def overview(platform: int = 1, stat_type: str = "natural_day", start: str | None = None, end: str | None = None,
-             week: str | None = None):
+             week: str | None = None, cap_to_data_end: bool = False):
     """平台维度汇总, 按统计口径(自然日/自然周/自然月)。
 
     tanyu summary 固定忽略 startDate/endDate: 三种口径分别返回 昨天vs前天 /
@@ -2426,6 +2527,10 @@ def overview(platform: int = 1, stat_type: str = "natural_day", start: str | Non
     week(可选, 仅 natural_week): 周一锚点 YYYY-MM-DD。传入历史周时改用本地
     SQLite 聚合(source="history", 消息量/采纳数/采纳率 + coverage), 因为 tanyu
     summary 忽略日期永远只给当前周(实测); 不传或传当前周走 tanyu summary。
+
+    cap_to_data_end(钉钉推送专用): 导入平台表滞后时数值聚合截止到表末天,
+    与 data_end 显示区间对齐(否则"显示 06-01~08-06 但数值按昨天聚合=0")。
+    默认 False 保持既有 natural 口径(看板页面不受影响)。
     """
     if platform not in PLATFORM_NAMES:
         raise HTTPException(400, f"不支持的平台: {platform}")
@@ -2444,7 +2549,7 @@ def overview(platform: int = 1, stat_type: str = "natural_day", start: str | Non
             return hist
     # 导入平台(天猫1/2)分支: 纯本地 trace_daily 聚合, 绝不请求 tanyu summary
     if platform in IMPORT_PLATFORMS:
-        return _import_overview_summary(platform, stat_type)
+        return _import_overview_summary(platform, stat_type, cap_to_data_end=cap_to_data_end)
     payload = {
         "statType": stat_type,
         "startDate": start,
@@ -3975,7 +4080,9 @@ def _prefetch_group(gid, start, end, force_days=None):
             raise RiskTriggered(_risk_state.get("reason") or "风控触发")
         sid = shop["thirdShopId"]
         try:
-            stat = stat_trace_daily(sid, start, end, force_days=force_days)
+            # history_mode=True: 历史天缓存已抓就复用(不按 7 天 TTL 判过期),
+            # 使每晚只增量抓昨天/缺格天, 不周期性重抓整窗旧天
+            stat = stat_trace_daily(sid, start, end, force_days=force_days, history_mode=True)
             print(f"[prefetch]   {i}/{len(shops)} {shop.get('platformName','')}·{shop.get('shopName','')} "
                   f"total={stat['total']} adopted={stat['adopted']}")
             _prefetch_refresh_week_summary(shop, cfg)
@@ -4020,7 +4127,7 @@ def repair_platform_attribution():
     return fixed
 
 
-def prefetch_trace_window(days=None):
+def prefetch_trace_window(days=None, prune=True):
     """夜间预抓: 轮询拼多多→京东→抖音三集团, 按集团窗口抓缺失/过期天, 并滚动裁剪
 
     每天 00:00 由计划任务 TanyuDashboardTracePrefetch 触发:
@@ -4035,6 +4142,9 @@ def prefetch_trace_window(days=None):
       强制重抓(默认最近一天=昨天)。tanyu 会对已抓消息回溯更新 sendType(草稿→已发送),
       不重抓则昨天采纳数停在预抓时刻、看板采纳率与 tanyu 后台不一致。
     结束后恢复原激活集团, 让常驻看板继续服务原集团。风控/登录失效立即整体停止。
+
+    prune=False: 跳过最后的 prune_window 滚动裁剪(由调用方 nightly_fetch.py 决定
+      何时进入"满 35 天连续无缺口才裁最老一天"的滚动模式)。默认 True 保持既有行为。
     """
     t_all = time.time()
     trace_store.init_db()
@@ -4057,6 +4167,9 @@ def prefetch_trace_window(days=None):
     # 记录进入前的激活集团, 预抓结束后切回
     orig_gid = cfg.get("cookies", {}).get("tanyu-group-id")
     kept_days = days  # 最终裁剪窗口天数(取各集团窗口最大值)
+    # 写跨进程标志: 8080 常驻检测到夜间抓取占用激活集团 cookie 时, 直连请求返回
+    # 繁忙不向 tanyu 出网, 防止带错集团 cookie 串数据
+    set_nightly_fetch_flag()
     try:
         g_total = g_failed = 0
         for g in ordered:
@@ -4086,8 +4199,10 @@ def prefetch_trace_window(days=None):
         print(f"[prefetch] 全部集团完成: {g_total} 家店铺, {g_failed} 家失败, "
               f"耗时 {time.time() - t_all:.0f}s")
     except RiskTriggered:
-        # 风控触发: 以已抓数据为准(kept_days 保持已处理集团的最大窗口)
-        print("[prefetch] ⛔ 风控触发, 停止轮询")
+        # 风控触发: 向上 re-raise, 使计划任务以非零退出码结束(LastTaskResult≠0),
+        # 运维可见"夜间抓取失败"而非静默记成功。已抓的数据照常落盘(逐天 save_cache)。
+        print("[prefetch] ⛔ 风控/登录失效, 停止轮询并向上抛出(任务将记为失败)")
+        raise
     finally:
         # 兜底修复历史 platform=0 消息(依赖 shops 表, 各集团已同步)
         try:
@@ -4095,12 +4210,18 @@ def prefetch_trace_window(days=None):
         except Exception as e:
             print(f"[repair] 兜底修复异常: {e}")
         # 裁剪窗口到已抓数据的最大集团窗口(全平台 35 天)
-        try:
-            deleted = trace_store.prune_window(keep_days=kept_days)
-            print(f"[prefetch] 裁剪完成(保留 {kept_days} 天): 删除 {deleted} 条过期消息")
-        except Exception as e:
-            print(f"[prefetch] 裁剪失败: {e}")
-        # 恢复原激活集团(常驻看板继续服务原集团); 风控时不强行切换, 仅告警
+        # nightly_fetch.py 以 prune=False 调用时跳过裁剪, 由其满窗守卫决定何时滚动
+        if prune:
+            try:
+                deleted = trace_store.prune_window(keep_days=kept_days)
+                print(f"[prefetch] 裁剪完成(保留 {kept_days} 天): 删除 {deleted} 条过期消息")
+            except Exception as e:
+                print(f"[prefetch] 裁剪失败: {e}")
+        else:
+            print("[prefetch] prune=False: 跳过滚动裁剪(由 nightly_fetch 满窗守卫接管)")
+        # 恢复原激活集团(常驻看板继续服务原集团)。
+        # 风控触发时 switch_group 会被 _assert_no_risk 拦截(恢复必然失败),
+        # 无法再出网切换; 仅告警说明 cookie 可能停在切换中途的集团, 需重新登录。
         if orig_gid and not _risk_state.get("triggered"):
             try:
                 if orig_gid != load_config().get("cookies", {}).get("tanyu-group-id"):
@@ -4109,7 +4230,9 @@ def prefetch_trace_window(days=None):
             except Exception as e:
                 print(f"[prefetch] ⚠️ 恢复原集团失败: {e}")
         elif _risk_state.get("triggered"):
-            print("[prefetch] ⚠️ 风控触发, 未恢复原集团(需重新登录后手工切换)")
+            print("[prefetch] ⚠️ 风控触发, cookie 可能停在切换中途的集团; 风控下无法切换, 请重新登录")
+        # 清除跨进程标志(独立进程抓完, 8080 直连恢复)
+        clear_nightly_fetch_flag()
     _last_prefetch_duration = time.time() - t_all
     print(f"[prefetch] 完成: 窗口 {kept_days} 天, 总耗时 {_last_prefetch_duration:.0f}s")
 
@@ -4259,7 +4382,14 @@ if __name__ == "__main__":
         backfill_trace_db()
         sys.exit(0)
     if "--prefetch" in sys.argv:
-        prefetch_trace_window()
+        try:
+            prefetch_trace_window()
+        except RiskTriggered as e:
+            print(f"[prefetch] ⛔ 风控/登录失效: {e} — 任务失败(LastTaskResult≠0)")
+            sys.exit(2)
+        except Exception as e:
+            print(f"[prefetch] ⛔ 异常: {e}")
+            sys.exit(1)
         sys.exit(0)
     # 常驻服务启动时初始化 SQLite 表结构
     try:

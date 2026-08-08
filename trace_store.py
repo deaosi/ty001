@@ -943,6 +943,10 @@ def prune_window(keep_days=30):
     整日窗口语义: 库内只存"已定型的完整日"(最新是昨天, 今天实时不进库),
     所以保留窗口 = [昨天 - (keep_days-1) .. 昨天], 共 keep_days 个完整日。
     删除边界: 最早完整日 00:00 之前的消息与按日聚合全部删除。
+
+    注意: 只裁消息与按日聚合, 绝不动 shops 表。店铺清单由 sync_shops_from_tanyu
+    (每晚 switch_group 时 upsert_shops)维护; 若按"messages 是否有行"删店铺,
+    会把 0 消息的空店(整段空档期)误删出列表, 白天店铺/客服池/核算筛选缺店。
     """
     if not DB_FILE.exists():
         return 0
@@ -967,10 +971,6 @@ def prune_window(keep_days=30):
                 f"DELETE FROM trace_daily WHERE day < ? "
                 f"AND third_shop_id NOT IN {imp_sql}",
                 (keep_start_str,),
-            )
-            c.execute(
-                f"DELETE FROM shops WHERE third_shop_id NOT IN "
-                f"(SELECT DISTINCT third_shop_id FROM messages) AND platform NOT IN (10, 11)"
             )
             c.commit()
             return deleted
