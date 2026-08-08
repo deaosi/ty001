@@ -2375,8 +2375,24 @@ def overview(platform: int = 1, stat_type: str = "natural_day", start: str | Non
         raise HTTPException(503, "风控触发, 请先登录更新Cookie")
     except BusyQueueError as e:
         raise HTTPException(503, str(e))
-    except RuntimeError as e:
-        raise HTTPException(502, str(e))
+    except (RuntimeError, requests.exceptions.RequestException, ValueError) as e:
+        # tanyu 不可达(SSL 断连/超时/限流/响应非 JSON): 回落本地 DB 聚合, 不返回空。
+        # SSLEOFError 等网络错误是 requests.exceptions.RequestException(OSError 子类),
+        # 并非 RuntimeError —— 只 catch RuntimeError 会让 SSL 断连 500/空面板逃逸。
+        # 抓取平台数据每晚预抓已入库, 本地聚合口径与 tanyu summary 一致,
+        # 只是缺失 tanyu 专属指标(service_3m_response_rate 等)。
+        # 风控例外: RiskTriggered 已单独处理, 不会走到这里。
+        print(f"[overview] tanyu summary 失败({type(e).__name__}: {e}), 回落本地 DB 聚合 platform={platform}")
+        local = _import_overview_summary(platform, stat_type)
+        local["source"] = "local-fallback"
+        return local
+    if not summary:
+        # tanyu summary 成功但为空(部分平台当前无 summary 数据/未启用): 同样回落本地 DB,
+        # 否则前端三张 tanyu 指标卡全空显示"无数据"。抓取平台数据每晚预抓已入库。
+        print(f"[overview] tanyu summary 为空, 回落本地 DB 聚合 platform={platform}")
+        local = _import_overview_summary(platform, stat_type)
+        local["source"] = "local-fallback"
+        return local
     return {
         "startDate": start,
         "endDate": end,

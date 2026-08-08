@@ -138,6 +138,12 @@ def _overview_cards(platform: int | None, stat_type: str, week: str | None):
             detail.append({"platform": p, "name": PLATFORM_NAMES.get(p, str(p)), "error": str(e)})
             continue
         items = d.get("items", {})
+        # 抓取平台 tanyu summary 返回的是 tanyu 原生 key(service_consult_cnt=咨询量 /
+        # ai_consult_response_accept_rate=采纳率), 没有 history_msg_total/adopted_total。
+        # 推送统一用本地 DB 聚合(消息量/采纳数/采纳率, 与天猫1/2 同构), 保证四卡都有值。
+        if not items.get("history_msg_total") and not items.get("history_adopted_total"):
+            d = M._import_overview_summary(p, stat_type)
+            items = d.get("items", {})
         name = d.get("platformName") or PLATFORM_NAMES.get(p, str(p))
         source = d.get("source", "")
         sdate = d.get("startDate")

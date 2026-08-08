@@ -1345,8 +1345,8 @@ async function loadOverview() {
     overviewRetryLeft = 3;  // 成功即重置重试计数
     const items = overviewData.items || {};
     const cards = document.querySelectorAll('.o-card');
-    if (overviewData.source === 'import') {
-      // 导入平台(天猫1/2): 本地库聚合 4 卡(消息量/采纳数/采纳率/生成率), 环比取自相邻口径
+    if (overviewData.source === 'import' || overviewData.source === 'local-fallback') {
+      // 导入平台(天猫1/2) 或 抓取平台 tanyu 不可达时的本地库兜底: 都是 4 卡本地聚合
       cards.forEach(c => c.style.display = '');  // 恢复第4卡(生成率)
       const impOrder = [
         ['history_msg_total', '消息量', 'integer'],
@@ -1419,8 +1419,8 @@ async function loadOverview() {
     // summary 为 tanyu 统计口径, 与所选区间无关(见 getStatSemantic); 历史周标注本地库
     const sem = overviewData.source === 'history'
       ? '历史周 · 基于本地库'
-      : overviewData.source === 'import'
-        ? 'Excel 导入数据 · 本地库'
+      : overviewData.source === 'import' || overviewData.source === 'local-fallback'
+        ? (overviewData.source === 'import' ? 'Excel 导入数据 · 本地库' : 'tanyu不可达 · 本地库兜底')
         : getStatSemantic(overviewData.statType || currentStatType());
     infoEl.textContent = `${overviewDaysLabel()}(${statTypeRangeShort()}) · ${overviewData.platformName || ''} · ${sem}`;
     // 顶栏同步显示当前口径说明
