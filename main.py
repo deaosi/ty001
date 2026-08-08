@@ -2257,7 +2257,81 @@ def history_weeks(platform: int | None = None):
     return {"weeks": out}
 
 
-def _import_overview_summary(platform, stat_type):
+def _period_max_age(stat_type):
+    """summary 缓存有效期上限: 周期稳定数据按"本期边界"放宽 TTL。
+
+    natural_week 一周内(M~日)值基本不变, 昨天(同周)写的缓存今天仍有效,
+    不因 6h TTL 过期导致推送/概览生成率回落 None; natural_month 同理。
+    natural_day 保持 6h(每天换值, 且当天数据还随时间更新)。
+    返回秒数, 至少 6h(防边界刚切新周期时缓存刚过期导致短时全 None)。
+    """
+    now = datetime.datetime.now()
+    if stat_type == "natural_week":
+        boundary = (now - datetime.timedelta(days=now.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0)
+    elif stat_type == "natural_month":
+        boundary = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    else:
+        return 6 * 3600
+    return max(6 * 3600, int((now - boundary).total_seconds()) + 3600)
+
+
+def _aggregate_shop_gen_rate(platform, stat_type, anchor=None):
+    """抓取平台(抖音/京东等)平台级生成率: 从店铺 summary 缓存加权聚合
+
+    tanyu 平台级 summary 对部分平台(抖音=5/京东=7)返回空 items, 但店铺级
+    summary 在线返回 ai_consult_response_rate(生成率, 0-100 同本地标度)。
+    这里遍历该平台店铺, 读各自 summary 缓存(data/summary/{shop_id}__{stat_type}
+    [__{anchor}].json), 取 ai_consult_response_rate 按 service_consult_cnt(咨询量)
+    加权聚合出平台级 current/previous, 供 _import_overview_summary 的生成率卡
+    兜底(在线平台级 tanyu > 本聚合 > None)。
+
+    anchor: 历史周周一锚点(natural_week 专属); 传 None 时读当前周缓存
+    (无锚点键, 与 shop_detail 的键构造一致)。缓存命中受 6h TTL 约束。
+    返回 (current_float|None, previous_float|None), 标度与 trace_store.
+    avg_generation_rate 一致(分数 0-1, 由调用方 *100 转百分比), 无任何带
+    生成率的店铺缓存时返回 (None, None)。
+    """
+    if platform not in FETCH_PLATFORMS:
+        return None, None
+    # 仅当前期有缓存且未被 TTL 淘汰时参与聚合; 带锚点(历史周)缓存 data 为空,
+    # 读不到生成率自然排除, 不会误计。
+    max_age = _period_max_age(stat_type)
+    rows = []
+    for s in load_all_shops(platform):
+        sid = s.get("thirdShopId")
+        if not sid:
+            continue
+        key = f"{sid}__{stat_type}" + (f"__{anchor}" if anchor else "")
+        cache = load_cache("summary", key, max_age=max_age)
+        if not cache:
+            continue
+        data = cache.get("data") or {}
+        gen = (data.get("ai_consult_response_rate") or {}).get("current")
+        consult = (data.get("service_consult_cnt") or {}).get("current")
+        if gen is None or consult is None:
+            continue
+        prev = (data.get("ai_consult_response_rate") or {}).get("previous")
+        # tanyu 返回 0-100 标度, 转 0-1 分数与 avg_generation_rate 同标, 由调用方转回
+        rows.append((gen / 100.0, consult, (prev / 100.0 if prev is not None else None)))
+    if not rows:
+        return None, None
+
+    def _wmean(pick):
+        tot_w = sum(row[1] for row in rows)
+        if tot_w <= 0:
+            # 全部零权重(咨询量全 0): 退化为等权, 不因除零吞掉值
+            vals = [pick(row) for row in rows]
+            return (sum(vals) / len(vals)) if vals else None
+        return sum(pick(row) * row[1] for row in rows) / tot_w
+
+    cur = _wmean(lambda row: row[0])
+    prev_vals = [row[2] for row in rows if row[2] is not None]
+    prev = _wmean(lambda row: row[2]) if prev_vals else None
+    return cur, prev
+
+
+def _import_overview_summary(platform, stat_type, week_anchor=None):
     """导入平台(天猫1/2)平台维度汇总: 纯本地 trace_daily 聚合, 零上游请求
 
     与 overview 返回同构(source="import"), 口径与 tanyu summary 一致(忽略日期):
@@ -2292,12 +2366,21 @@ def _import_overview_summary(platform, stat_type):
         agg = trace_store.overview_aggregate(s, e, platform)
         total = sum(v["total"] for _, v in agg["shop_list"])
         adopted = sum(v["adopted"] for _, v in agg["shop_list"])
-        # 生成率: 区间内各店各天 generation_rate 的均值(Excel 直接给出的字段)
+        # 生成率: 导入平台(10/11)来自 trace_daily.generation_rate(Excel 直接给出);
+        # 抓取平台(1/5/7)本地库无该列, 从店铺 summary 缓存按咨询量加权聚合(当前期)。
+        # 历史周(anchor 键)缓存 data 为空, 聚合自然返回 None, 生成率卡显示 '—'。
+        if platform in FETCH_PLATFORMS:
+            gen, gen_prev = _aggregate_shop_gen_rate(platform, stat_type, anchor=week_anchor)
+            return total, adopted, gen, gen_prev
         gen = trace_store.avg_generation_rate(s, e, platform)
-        return total, adopted, gen
+        return total, adopted, gen, None
 
-    cur_total, cur_adopted, cur_gen = _agg(cur_start, cur_end)
-    prev_total, prev_adopted, prev_gen = _agg(prev_start, prev_end)
+    cur_total, cur_adopted, cur_gen, cur_gen_prev = _agg(cur_start, cur_end)
+    prev_total, prev_adopted, prev_gen, prev_gen_prev = _agg(prev_start, prev_end)
+    # 抓取平台聚合给的 previous 才是上一期生成率(_agg 的 s/e 是 local 口径聚合用,
+    # 店铺缓存按 stat_type 语义自带 current/previous), 用它替换掉占位的 prev_gen。
+    if cur_gen_prev is not None:
+        prev_gen = cur_gen_prev
 
     def _card(current, previous, label):
         # comparePercent 需 current/previous 都非 None 才计算; 生成率可能为 None
@@ -3824,6 +3907,47 @@ def backfill_trace_db():
     print(f"[backfill] 完成: {total_shops} 家 / {total_rows} 条 / {time.time() - t0:.0f}s")
 
 
+def _prefetch_refresh_week_summary(shop, cfg):
+    """预抓时按需刷新店铺 natural_week summary 缓存(生成率聚合数据源)。
+
+    trace 预抓只写 trace_daily, 不碰 summary 缓存; 平台级生成率聚合依赖
+    店铺 summary 缓存(ai_consult_response_rate), 若长期不刷, 跨周后旧值
+    过期, 周一早高峰推送/概览生成率会回落 None。这里在 trace 抓取后顺带
+    补刷: 仅当 缓存缺失或已过期(本期 TTL 外) 才请求, 命中缓存零请求,
+    且受 _rate_limit 约束, 不放大风控风险。cfg 用于检查 prefetch 开关。
+    """
+    try:
+        if not (cfg.get("prefetch_refresh_summary", True)):
+            return
+        platform = shop.get("platform", 0)
+        if platform not in FETCH_PLATFORMS:
+            return  # 导入平台不走 tanyu, 无 summary 缓存
+        sid = shop["thirdShopId"]
+        ws, we = _stat_type_range("natural_week")
+        key = f"{sid}__natural_week"
+        cache = load_cache("summary", key, max_age=_period_max_age("natural_week"))
+        if cache and cache.get("data"):
+            return  # 本周缓存有效, 无需刷新
+        _assert_no_risk()
+        _rate_limit()
+        payload = {
+            "statType": "natural_week",
+            "startDate": ws,
+            "endDate": we,
+            "platform": platform,
+            "dimension": "shop",
+            "targetId": sid,
+        }
+        items = fetch_summary_interactive(payload)
+        save_cache("summary", key, {"fetched_at": time.time(), "data": items})
+        print(f"[prefetch]     ↻ 刷新 {shop.get('shopName','')} summary(natural_week)")
+    except RiskTriggered:
+        raise
+    except Exception as e:
+        # 单店 summary 刷新失败不阻塞 trace 预抓(数据缺失只是生成率 '—')
+        log_line("prefetch", f"刷新 summary 失败 {shop.get('shopName','')}: {e}")
+
+
 def _prefetch_group(gid, start, end, force_days=None):
     """切换集团→同步店铺→抓该集团全部店铺 trace, 返回 (店铺总数, 失败数)
 
@@ -3854,6 +3978,7 @@ def _prefetch_group(gid, start, end, force_days=None):
             stat = stat_trace_daily(sid, start, end, force_days=force_days)
             print(f"[prefetch]   {i}/{len(shops)} {shop.get('platformName','')}·{shop.get('shopName','')} "
                   f"total={stat['total']} adopted={stat['adopted']}")
+            _prefetch_refresh_week_summary(shop, cfg)
         except RiskTriggered:
             print(f"[prefetch] ⛔ 风控触发于 {shop.get('shopName','')}")
             raise
