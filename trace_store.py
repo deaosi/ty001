@@ -491,38 +491,37 @@ def clear_import_data(platform=10):
 
 
 # ---------- 查询 ----------
-def db_window_covers(start, end):
-    """DB 覆盖区间是否完整包含 [start, end](含两端); 缺库/空库返回 False"""
-    if not DB_FILE.exists():
-        return False
-    try:
-        c = _conn()
-        row = c.execute(
-            "SELECT MIN(day) AS lo, MAX(day) AS hi FROM trace_daily"
-        ).fetchone()
-        if not row or not row["lo"] or not row["hi"]:
-            return False
-        return row["lo"] <= start and end <= row["hi"]
-    except Exception:
-        return False
+def db_window_covers(start, end, platform=None, shop_filter=None):
+    """DB 覆盖区间是否完整包含 [start, end](含两端); 缺库/空库返回 False
 
-
-def db_day_window_covers(hist_start, hist_end):
-    """判断库是否完整覆盖 [hist_start, hist_end] 这一段历史区间(不含今天)
-
-    用于"历史走库 + 今天实时"合并路径: hist_end 通常是昨天(今天之前),
-    只要库的整日窗口覆盖这段历史, 就认为历史部分可以纯本地聚合。
+    platform/shop_filter 限定覆盖判定的店铺集(默认全库)。必须带平台过滤:
+    导入平台(10/11)数据无限期保留会撑大全库 MIN/MAX, 若抓取平台(1/5/7)请求
+    早于其 ~35 天窗口的自定义区间, 全库口径会误判为已覆盖, 走纯 DB 聚合返回
+    全 0 而不回退在线抓取——把抓取平台更早区间的真实数据藏成 0。
     """
     if not DB_FILE.exists():
         return False
     try:
         c = _conn()
+        where = ""
+        args = []
+        if platform is not None:
+            where += " AND s.platform = ?"
+            args.append(platform)
+        if shop_filter:
+            placeholders = ",".join("?" * len(shop_filter))
+            where += f" AND d.third_shop_id IN ({placeholders})"
+            args.extend(shop_filter)
         row = c.execute(
-            "SELECT MIN(day) AS lo, MAX(day) AS hi FROM trace_daily"
+            f"""SELECT MIN(d.day) AS lo, MAX(d.day) AS hi
+                FROM trace_daily d
+                JOIN shops s ON s.third_shop_id = d.third_shop_id
+                WHERE 1=1{where}""",
+            args,
         ).fetchone()
         if not row or not row["lo"] or not row["hi"]:
             return False
-        return row["lo"] <= hist_start and hist_end <= row["hi"]
+        return row["lo"] <= start and end <= row["hi"]
     except Exception:
         return False
 
@@ -547,13 +546,22 @@ def week_coverage(platform=None):
         if platform is not None:
             where = " AND s.platform = ?"
             args.append(platform)
+        # 回溯上限: tanyu 抓取平台窗口 ~35 天, 63 天覆盖足够(拉多无意义)。
+        # 导入平台(10/11)无限期存储(无裁剪窗口), 不限回溯——否则历史周下拉
+        # 只到 ~63 天, 更早导入的周完全不可见。platform=None(全部平台视图)
+        # 同样可能含导入平台数据, 且导入平台店铺 join 结果与 tanyu 平台混行,
+        # 63 天过滤会把更早的导入周一起裁掉——故凡非明确抓取平台(1/5/7)都解除回溯。
+        fetch_platforms = (1, 5, 7)
+        lookback = 63 if (platform is not None and platform in fetch_platforms) else 0
+        lo_expr = "d.day >= ?" if lookback else "1=1"
+        lo_args = [(today - datetime.timedelta(days=lookback)).isoformat()] if lookback else []
         rows = c.execute(
             f"""SELECT d.third_shop_id, d.day
                 FROM trace_daily d
                 JOIN shops s ON s.third_shop_id = d.third_shop_id
-                WHERE d.day >= ?{where}
+                WHERE {lo_expr}{where}
                 ORDER BY d.day""",
-            [(today - datetime.timedelta(days=63)).isoformat()] + args,
+            lo_args + args,
         ).fetchall()
     except Exception:
         return []

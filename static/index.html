@@ -1368,15 +1368,19 @@ async function loadOverview() {
         card.querySelector('.trend').innerHTML = trendHtml(m.comparePercent, { note: '本地库' });
       });
     } else if (overviewData.source === 'history') {
-      // 历史周: 本地库聚合(消息量/采纳数/采纳率), 无环比
-      cards[3].style.display = 'none';  // 隐藏生成率卡(历史周无此口径)
+      // 历史周: 本地库聚合(消息量/采纳数/采纳率); 导入平台另有生成率
+      const isImpHist = isImportPlatform() && items.history_gen_rate;
+      cards[3].style.display = isImpHist ? '' : 'none';  // 导入平台历史周也显示生成率卡
       const histOrder = [
         ['history_msg_total', '消息量', 'integer'],
         ['history_adopted_total', '采纳数', 'integer'],
         ['history_accept_rate', '采纳率', 'percent'],
       ];
+      if (isImpHist) histOrder.push(['history_gen_rate', '生成率', 'percent']);
       cards.forEach((card, i) => {
-        const [key, label, fmt] = histOrder[i];
+        const row = histOrder[i];
+        if (!row) return;  // 该卡无对应指标(非导入平台的第4卡已隐藏)
+        const [key, label, fmt] = row;
         const m = items[key];
         if (!m) {
           card.querySelector('.value').textContent = '--';
@@ -1385,7 +1389,7 @@ async function loadOverview() {
         }
         card.querySelector('.label').textContent = label;
         card.querySelector('.value').textContent = fmtNum(m.current, fmt);
-        card.querySelector('.value').style.color = ['#22d3ee', '#fbbf24', '#a78bfa'][i];
+        card.querySelector('.value').style.color = ['#22d3ee', '#fbbf24', '#a78bfa', '#34d399'][i];
         card.querySelector('.trend').innerHTML = '<span class="trend note">本地库</span>';
       });
     } else {
@@ -1811,12 +1815,16 @@ function renderDetailMetrics(items, source) {
     return;
   }
   // 历史周: 本地消息量/采纳数/采纳率 + tanyu 专属指标"历史不可用"
+  // 导入平台(10/11)历史周额外有生成率卡(后端 _history_week_shop 提供 history_gen_rate)
   if (isHistoryWeek() && items.history_msg_total) {
     const histCards = [
       ['history_msg_total', '消息量', 'integer', '#22d3ee'],
       ['history_adopted_total', '采纳数', 'integer', '#fbbf24'],
       ['history_accept_rate', '采纳率', 'percent', '#a78bfa'],
     ];
+    if (isImportPlatform() && items.history_gen_rate) {
+      histCards.push(['history_gen_rate', '生成率', 'percent', '#34d399']);
+    }
     document.getElementById('detailMetrics').innerHTML = histCards.map(([key, title, fmt, color]) => {
       const v = items[key];
       return `<div class="d-card">

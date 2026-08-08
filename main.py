@@ -852,6 +852,7 @@ def _invalidate_audit_caches():
         pass
     with _lock:
         _trace_state["result"] = None
+        _trace_state["subset_result"] = None  # 导入/换集团后子集核算快照一并失效
         _trace_state["start_date"] = None
         _trace_state["end_date"] = None
         _trace_state["platform"] = None
@@ -2198,15 +2199,22 @@ def _history_week_summary(platform, week_anchor, shop_filter=None):
         return None
     total_msgs = sum(v["total"] for _, v in shop_list)
     total_adopted = sum(v["adopted"] for _, v in shop_list)
+    # 生成率: 仅导入平台(10/11)有值(Excel 生成率列); 抓取平台恒 None, 不设卡。
+    # 恒写 history_gen_rate(值为 None 时前端显示 '—' 无数据), 与 _import_overview_summary
+    # 行为一致; 若只在 gen 非 None 时写键, 导入平台某周缺生成率列时整卡消失。
+    gen = trace_store.avg_generation_rate(ws, we, platform, shop_filter)
+    items_gen = {
+        "history_msg_total": {"current": total_msgs, "previous": 0, "comparePercent": None, "label": "消息量"},
+        "history_adopted_total": {"current": total_adopted, "previous": 0, "comparePercent": None, "label": "采纳数"},
+        "history_accept_rate": {"current": (round(total_adopted * 100.0 / total_msgs, 2) if total_msgs else 0), "previous": 0, "comparePercent": None, "label": "采纳率"},
+        "history_gen_rate": {"current": round(gen * 100, 2) if gen is not None else None,
+                             "previous": 0, "comparePercent": None, "label": "生成率"},
+    }
+    items = {k: v for k, v in items_gen.items() if k != "history_gen_rate" or platform in IMPORT_PLATFORMS}
     # 缺天统计(仅该平台): 复用 week_coverage
     wc = trace_store.week_coverage(platform=platform)
     cov = next((w for w in wc if w["week_start"] == week_anchor), None)
     shop_total = dict(shop_list)
-    items = {
-        "history_msg_total": {"current": total_msgs, "previous": 0, "comparePercent": None, "label": "消息量"},
-        "history_adopted_total": {"current": total_adopted, "previous": 0, "comparePercent": None, "label": "采纳数"},
-        "history_accept_rate": {"current": (round(total_adopted * 100.0 / total_msgs, 2) if total_msgs else 0), "previous": 0, "comparePercent": None, "label": "采纳率"},
-    }
     coverage = {
         "days": cov["days"] if cov else 7,
         "shops": len(shop_list),
@@ -2264,11 +2272,16 @@ def _import_overview_summary(platform, stat_type):
     yesterday = today - one_day
     if stat_type == "natural_week":
         cur_ws = today - datetime.timedelta(days=today.weekday())
-        cur_start, cur_end = cur_ws.isoformat(), yesterday.isoformat()
+        # 周一当天: cur_ws==今天(周一) > yesterday(上周日), 区间反转会让 BETWEEN
+        # 匹配零行、本周四卡全空。归一为 min(周一, 昨天)..昨天(周一当天=昨天单日)。
+        cur_start = min(cur_ws.isoformat(), yesterday.isoformat())
+        cur_end = yesterday.isoformat()
         prev_start = (cur_ws - datetime.timedelta(days=7)).isoformat()
         prev_end = (cur_ws - one_day).isoformat()
     elif stat_type == "natural_month":
-        cur_start, cur_end = today.replace(day=1).isoformat(), yesterday.isoformat()
+        # 每月1号: today.replace(day=1)==今天(1号) > yesterday(上月最后一天), 同样反转。
+        cur_start = min(today.replace(day=1).isoformat(), yesterday.isoformat())
+        cur_end = yesterday.isoformat()
         prev_start = (today.replace(day=1) - one_day).replace(day=1).isoformat()
         prev_end = (today.replace(day=1) - one_day).isoformat()
     else:  # natural_day
@@ -2334,14 +2347,16 @@ def overview(platform: int = 1, stat_type: str = "natural_day", start: str | Non
     _start, _end = _stat_type_range(stat_type)
     start = _valid_date_iso(start) or _start
     end = _valid_date_iso(end) or _end
-    # 导入平台(天猫1/2)分支: 纯本地 trace_daily 聚合, 绝不请求 tanyu summary
-    if platform in IMPORT_PLATFORMS:
-        return _import_overview_summary(platform, stat_type)
-    # 历史周分支: 传了 week 且非当前周 => 本地 SQLite 聚合(零上游请求)
+    # 历史周分支必须先于导入平台分支判定: 导入平台(天猫1/2)无限期存储,
+    # 选历史周时必须能回溯到本地库的旧周数据, 不能吞掉 week 参数直接给当前周聚合。
+    # 当前周(week 空/当前锚点)时 _history_week_summary 返回 None, 自然落到下方对应分支。
     if stat_type == "natural_week" and week and _valid_date_iso(week):
         hist = _history_week_summary(platform, week)
         if hist is not None:
             return hist
+    # 导入平台(天猫1/2)分支: 纯本地 trace_daily 聚合, 绝不请求 tanyu summary
+    if platform in IMPORT_PLATFORMS:
+        return _import_overview_summary(platform, stat_type)
     payload = {
         "statType": stat_type,
         "startDate": start,
@@ -2410,6 +2425,7 @@ def shop_detail(shop_id: str, stat_type: str = "natural_day", start: str | None 
                 "history_msg_total": {"current": stat["total"], "previous": 0, "comparePercent": None, "label": "消息量"},
                 "history_adopted_total": {"current": stat["adopted"], "previous": 0, "comparePercent": None, "label": "采纳数"},
                 "history_accept_rate": {"current": stat["rate"], "previous": 0, "comparePercent": None, "label": "采纳率"},
+                "history_gen_rate": {"current": stat["generation_rate"], "previous": 0, "comparePercent": None, "label": "生成率"},
             }
         return {
             "shop": shop,
@@ -2529,6 +2545,12 @@ def _history_week_shop(shop, week_anchor):
         "history_adopted_total": {"current": adopted, "previous": 0, "comparePercent": None, "label": "采纳数"},
         "history_accept_rate": {"current": (round(adopted * 100.0 / total, 2) if total else 0), "previous": 0, "comparePercent": None, "label": "采纳率"},
     }
+    # 生成率: 仅导入平台(10/11)有值; 恒写键(值为 None 时前端显示 '—'), 与平台维度一致
+    if platform in IMPORT_PLATFORMS:
+        gen = trace_store.avg_generation_rate(ws, we, platform=platform,
+                                              shop_filter={shop_id})
+        items["history_gen_rate"] = {"current": round(gen * 100, 2) if gen is not None else None,
+                                     "previous": 0, "comparePercent": None, "label": "生成率"}
     # tanyu 专属指标历史不可用(前端显示"历史不可用")
     for key in ("service_3m_response_rate", "ai_consult_response_accept_rate", "ai_consult_response_rate"):
         items[key] = {"unavailable": True, "label": METRIC_BY_KEY[key]["title"]}
@@ -2596,8 +2618,12 @@ def trace_shop(shop_id: str, days: int = 7, force: int = 0, start: str | None = 
         except Exception as e:
             print(f"[trace] SQLite+实时 合并路径失败, 回退在线抓取: {e}")
     # SQLite 快路径: 数据库已覆盖该区间(纯历史) => 纯本地聚合(核算提速主因)
+    # 覆盖判定限该平台该店: 导入平台(10/11)无限期数据会撑大全库窗口, 全库口径
+    # 会让抓取平台早于其窗口的自定义区间误判已覆盖、全零短路在线抓取。
     if (not force and _use_sqlite_trace()
-            and trace_store.db_window_covers(_sday, _eday)):
+            and trace_store.db_window_covers(_sday, _eday,
+                                             platform=shop.get("platform"),
+                                             shop_filter={shop_id})):
         try:
             stat = _trace_shop_from_db(shop_id, start, end)
             if stat:
@@ -2852,6 +2878,9 @@ def _import_shop_stat(shop_id, start, end):
         return None
     total = sum(d["total"] for d in days)
     adopted = sum(d["adopted"] for d in days)
+    # 生成率: 区间内该店非空 generation_rate 的均值(Excel 生成率列); 无值返回 None
+    gen_rate = trace_store.avg_generation_rate(sday, eday, platform=None,
+                                               shop_filter={shop_id})
     per_shop = trace_store.staff_aggregate_per_shop(sday, eday, platform=None,
                                                     shop_filter={shop_id})
     staff_map = per_shop["by_shop"].get(shop_id, {})
@@ -2868,6 +2897,7 @@ def _import_shop_stat(shop_id, start, end):
         "counts": {1: 0, 2: 0, 3: 0, None: 0},
         "adopted": adopted,
         "rate": round(adopted / total * 100, 2) if total else 0,
+        "generation_rate": round(gen_rate * 100, 2) if gen_rate is not None else None,
         "byStaff": staff_list,
         "byType": {},
         "daily": daily_list,
@@ -3017,8 +3047,12 @@ def trace_overview(days: int = 7, platform: int | None = None, force: int = 0,
     # SQLite 快路径: 数据库已覆盖该区间 => 纯本地聚合, 零上游请求(核算提速主因)
     # 店铺子集/跨平台核算同样走 DB 快路径(预抓已把三集团数据都入库, 无需切集团)
     # 覆盖判定用 day 边界(datetime 串直接比会因 'T' 静默 miss)
+    # 覆盖判定限该平台店铺集: 导入平台(10/11)无限期数据会撑大全库窗口, 全库口径
+    # 会让抓取平台早于其窗口的自定义区间误判已覆盖、走 _trace_overview_from_db 全零短路
+    # 在线 worker(抓取平台更早区间的真实数据被藏成 0)。
     if (not force and _use_sqlite_trace()
-            and trace_store.db_window_covers(sday, eday)):
+            and trace_store.db_window_covers(sday, eday, platform=platform,
+                                             shop_filter=shop_filter)):
         try:
             result = _trace_overview_from_db(start, end, platform, shop_filter, has_time=has_time)
             if result:
@@ -3203,13 +3237,18 @@ def trace_staff(days: int = 7, start: str | None = None, end: str | None = None,
     shop_filter = {s for s in shop_ids.split(",") if s.strip()} if shop_ids else None
     result = {"startDate": start, "endDate": end, "platform": platform,
               "total": 0, "adopted": 0, "rate": 0, "byStaff": []}
-    if trace_store.db_window_covers(sday, eday):
+    # 覆盖判定限该平台店铺集(理由同 overview SQLite 快路径注释:
+    # 导入平台无限期数据会撑大全库窗口, 全库口径误判抓取平台早于窗口区间已覆盖)
+    if trace_store.db_window_covers(sday, eday, platform=platform,
+                                    shop_filter=shop_filter):
         if has_time and platform not in IMPORT_PLATFORMS:
             per_shop = trace_store.staff_aggregate_per_shop_ms(_sms, _ems, platform, shop_filter)
         else:
             # 导入平台(10/11)或纯日期区间: 走天级 trace_daily(导入数据无 messages,
-            # 秒级边界对导入店按整天聚合; Excel 就是天级粒度)
-            per_shop = trace_store.staff_aggregate_per_shop(start, end, platform, shop_filter)
+            # 秒级边界对导入店按整天聚合; Excel 就是天级粒度)。
+            # 必须用 day 边界字符串 sday/eday: start/end 带 'T' 的秒级串会让
+            # trace_daily.day 的 BETWEEN 字典序误匹配, 丢掉区间首日。
+            per_shop = trace_store.staff_aggregate_per_shop(sday, eday, platform, shop_filter)
         staff_list = _staff_list_per_shop(per_shop["by_shop"], platform, shop_filter)
         result["byStaff"] = staff_list
         result["total"] = sum(s["total"] for s in staff_list)
