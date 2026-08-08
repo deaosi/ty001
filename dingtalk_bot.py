@@ -116,12 +116,16 @@ def push_overview_to_group(platform: int | None = None, stat_type: str = "natura
     platform=None 推全部已启用平台。
     """
     cards_text, detail = _overview_cards(platform, stat_type, week)
-    # 正文顶部加一级大标题「本周数据快报」+ 本周起止区间 + 抓取时间
-    # (钉钉 markdown 最高 # 一级; 抓取时间=推送生成时刻, 便于核对数据时点)
+    # 正文顶部加一级大标题「本周数据快报」+ 本期起止区间 + 抓取时间 + 数据截止
+    # (钉钉 markdown 最高 # 一级; 标题固定按"本周"(natural_week)口径;
+    #  抓取时间=推送生成时刻; 数据截止=本周起点0点~当前时刻,
+    #  例 本周=08-03~08-09, 截止=08-03 00:00 ~ 08-08 现在)
     import main as M
     ws, we = M._stat_type_range("natural_week")
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    heading = f"# 📊 本周数据快报 `{ws} ~ {we}`\n> 数据抓取时间: **{ts}**\n\n"
+    heading = (f"# 📊 本周数据快报 `{ws} ~ {we}`\n"
+               f"> 数据抓取时间: **{ts}**\n"
+               f"> 数据截止: **{ws} 00:00 ~ {ts}**\n\n")
     title = f"📊 探域看板播报 {datetime.date.today().isoformat()}"
     ok, err = _push_markdown(title, heading + cards_text)
     return {"ok": ok, "error": err, "platforms": detail}
