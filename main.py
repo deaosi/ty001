@@ -2300,10 +2300,15 @@ def _import_overview_summary(platform, stat_type):
     prev_total, prev_adopted, prev_gen = _agg(prev_start, prev_end)
 
     def _card(current, previous, label):
+        # comparePercent 需 current/previous 都非 None 才计算; 生成率可能为 None
+        # (某区间无 Excel 生成率列), None - float 会抛 TypeError 让整卡 500。
+        pct = None
+        if current is not None and previous:
+            pct = round((current - previous) / previous * 100, 2)
         return {
             "current": current,
             "previous": previous,
-            "comparePercent": (round((current - previous) / previous * 100, 2) if previous else None),
+            "comparePercent": pct,
             "label": label,
         }
 
@@ -3238,9 +3243,17 @@ def trace_staff(days: int = 7, start: str | None = None, end: str | None = None,
     result = {"startDate": start, "endDate": end, "platform": platform,
               "total": 0, "adopted": 0, "rate": 0, "byStaff": []}
     # 覆盖判定限该平台店铺集(理由同 overview SQLite 快路径注释:
-    # 导入平台无限期数据会撑大全库窗口, 全库口径误判抓取平台早于窗口区间已覆盖)
-    if trace_store.db_window_covers(sday, eday, platform=platform,
-                                    shop_filter=shop_filter):
+    # 导入平台无限期数据会撑大全库窗口, 全库口径误判抓取平台早于窗口区间已覆盖)。
+    # 导入平台(10/11)无预抓, 数据新鲜度取决于手动上传, 用宽松判定: 区间内
+    # 至少有一天数据即可聚合(空天自然为 0), 否则默认"近7天"窗口末端没上传的
+    # 昨天会把整个区间判为未覆盖、客服池一片空白。
+    if platform in IMPORT_PLATFORMS:
+        covered = trace_store.db_window_overlaps(sday, eday, platform=platform,
+                                                 shop_filter=shop_filter)
+    else:
+        covered = trace_store.db_window_covers(sday, eday, platform=platform,
+                                               shop_filter=shop_filter)
+    if covered:
         if has_time and platform not in IMPORT_PLATFORMS:
             per_shop = trace_store.staff_aggregate_per_shop_ms(_sms, _ems, platform, shop_filter)
         else:

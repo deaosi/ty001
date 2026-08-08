@@ -526,6 +526,42 @@ def db_window_covers(start, end, platform=None, shop_filter=None):
         return False
 
 
+def db_window_overlaps(start, end, platform=None, shop_filter=None):
+    """DB 区间与 [start, end] 是否有重叠(至少一天数据); 缺库/空库返回 False
+
+    与 db_window_covers(完整包含)不同: 只要求区间内有数据即可, 用于导入平台
+    (10/11)客服池等场景——导入数据无预抓、新鲜度取决于手动上传, "近7天"窗口
+    末端(昨天)常缺数据, 完整覆盖判定会把整个区间短路成空。有重叠即聚合,
+    空天自然为 0, 避免用户上传到昨天之前就把客服池/核算整片空白。
+    """
+    if not DB_FILE.exists():
+        return False
+    try:
+        c = _conn()
+        where = ""
+        args = []
+        if platform is not None:
+            where += " AND s.platform = ?"
+            args.append(platform)
+        if shop_filter:
+            placeholders = ",".join("?" * len(shop_filter))
+            where += f" AND d.third_shop_id IN ({placeholders})"
+            args.extend(shop_filter)
+        row = c.execute(
+            f"""SELECT MIN(d.day) AS lo, MAX(d.day) AS hi
+                FROM trace_daily d
+                JOIN shops s ON s.third_shop_id = d.third_shop_id
+                WHERE 1=1{where}""",
+            args,
+        ).fetchone()
+        if not row or not row["lo"] or not row["hi"]:
+            return False
+        # 标准闭区间重叠: lo <= end and hi >= start
+        return row["lo"] <= end and start <= row["hi"]
+    except Exception:
+        return False
+
+
 def week_coverage(platform=None):
     """按自然周统计每店覆盖天数 + 缺失天列表(基于 trace_daily, 纯本地只读)
 
