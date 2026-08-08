@@ -4035,6 +4035,7 @@ except Exception as e:
 
 class DingTalkConfigBody(BaseModel):
     webhook_url: str | None = None
+    webhook_keyword: str | None = None
     stream_client_id: str | None = None
     stream_client_secret: str | None = None
 
@@ -4081,6 +4082,8 @@ def dingtalk_set_config(body: DingTalkConfigBody):
     cfg.setdefault("stream", {})
     if body.webhook_url is not None:
         cfg["webhook"]["url"] = body.webhook_url.strip() or None
+    if body.webhook_keyword is not None:
+        cfg["webhook"]["keyword"] = body.webhook_keyword.strip() or None
     if body.stream_client_id is not None:
         cfg["stream"]["client_id"] = body.stream_client_id.strip() or None
     if body.stream_client_secret is not None:

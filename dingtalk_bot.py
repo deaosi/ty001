@@ -83,12 +83,18 @@ def _push_markdown(title, text):
 
     钉钉自定义机器人安全设置若配了"自定义关键词", 标题必须含该关键词,
     否则会被钉钉拒收(err_code 310000)。URL 本身可带自定义鉴权 access_token。
+
+    webhook.keyword(可选配置): 若设置了, 标题不含该关键词时自动拼接进标题,
+    保证换了带关键词安全设置的机器人后模板依然能推送成功(无需改模板)。
     """
     cfg = load_config()
     web = cfg.get("webhook") or {}
     url = web.get("url")
     if not url:
         return False, "未配置钉钉 webhook(dingtalk_config.json 的 webhook.url)"
+    keyword = (web.get("keyword") or "").strip()
+    if keyword and keyword not in title:
+        title = f"{title} · {keyword}"
     payload = {"msgtype": "markdown",
                "markdown": {"title": title, "text": text}}
     try:
@@ -140,10 +146,17 @@ def _overview_cards(platform: int | None, stat_type: str, week: str | None):
         items = d.get("items", {})
         # 抓取平台 tanyu summary 返回的是 tanyu 原生 key(service_consult_cnt=咨询量 /
         # ai_consult_response_accept_rate=采纳率), 没有 history_msg_total/adopted_total。
-        # 推送统一用本地 DB 聚合(消息量/采纳数/采纳率, 与天猫1/2 同构), 保证四卡都有值。
+        # 推送统一用本地 DB 聚合(消息量/采纳数/采纳率, 与天猫1/2 同构), 保证三卡都有值。
+        # 生成率例外: tanyu 在线时其 ai_consult_response_rate 就是生成率(0-100 与本地
+        # 同标度), 本地聚合对抓取平台恒 None。先捕获, 替换后覆盖回 history_gen_rate。
+        tanyu_gen = (items.get("ai_consult_response_rate") or {}).get("current")
         if not items.get("history_msg_total") and not items.get("history_adopted_total"):
             d = M._import_overview_summary(p, stat_type)
             items = d.get("items", {})
+            if tanyu_gen is not None:
+                items["history_gen_rate"] = {"current": tanyu_gen, "previous": None,
+                                             "comparePercent": None, "label": "生成率"}
+                d["source"] = "tanyu在线+本地聚合"
         name = d.get("platformName") or PLATFORM_NAMES.get(p, str(p))
         source = d.get("source", "")
         sdate = d.get("startDate")
