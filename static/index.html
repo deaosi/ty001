@@ -564,6 +564,7 @@
     <span class="cookie-expiry" id="cookieExpiry" title="登录 Cookie 到期时间"></span>
     <button class="btn btn-ghost" id="btnImport" onclick="openImportPicker()">📤 导入Excel</button>
     <button class="btn btn-primary" id="btnRefresh" onclick="startRefresh()">🔄 刷新数据</button>
+    <button class="btn btn-ghost" id="btnPrefetch" onclick="openPrefetchDialog()">📅 补抓数据</button>
   </div>
   <input type="file" id="importFile" accept=".xlsx" style="display:none" onchange="doImportExcel()">
   <div class="progress-bar" id="progressBar"><div class="fill" id="progressFill"></div></div>
@@ -794,6 +795,7 @@
             <option value="group">group</option>
             <option value="risk">risk</option>
             <option value="db">db</option>
+            <option value="prefetch">prefetch</option>
           </select>
         </div>
         <span class="msg-count" id="logCount"></span>
@@ -820,6 +822,26 @@
     <div style="display:flex;gap:10px;justify-content:flex-end">
       <button class="btn btn-ghost" onclick="closeLogin()">关闭</button>
       <button class="btn btn-primary" id="btnLoginStart" onclick="startBrowserLogin()">🚀 打开浏览器登录</button>
+    </div>
+  </div>
+</div>
+
+<!-- 手动补抓对话框 -->
+<div class="login-dialog" id="prefetchDialog">
+  <div class="login-box">
+    <h3>📅 手动补抓数据</h3>
+    <p>选择要抓取的日期范围(默认只抓昨天)。<br>已抓取过的天会自动跳过, 只补缺格; 抓取期间请勿刷新或核算。</p>
+    <div style="display:flex;gap:12px;margin-bottom:16px">
+      <label style="flex:1;font-size:13px;color:var(--text-sub)">开始日期
+        <input type="date" id="prefetchStart" style="width:100%;margin-top:4px;padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--input-bg,transparent);color:var(--text)"></label>
+      <label style="flex:1;font-size:13px;color:var(--text-sub)">结束日期
+        <input type="date" id="prefetchEnd" style="width:100%;margin-top:4px;padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--input-bg,transparent);color:var(--text)"></label>
+    </div>
+    <div class="login-status" id="prefetchStatus">等待操作…</div>
+    <div style="display:flex;gap:10px;justify-content:flex-end">
+      <button class="btn btn-ghost" id="btnPrefetchCancel" onclick="cancelPrefetch()" style="display:none">⏹ 取消任务</button>
+      <button class="btn btn-ghost" onclick="closePrefetchDialog()">关闭</button>
+      <button class="btn btn-primary" id="btnPrefetchStart" onclick="startPrefetch()">🚀 开始补抓</button>
     </div>
   </div>
 </div>
@@ -949,7 +971,16 @@ function toast(msg) {
 
 async function fetchJSON(url, opts) {
   const resp = await fetch(url, opts);
-  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  if (!resp.ok) {
+    // 优先取后端 detail(如 400/409 的明确原因), 否则退回 HTTP 状态码
+    let msg = 'HTTP ' + resp.status;
+    try {
+      const d = await resp.json();
+      if (d && d.detail) msg = resp.status + ': ' + d.detail;
+      else if (d && d.message) msg = resp.status + ': ' + d.message;
+    } catch (e) { /* 非 JSON 响应, 用默认 msg */ }
+    throw new Error(msg);
+  }
   return resp.json();
 }
 
@@ -2830,6 +2861,123 @@ function openLogin() {
 
 function closeLogin() {
   document.getElementById('loginDialog').classList.remove('show');
+}
+
+// ---------- 手动补抓数据 ----------
+let prefetchPolling = false;
+
+function fmtDay(d) {
+  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), dd = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${dd}`;
+}
+
+function openPrefetchDialog() {
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const ystr = fmtDay(yesterday);
+  document.getElementById('prefetchStart').value = ystr;
+  document.getElementById('prefetchEnd').value = ystr;
+  const st = document.getElementById('prefetchStatus');
+  st.className = 'login-status';
+  st.textContent = '选择日期范围, 点击「开始补抓」。已抓过的天自动跳过。';
+  document.getElementById('btnPrefetchCancel').style.display = 'none';
+  document.getElementById('btnPrefetchStart').disabled = false;
+  document.getElementById('btnPrefetchStart').textContent = '🚀 开始补抓';
+  document.getElementById('prefetchDialog').classList.add('show');
+}
+
+function closePrefetchDialog() {
+  document.getElementById('prefetchDialog').classList.remove('show');
+  if (prefetchPolling) return;  // 抓取中不关轮询
+}
+
+async function startPrefetch() {
+  const start = document.getElementById('prefetchStart').value;
+  const end = document.getElementById('prefetchEnd').value;
+  if (!start || !end) { toast('请选择开始和结束日期'); return; }
+  if (start > end) { toast('开始日期不能晚于结束日期'); return; }
+  const st = document.getElementById('prefetchStatus');
+  try {
+    const r = await fetchJSON('/api/trace/prefetch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ start, end }),
+    });
+    if (!r.ok) {
+      st.textContent = r.message || '启动失败';
+      st.className = 'login-status failed';
+      if (r.message && r.message.includes('进行中')) toast('已有任务进行中, 请稍后再试');
+      return;
+    }
+    st.textContent = `已启动: ${r.start_date} ~ ${r.end_date}, 正在抓取…`;
+    st.className = 'login-status done';
+    document.getElementById('btnPrefetchStart').disabled = true;
+    document.getElementById('btnPrefetchStart').textContent = '⏳ 抓取中…';
+    document.getElementById('btnPrefetchCancel').style.display = '';
+    toast('手动补抓已启动, 详见「日志」面板');
+    loadDrawerLogs();
+    pollPrefetch();
+  } catch (e) {
+    st.textContent = '启动失败: ' + e.message;
+    st.className = 'login-status failed';
+  }
+}
+
+async function cancelPrefetch() {
+  try {
+    const r = await fetchJSON('/api/trace/prefetch/cancel', { method: 'POST' });
+    toast(r.message || '已请求取消');
+  } catch (e) {
+    toast('取消失败: ' + e.message);
+  }
+}
+
+function pollPrefetch() {
+  if (prefetchPolling) return;
+  prefetchPolling = true;
+  const timer = setInterval(async () => {
+    try {
+      const t = await fetchJSON('/api/trace/prefetch/status');
+      const { done, total, current } = t.progress || {};
+      const st = document.getElementById('prefetchStatus');
+      if (total > 0) {
+        st.textContent = `进度: ${Math.round(done / total * 100)}% (${done}/${total}) ${current || ''}`;
+        st.className = 'login-status done';
+      } else if (current) {
+        st.textContent = current;
+        st.className = 'login-status done';
+      }
+      if (t.canceled) st.textContent = '已请求取消, 正在停止…';
+      if (!t.running) {
+        clearInterval(timer);
+        prefetchPolling = false;
+        document.getElementById('btnPrefetchStart').disabled = false;
+        document.getElementById('btnPrefetchStart').textContent = '🚀 开始补抓';
+        document.getElementById('btnPrefetchCancel').style.display = 'none';
+        if (t.error) {
+          st.textContent = '补抓出错: ' + t.error;
+          st.className = 'login-status failed';
+          toast('补抓出错: ' + t.error);
+        } else if (t.canceled) {
+          st.textContent = '已取消';
+          st.className = 'login-status';
+          toast('手动补抓已取消');
+        } else {
+          st.textContent = `补抓完成 ✅ 上次: ${t.last_run ? new Date(t.last_run * 1000).toLocaleString('zh-CN') : ''}`;
+          st.className = 'login-status done';
+          toast('手动补抓完成 ✅');
+        }
+        loadDrawerLogs();
+        // 数据已更新: 刷新概览与店铺汇总
+        loadOverview();
+        loadAllShopSummaries();
+      }
+    } catch (e) {
+      clearInterval(timer);
+      prefetchPolling = false;
+      toast('补抓状态获取失败');
+    }
+  }, 2000);
 }
 
 async function startBrowserLogin() {

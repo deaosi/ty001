@@ -46,7 +46,7 @@ try:
 except ImportError:
     _psutil = None
 import uvicorn
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -123,6 +123,17 @@ METRIC_BY_KEY = {m["key"]: m for m in METRICS}
 _refresh_state = {
     "running": False,
     "progress": {"done": 0, "total": 0, "current": ""},
+    "last_run": None,
+    "error": None,
+}
+# 手动补抓数据状态(独立于 refresh: 用户选日期范围触发, 逐集团抓 trace 写库)
+_prefetch_state = {
+    "running": False,
+    "progress": {"done": 0, "total": 0, "current": ""},
+    "start_date": None,
+    "end_date": None,
+    "canceled": False,       # 取消标志(worker 每店边界检查)
+    "started_at": None,
     "last_run": None,
     "error": None,
 }
@@ -1313,13 +1324,15 @@ def _check_risk(resp, data=None):
 
 
 def _assert_no_running_task():
-    """任务互斥: 核算 / 数据刷新 / 今日抓取 不能同时跑"""
+    """任务互斥: 核算 / 数据刷新 / 今日抓取 / 手动补抓 不能同时跑"""
     if _refresh_state.get("running"):
         raise RuntimeError("数据刷新任务进行中, 请稍后再试")
     if _trace_state.get("running"):
         raise RuntimeError("核算任务进行中, 请稍后再试")
     if _today_state.get("running"):
         raise RuntimeError("今日数据抓取任务进行中, 请稍后再试")
+    if _prefetch_state.get("running"):
+        raise RuntimeError("手动补抓任务进行中, 请稍后再试")
 
 
 # ---------- 核算(消息轨迹) ----------
@@ -2842,6 +2855,125 @@ def refresh():
     return {"ok": True, "message": "刷新任务已启动(三集团轮询)"}
 
 
+@app.post("/api/trace/prefetch")
+def trace_prefetch_start(payload: dict = Body(...)):
+    """手动补抓数据: 用户指定历史日期区间, 逐集团抓取 trace 写库
+
+    用于夜间自动抓取失败/漏抓时人工补数据。复用 _prefetch_group 逐集团增量抓取
+    (history_mode=True 已抓天复用零请求, 与夜间任务同源同节奏)。
+    start/end 均可选, 默认昨天~昨天; 不可含今天(当天数据走实时不入库)。
+    """
+    # 任务互斥: 核算/刷新/今日抓取进行中不允许启动
+    try:
+        _assert_no_running_task()
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+    import datetime as _dt
+    yesterday = (_dt.date.today() - _dt.timedelta(days=1)).isoformat()
+    start = (payload.get("start") or yesterday).strip()
+    end = (payload.get("end") or yesterday).strip()
+    for v in (start, end):
+        if not _valid_datetime_iso(v):
+            raise HTTPException(400, f"日期格式非法(需 YYYY-MM-DD): {v}")
+    s, e = _dt.date.fromisoformat(start), _dt.date.fromisoformat(end)
+    if s > e:
+        raise HTTPException(400, f"开始日期不能晚于结束日期: {start} > {end}")
+    today = _dt.date.today()
+    if e >= today:
+        raise HTTPException(400, f"结束日期不能是今天或未来: {end}(当天数据走实时, 不写入历史)")
+    span = (e - s).days + 1
+    if span > 35:
+        raise HTTPException(400, f"区间超过 35 天上限: {span} 天")
+    # 校验集团可用
+    cfg = load_config()
+    groups = [g for g in (cfg.get("groups") or [])
+              if g.get("groupId") and g.get("accountId")]
+    if not groups:
+        raise HTTPException(400, "config.groups 为空或无可用集团, 请先登录")
+    if _prefetch_state.get("running"):
+        raise HTTPException(409, "已有手动补抓任务进行中")
+
+    _prefetch_state.update({
+        "running": True, "canceled": False, "error": None,
+        "start_date": start, "end_date": end,
+        "progress": {"done": 0, "total": 0, "current": "准备中…"},
+        "started_at": time.time(), "last_run": None,
+    })
+
+    def worker():
+        g_total = g_failed = 0
+        try:
+            set_nightly_fetch_flag()  # 手动抓取期间 8080 直连请求阻塞(不串集团 cookie)
+            # 按平台优先级排序集团(1 拼多多, 5 抖音, 7 京东), 与夜间任务一致
+            platform_order = cfg.get("prefetch_platforms") or [1, 5, 7]
+            plat_rank = {p: i for i, p in enumerate(platform_order)}
+            ordered = sorted(groups, key=lambda g: plat_rank.get(g.get("platform"), 99))
+            try:
+                total_shops = len([s for s in load_all_shops()
+                                   if s.get("platform") in FETCH_PLATFORMS])
+            except Exception:
+                total_shops = 0
+            _prefetch_state["progress"] = {"done": 0, "total": total_shops, "current": ""}
+
+            def _cb(p):
+                _prefetch_state["progress"] = {
+                    "done": p["done"], "total": total_shops or p["done"], "current": p["current"],
+                }
+
+            for g in ordered:
+                if _prefetch_state.get("canceled"):
+                    log_line("prefetch", "⏹ 手动补抓被用户取消")
+                    break
+                if _risk_state.get("triggered"):
+                    log_line("prefetch", "⛔ 风控/登录失效, 手动补抓整体停止")
+                    _prefetch_state["error"] = _risk_state.get("reason") or "风控/登录失效"
+                    break
+                try:
+                    n, f = _prefetch_group(g["groupId"], start, end,
+                                           force_days=None, progress_cb=_cb,
+                                           done_shops=g_total,
+                                           cancel_check=lambda: bool(_prefetch_state.get("canceled")))
+                    g_total += n
+                    g_failed += f
+                except RiskTriggered:
+                    log_line("prefetch", "⛔ 风控触发, 手动补抓整体停止")
+                    _prefetch_state["error"] = _risk_state.get("reason") or "风控/登录失效"
+                    break
+                except Exception as e:
+                    log_line("prefetch", f"⚠️ 集团「{g.get('groupName')}」补抓失败, 跳过: {e}")
+                    continue
+            if not _prefetch_state.get("canceled") and not _prefetch_state.get("error"):
+                log_line("prefetch", f"手动补抓完成: {g_total} 家店铺, {g_failed} 家失败, "
+                                     f"区间 {start} ~ {end}, 耗时 {time.time() - _prefetch_state['started_at']:.0f}s")
+        except Exception as e:
+            log_line("prefetch", f"⚠️ 手动补抓异常: {e}")
+            _prefetch_state["error"] = str(e)
+        finally:
+            _prefetch_state["running"] = False
+            _prefetch_state["last_run"] = time.time()
+            clear_nightly_fetch_flag()
+
+    threading.Thread(target=worker, daemon=True).start()
+    return {"ok": True, "message": f"手动补抓已启动: {start} ~ {end}",
+            "start_date": start, "end_date": end}
+
+
+@app.get("/api/trace/prefetch/status")
+def trace_prefetch_status():
+    """手动补抓进度/状态(供前端轮询)"""
+    return dict(_prefetch_state)
+
+
+@app.post("/api/trace/prefetch/cancel")
+def trace_prefetch_cancel():
+    """取消进行中的手动补抓(worker 每店边界检查标志后停止)"""
+    if not _prefetch_state.get("running"):
+        return {"ok": False, "message": "当前无手动补抓任务"}
+    _prefetch_state["canceled"] = True
+    log_line("prefetch", "⏹ 收到取消请求, 正在停止…")
+    return {"ok": True, "message": "已请求取消"}
+
+
 @app.get("/api/trace/shop/{shop_id}")
 def trace_shop(shop_id: str, days: int = 7, force: int = 0, start: str | None = None, end: str | None = None):
     """单店核算: 遍历消息轨迹统计核算采纳率(带按日缓存)
@@ -4116,18 +4248,26 @@ def _prefetch_refresh_week_summary(shop, cfg):
         print(f"[prefetch]     ↻ 刷新 {shop.get('shopName','')} summary(natural_week)")
     except RiskTriggered:
         raise
+    except BusyQueueError as e:
+        # 限速繁忙/夜间门控: 单店 summary 刷新跳过(下轮/夜间任务会补), 非错误不刷日志
+        pass
     except Exception as e:
         # 单店 summary 刷新失败不阻塞 trace 预抓(数据缺失只是生成率 '—')
         log_line("prefetch", f"刷新 summary 失败 {shop.get('shopName','')}: {e}")
 
 
-def _prefetch_group(gid, start, end, force_days=None):
+def _prefetch_group(gid, start, end, force_days=None, progress_cb=None, done_shops=0,
+                    cancel_check=None):
     """切换集团→同步店铺→抓该集团全部店铺 trace, 返回 (店铺总数, 失败数)
 
     依赖 switch_group 内部自动 sync_shops_from_tanyu(写 shops.json + SQLite 店铺表),
     切换后 load_shops 即读当前集团店铺。任一店铺 RiskTriggered 向上传播(整个预抓停止)。
     force_days: 窗口内这些天强制重抓(默认最近一天=昨天, 防 tanyu 回溯更新 sendType
     造成的采纳口径漂移), 由 config.prefetch_force_days 控制(0=关闭)。
+    progress_cb: 每完成一家店铺回调 {"done", "total", "current"}; done_shops 为调用方
+      已累计完成数, 供跨集团累计进度。
+    cancel_check: 可选回调 fn() -> bool, 每店循环开头调用; 返回 True 则立即停止本集团
+      (用于手动补抓取消, 不用等集团跑完)。
     """
     cfg = load_config()
     g = next((x for x in cfg.get("groups", []) if x.get("groupId") == gid), None)
@@ -4143,6 +4283,9 @@ def _prefetch_group(gid, start, end, force_days=None):
           f"窗口 {start} ~ {end}" + (f", 强制重抓最近 {len(force_days)} 天" if force_days else ""))
     failed = []
     for i, shop in enumerate(shops, 1):
+        if cancel_check and cancel_check():
+            print(f"[prefetch] ⏹ 收到取消请求, 停止于 {i - 1}/{len(shops)} 家")
+            break
         if _risk_state.get("triggered"):
             print(f"[prefetch] ⛔ 风控/登录失效, 集团内停止于 {i - 1}/{len(shops)} 家")
             raise RiskTriggered(_risk_state.get("reason") or "风控触发")
@@ -4153,6 +4296,10 @@ def _prefetch_group(gid, start, end, force_days=None):
             stat = stat_trace_daily(sid, start, end, force_days=force_days, history_mode=True)
             print(f"[prefetch]   {i}/{len(shops)} {shop.get('platformName','')}·{shop.get('shopName','')} "
                   f"total={stat['total']} adopted={stat['adopted']}")
+            if progress_cb:
+                done = done_shops + i
+                progress_cb({"done": done, "total": None,
+                             "current": f"{g.get('groupName','')}·{shop.get('shopName','')}"})
             _prefetch_refresh_week_summary(shop, cfg)
         except RiskTriggered:
             print(f"[prefetch] ⛔ 风控触发于 {shop.get('shopName','')}")
@@ -4195,7 +4342,7 @@ def repair_platform_attribution():
     return fixed
 
 
-def prefetch_trace_window(days=None, prune=True):
+def prefetch_trace_window(days=None, prune=True, progress_cb=None):
     """夜间预抓: 轮询拼多多→京东→抖音三集团, 按集团窗口抓缺失/过期天, 并滚动裁剪
 
     每天 00:00 由计划任务 TanyuDashboardTracePrefetch 触发:
@@ -4213,6 +4360,8 @@ def prefetch_trace_window(days=None, prune=True):
 
     prune=False: 跳过最后的 prune_window 滚动裁剪(由调用方 nightly_fetch.py 决定
       何时进入"满 35 天连续无缺口才裁最老一天"的滚动模式)。默认 True 保持既有行为。
+    progress_cb: 可选回调 fn(progress_dict), 每完成一家店铺调用一次
+      {"done": 累计完成店铺数, "total": 总店铺数, "current": "集团·店名"}, 供前端进度条。
     """
     t_all = time.time()
     trace_store.init_db()
@@ -4235,6 +4384,12 @@ def prefetch_trace_window(days=None, prune=True):
     # 记录进入前的激活集团, 预抓结束后切回
     orig_gid = cfg.get("cookies", {}).get("tanyu-group-id")
     kept_days = days  # 最终裁剪窗口天数(取各集团窗口最大值)
+    # 预计算全量店铺数, 使进度条 done/total 有确定分母
+    try:
+        total_shops = len([s for s in load_all_shops() if s.get("platform") in FETCH_PLATFORMS])
+    except Exception:
+        total_shops = 0
+    done_shops = 0
     # 写跨进程标志: 8080 常驻检测到夜间抓取占用激活集团 cookie 时, 直连请求返回
     # 繁忙不向 tanyu 出网, 防止带错集团 cookie 串数据
     set_nightly_fetch_flag()
@@ -4258,7 +4413,14 @@ def prefetch_trace_window(days=None, prune=True):
             print(f"[prefetch] ===== 集团「{g.get('groupName')}」窗口 {g_days} 天 "
                   f"({start} ~ {end}) =====" + (f" 强制重抓: {sorted(fset)}" if fset else ""))
             try:
-                n, f = _prefetch_group(gid, start, end, force_days=fset)
+                # 包装 progress_cb: _prefetch_group 内部不知道全量总店数, 在此填真实 total
+                def _cb(p):
+                    if progress_cb:
+                        progress_cb({"done": p["done"], "total": total_shops or p["done"],
+                                     "current": p["current"]})
+                n, f = _prefetch_group(gid, start, end, force_days=fset,
+                                       progress_cb=_cb, done_shops=done_shops)
+                done_shops += n
                 g_total += n
                 g_failed += f
             except RiskTriggered:
