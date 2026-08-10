@@ -3709,12 +3709,37 @@ def trace_staff(days: int = 7, start: str | None = None, end: str | None = None,
 
 # ---------- 今日实时抓取(核算/人工客服「抓取今日数据」) ----------
 def _parse_hhmm(ts, default="00:00"):
-    """解析 HH:MM, 非法返回 default"""
+    """解析 HH:MM 或 HH:MM:SS(秒级今日抓取用), 非法返回 default"""
     try:
-        h, m = str(ts).strip().split(":")
-        return f"{int(h):02d}:{int(m):02d}"
+        parts = str(ts).strip().split(":")
+        h, m = int(parts[0]), int(parts[1])
+        s = int(parts[2]) if len(parts) > 2 else 0
+        if s:
+            return f"{h:02d}:{m:02d}:{s:02d}"
+        return f"{h:02d}:{m:02d}"
     except Exception:
         return default
+
+
+def _ts_seconds(ts):
+    """HH:MM 或 HH:MM:SS → 当日秒数(用于秒级起止比较), 非法返回 None"""
+    try:
+        p = str(ts).split(":")
+        return int(p[0]) * 3600 + int(p[1]) * 60 + (int(p[2]) if len(p) > 2 else 0)
+    except Exception:
+        return None
+
+
+def _full_today_ts(today, ts, end=False):
+    """'YYYY-MM-DD' + 'HH:MM[:SS]' → 完整时间串
+
+    end=True 且 ts 只有分钟时补 :59(含整分钟, 与旧行为一致);
+    带秒时原样用(秒级精确到该秒, tanyu 终点含该秒)。
+    """
+    p = str(ts).split(":")
+    h, m = int(p[0]), int(p[1])
+    s = int(p[2]) if len(p) > 2 else (59 if end else 0)
+    return f"{today} {h:02d}:{m:02d}:{s:02d}"
 
 
 def _today_target_shops(platform=None, shop_filter=None):
@@ -3769,7 +3794,9 @@ def trace_today(platform: int | None = None, shop_ids: str | None = None,
     today_str = datetime.date.today().isoformat()
     start_ts = _parse_hhmm(start_ts, "00:00")
     end_ts = _parse_hhmm(end_ts, datetime.datetime.now().strftime("%H:%M")) if end_ts else datetime.datetime.now().strftime("%H:%M")
-    if end_ts < start_ts:
+    # 秒级比较: 字符串比较对 "14:35" vs "14:35:30" 会误判(前缀短者小), 用当日秒数
+    s_sec, e_sec = _ts_seconds(start_ts), _ts_seconds(end_ts)
+    if s_sec is None or e_sec is None or e_sec < s_sec:
         raise HTTPException(400, "结束时刻不能早于开始时刻")
     shop_filter = {s for s in shop_ids.split(",") if s.strip()} if shop_ids else None
     groups_target = _today_target_shops(platform, shop_filter)
@@ -3829,8 +3856,8 @@ def trace_today(platform: int | None = None, shop_ids: str | None = None,
                     try:
                         res = _fetch_trace_range(
                             shop["thirdShopId"],
-                            f"{today_str} {start_ts}:00",
-                            f"{today_str} {end_ts}:59",
+                            _full_today_ts(today_str, start_ts),
+                            _full_today_ts(today_str, end_ts, end=True),
                         )
                         msgs = [_trim_trace_msg(m) for m in (res or [])]
                         stat = _aggregate_stat_rows(msgs, today_str, today_str)
