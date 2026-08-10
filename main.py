@@ -182,12 +182,14 @@ def default_config():
         # 默认窗口天数(未在 prefetch_windows 列出的平台用此值)、
         # 各平台窗口覆盖: 全平台保留 35 天(与 config.json 的 prefetch_windows 保持一致)。
         #   窗口=各平台保留的历史天数上限: 每晚滚动(新增昨天、超过窗口的最老一天被裁剪)。
-        # prefetch_force_days: 预抓时窗口最近 N 天强制重抓(默认1=昨天),
-        #   防 tanyu 回溯更新 sendType 造成的采纳口径漂移; 0=关闭
+        # prefetch_force_days: 预抓时窗口最近 N 天强制重抓(默认7=近7天),
+        #   防 tanyu 回溯更新 sendType 造成的采纳口径漂移(近7天核算对齐 tanyu 后台);
+        #   0=关闭。2026-08-10 由 1 调为 7(用户反馈核算近7天与后台对比有误差,
+        #   实测 tanyu 对已抓消息回溯更新 sendType + 补漏消息, 只重抓昨天不够)。
         "prefetch_platforms": [1, 5, 7],
         "prefetch_days": 35,
         "prefetch_windows": {1: 35, 5: 35, 7: 35},
-        "prefetch_force_days": 1,
+        "prefetch_force_days": 7,
     }
 
 
@@ -2950,6 +2952,14 @@ def trace_prefetch_start(payload: dict = Body(...)):
                     "done": p["done"], "total": total_shops or p["done"], "current": p["current"],
                 }
 
+            # 区间内最近 force_days 天强制重抓(tanyu 回溯更新 sendType, 补抓要跟随
+            # 最新口径; 与夜间任务同源: config.prefetch_force_days, 默认7)
+            _force_days_n = int(cfg.get("prefetch_force_days", 1) or 0)
+            _fset = set()
+            if _force_days_n > 0:
+                from datetime import timedelta as _td
+                for i in range(min(_force_days_n, (e - s).days + 1)):
+                    _fset.add((e - _td(days=i)).isoformat())
             for g in ordered:
                 if _prefetch_state.get("canceled"):
                     log_line("prefetch", "⏹ 手动补抓被用户取消")
@@ -2960,7 +2970,7 @@ def trace_prefetch_start(payload: dict = Body(...)):
                     break
                 try:
                     n, f = _prefetch_group(g["groupId"], start, end,
-                                           force_days=None, progress_cb=_cb,
+                                           force_days=_fset or None, progress_cb=_cb,
                                            done_shops=g_total,
                                            cancel_check=lambda: bool(_prefetch_state.get("canceled")))
                     g_total += n
