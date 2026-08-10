@@ -191,10 +191,38 @@ def default_config():
     }
 
 
+# groupName 含平台名的关键词 → 平台号。探域集团名形如「星科数码专营-拼多多」,
+# 登录写 groups 时若漏带 platform(accountType=3 子账号场景), 靠名字推断补上,
+# 否则 _today_target_shops / 客服同步的 s.platform == g.platform 永假, 全部店铺被过滤空转。
+# 关键词必须比枚举数字名(天猫1/天猫2)更精确: 先匹配 "天猫" 再匹配 "京东",
+# 避免「京东」前缀误伤「天猫京东店」类店名; 淘宝/快手/有赞仅保留接口不抓取。
+_GROUP_PLATFORM_KEYWORDS = [
+    ("拼多多", 1), ("抖音", 5), ("京东", 7), ("天猫", 10), ("淘宝", 0), ("快手", 4), ("有赞", 2),
+]
+
+
+def _infer_group_platform(group):
+    """按 groupName 关键词推断平台号; 已有显式 platform 原样返回"""
+    plat = group.get("platform")
+    if plat is not None:
+        return plat
+    name = group.get("groupName") or ""
+    for kw, p in _GROUP_PLATFORM_KEYWORDS:
+        if kw in name:
+            return p
+    return None
+
+
 def load_config():
     if CONFIG_FILE.exists():
         try:
-            return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            # 内存补齐 groups 缺失的 platform(不下盘: 避免与夜间进程的
+            # config 写者争用, 且推断值可能不精确, 落盘会污染真实配置)
+            for g in cfg.get("groups") or []:
+                if g.get("groupId") and g.get("platform") is None:
+                    g["platform"] = _infer_group_platform(g)
+            return cfg
         except Exception as e:
             # 文件存在但解析失败: 绝不静默覆盖真实配置, 先备份到 .bak 再重建默认
             print(f"[config] config.json 解析失败({e}), 已备份为 config.json.bak")
@@ -823,8 +851,10 @@ def get_group_list():
     if cur and cur["id"]:
         # 当前集团不在列表时自动补上
         if not any(g.get("groupId") == cur["id"] for g in groups):
-            groups = [{"groupId": cur["id"], "groupName": cur["name"],
-                       "accountId": None, "accountType": None, "current": True}] + groups
+            new_g = {"groupId": cur["id"], "groupName": cur["name"],
+                     "accountId": None, "accountType": None, "current": True}
+            new_g["platform"] = _infer_group_platform(new_g)  # 新集团落盘带平台, 避免再走推断
+            groups = [new_g] + groups
             cfg["groups"] = groups
             save_config(cfg)
         for g in groups:
