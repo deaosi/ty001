@@ -78,14 +78,37 @@ def _is_configured() -> bool:
     return bool((cfg.get("webhook") or {}).get("url"))
 
 
+def _sign_webhook_url(url, secret):
+    """钉钉加签: 按官方算法给 webhook URL 附加 timestamp+sign
+
+    开启"加签"安全设置的机器人要求每次请求带签名, 否则 errcode 310000
+    ("机器人发送签名不匹配")。算法:
+      string_to_sign = f"{timestamp_ms}\\n{secret}"(secret 是 SEC 开头的串)
+      sign = urlencode(base64(HMAC-SHA256(string_to_sign, key=secret)))
+    """
+    import base64
+    import hashlib
+    import hmac
+    import time as _time
+    import urllib.parse
+    timestamp = str(round(_time.time() * 1000))
+    string_to_sign = f"{timestamp}\n{secret}"
+    hmac_code = hmac.new(secret.encode("utf-8"), string_to_sign.encode("utf-8"),
+                         digestmod=hashlib.sha256).digest()
+    sign = urllib.parse.quote_plus(base64.b64encode(hmac_code))
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}timestamp={timestamp}&sign={sign}"
+
+
 def _push_markdown(title, text):
     """推一条 markdown 到群 webhook; 返回 (ok, err_msg)。
 
-    钉钉自定义机器人安全设置若配了"自定义关键词", 标题必须含该关键词,
-    否则会被钉钉拒收(err_code 310000)。URL 本身可带自定义鉴权 access_token。
-
-    webhook.keyword(可选配置): 若设置了, 标题不含该关键词时自动拼接进标题,
-    保证换了带关键词安全设置的机器人后模板依然能推送成功(无需改模板)。
+    钉钉自定义机器人安全设置:
+      - "自定义关键词": 标题必须含该关键词, 否则 errcode 310000。
+        webhook.keyword(可选配置): 标题不含时自动拼接, 保证换机器人也能推送。
+      - "加签": 需要 webhook.secret(SEC 开头)按官方算法附加 timestamp+sign。
+      - "IP 白名单": 需把本机出网 IP 加白(代码侧无动作)。
+    URL 本身可带自定义鉴权 access_token。
     """
     cfg = load_config()
     web = cfg.get("webhook") or {}
@@ -95,6 +118,9 @@ def _push_markdown(title, text):
     keyword = (web.get("keyword") or "").strip()
     if keyword and keyword not in title:
         title = f"{title} · {keyword}"
+    secret = (web.get("secret") or "").strip()
+    if secret:
+        url = _sign_webhook_url(url, secret)
     payload = {"msgtype": "markdown",
                "markdown": {"title": title, "text": text}}
     try:
@@ -104,8 +130,18 @@ def _push_markdown(title, text):
         return False, f"请求钉钉失败: {e}"
     if data.get("errcode") == 0:
         return True, ""
-    # errcode 310000 = 关键词不匹配 / 311000 = URL非法 等
+    # errcode 310000 = 关键词不匹配/签名不匹配, 311000 = URL非法 等
     return False, f"钉钉拒绝: errcode={data.get('errcode')} {data.get('errmsg', '')}".strip()
+
+
+def push_alert_to_group(title, text):
+    """推一条告警消息到群(夜间抓取失败/风控/登录失效提醒, 方式A)
+
+    与 _push_markdown 同路径(同 webhook/加签/关键词), 标题带「告警」便于
+    群内与数据播报区分。返回 (ok, err_msg)。
+    """
+    ok, err = _push_markdown(f"🚨 {title}", text)
+    return {"ok": ok, "error": err}
 
 
 def push_overview_to_group(platform: int | None = None, stat_type: str = "natural_week",

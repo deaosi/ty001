@@ -54,6 +54,19 @@ def log(msg: str):
     print(line, flush=True)
 
 
+def _alert(title: str, text: str):
+    """向钉钉群推告警(方式A webhook); 未配置 webhook 时静默降级, 不阻塞主流程"""
+    try:
+        import dingtalk_bot
+        if not dingtalk_bot._is_configured():
+            log("⚠️ 钉钉 webhook 未配置, 跳过告警推送")
+            return
+        ok, err = dingtalk_bot.push_alert_to_group(title, text)
+        log(f"钉钉告警推送 {'成功' if ok else '失败: ' + err}")
+    except Exception as e:
+        log(f"⚠️ 钉钉告警推送异常(忽略): {e}")
+
+
 def _lock():
     """拿幂等锁: 已有别的夜间抓取在跑(文件存在且进程活)则返回 None
 
@@ -190,6 +203,10 @@ def main():
         if lock is None:
             log("⏭️  已有夜间抓取在跑, 跳过本次")
             return
+    outcome = None   # 告警场景: None=正常 / risk=登录失效·风控 / exception=异常 / gap=未满窗
+    today = datetime.date.today().isoformat()
+    post = None
+    exc = None
     try:
         import main as M  # 顶部 import 会拉 uvicorn 等重依赖, 这里才 import
         today = datetime.date.today()
@@ -230,9 +247,37 @@ def main():
 
         log(f"=== 夜间抓取完成 耗时 {time.time() - t0:.0f}s ===" if not dry_run else
             "=== dry-run 完成(未实际抓取/裁剪) ===")
+
+        # 5) 成功但窗口未满: 可能有历史缺口/某店缺天, 群里提醒(让用户知道需要手动补)
+        if not dry_run and not full:
+            outcome = "gap"
+    except Exception as e:
+        exc = e
+        # 风控/登录失效(内核抛 RiskTriggered): 用户在群里被@踢出/换密码后, 夜间抓取
+        # 必然失败, 主动推送让用户扫码续期; 其他异常也一并推送(不再静默)。
+        risk = bool(M._risk_state.get("triggered")) if "M" in dir() else False
+        outcome = "risk" if risk else "exception"
+        log(f"夜间抓取失败: {type(e).__name__}: {e}")
     finally:
         if not dry_run:
             _release()
+        # 告警: 只在真实运行(非 dry-run)发, 避免手动测试时打扰群里
+        if outcome and not dry_run:
+            if outcome == "gap" and post is not None:
+                _alert("夜间抓取未满窗",
+                       f"**{today} 夜间抓取完成但窗口未满**: 缺格 {post['missing_cells']}/"
+                       f"{post['total_cells']} 格, 缺口店 {len(post['gap_shops'])} 家。\n"
+                       f"可能原因: cookie 过期 / 登录失效 / 风控, 或部分店铺抓取失败。\n"
+                       f"请到看板「📅 补抓数据」手动补抓, 或检查日志 data/nightly_fetch.log。")
+            elif outcome == "risk":
+                _alert("夜间抓取失败: 登录失效/风控",
+                       f"**{today} 夜间抓取因登录失效或风控停止**。\n"
+                       f"请到探域后台确认账号状态(可能被踢出/密码被改), 必要时重新登录并扫码续期 cookie。\n"
+                       f"日志: data/nightly_fetch.log")
+            else:
+                _alert("夜间抓取异常",
+                       f"**{today} 夜间抓取异常终止**: {type(exc).__name__}: {exc}\n"
+                       f"请检查 data/nightly_fetch.log。")
 
 
 if __name__ == "__main__":
