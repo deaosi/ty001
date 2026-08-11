@@ -655,6 +655,30 @@ def _stat_type_range(stat_type, ref=None):
 
 
 # ---------- 批量刷新 ----------
+# 网络瞬时错误(SSL 断连/连接重置/超时): 刷新遇到时退避重试, 避免连打撞限速
+_NETWORK_RETRIES = 3
+_NETWORK_BASE_DELAY = 5.0
+
+
+def _with_network_retry(fn, label, tag="refresh"):
+    """网络瞬时错误指数退避重试(最多 3 次)
+
+    仅对 requests 网络异常(SSLError/ConnectionError/Timeout)重试; 业务错误
+    (风控/登录失效/接口错误码)不是 requests 网络异常, 原样抛出不重试。
+    """
+    delay = _NETWORK_BASE_DELAY
+    for attempt in range(_NETWORK_RETRIES):
+        try:
+            return fn()
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            if attempt == _NETWORK_RETRIES - 1:
+                raise
+            log_line(tag, f"{label} 网络错误(第 {attempt+1}/{_NETWORK_RETRIES} 次, "
+                          f"{type(e).__name__}), {delay:.0f}s 后重试")
+            time.sleep(delay)
+            delay *= 2
+
+
 def refresh_one(shop, start, end):
     """刷新单个店铺: summary + 3 个 section 明细, 返回汇总"""
     shop_id = shop["thirdShopId"]
@@ -667,7 +691,8 @@ def refresh_one(shop, start, end):
         "dimension": "shop",
         "targetId": shop_id,
     }
-    summary = fetch_summary(base)
+    summary = _with_network_retry(lambda: fetch_summary(base),
+                                  f"{shop['shopName']} summary")
     # 缓存键带口径后缀(与 shop_detail 一致): 批量刷新只刷 natural_day,
     # 写 {shop_id}__natural_day 键, 避免与周/月口径缓存互相覆盖
     save_cache("summary", f"{shop_id}__natural_day", {"fetched_at": time.time(), "data": summary})
@@ -675,7 +700,8 @@ def refresh_one(shop, start, end):
     for section in ["operations", "service", "ai"]:
         payload = {**base, "section": section}
         try:
-            table = fetch_section_table(payload)
+            table = _with_network_retry(lambda: fetch_section_table(payload),
+                                        f"{shop['shopName']} section={section}")
             # 明细表按日期区间缓存(键带起止日期): 与 shop_detail 的读键严格一致,
             # 避免批量刷新(近7天)与单店自然日(昨天)写读同一键串日期范围。
             save_cache("table", f"{shop_id}__natural_day__{section}__{start}__{end}",
@@ -704,12 +730,16 @@ def refresh_all_async(start, end, shops=None):
                 shops = [s for s in load_shops() if s.get("platform") in FETCH_PLATFORMS]
             total = len(shops)
             _refresh_state["progress"] = {"done": 0, "total": total, "current": ""}
+            ok = fail = 0
+            consecutive_fail = 0
             for i, shop in enumerate(shops, 1):
                 _refresh_state["progress"]["current"] = f"{shop['platformName']} · {shop['shopName']} ({i}/{total})"
                 if i > 1:
                     sleep_trace_shop()
                 try:
                     refresh_one(shop, start, end)
+                    ok += 1
+                    consecutive_fail = 0
                 except RiskTriggered as e:
                     # 风控/登录失效: 立即停止
                     log_line("refresh", f"⛔ 风控触发, 停止剩余 {total - i} 家店铺: {e}")
@@ -721,8 +751,17 @@ def refresh_all_async(start, end, shops=None):
                     _refresh_state["error"] = f"夜间抓取进行中, 请稍后重试: {e}"
                     break
                 except Exception as e:
+                    fail += 1
+                    consecutive_fail += 1
                     log_line("refresh", f"{shop['shopName']} 失败: {e}")
+                    if consecutive_fail >= 3:
+                        # 连续失败说明 tanyu 侧异常(SSL 断连/限流), 整体退避 30s 再继续,
+                        # 避免密集连打失败请求加剧限流
+                        log_line("refresh", f"⏸ 连续 {consecutive_fail} 家失败, 暂停 30s 退避")
+                        time.sleep(30)
+                        consecutive_fail = 0
                 _refresh_state["progress"]["done"] = i
+            log_line("refresh", f"刷新完成: 成功 {ok} 家, 失败 {fail} 家")
             _refresh_state["last_run"] = time.time()
         except Exception as e:
             _refresh_state["error"] = str(e)
@@ -782,6 +821,8 @@ def refresh_all_groups_async(start, end):
                 try:
                     total = len(group_shops)
                     _refresh_state["progress"] = {"done": 0, "total": total, "current": ""}
+                    ok = fail = 0
+                    consecutive_fail = 0
                     for i, shop in enumerate(group_shops, 1):
                         _refresh_state["progress"]["current"] = (
                             f"集团[{g.get('groupName')}] {shop['platformName']} · "
@@ -790,6 +831,8 @@ def refresh_all_groups_async(start, end):
                             sleep_trace_shop()
                         try:
                             refresh_one(shop, start, end)
+                            ok += 1
+                            consecutive_fail = 0
                         except RiskTriggered as e:
                             log_line("refresh", f"⛔ 风控触发于集团[{g.get('groupName')}], 停止: {e}")
                             _refresh_state["error"] = f"风控/登录失效, 已停止: {e}"
@@ -800,8 +843,17 @@ def refresh_all_groups_async(start, end):
                             _refresh_state["error"] = f"夜间抓取进行中, 请稍后重试: {e}"
                             return
                         except Exception as e:
+                            fail += 1
+                            consecutive_fail += 1
                             log_line("refresh", f"{shop['shopName']} 失败: {e}")
+                            if consecutive_fail >= 3:
+                                # 连续失败说明 tanyu 侧异常(SSL 断连/限流), 整体退避 30s 再继续,
+                                # 避免密集连打失败请求加剧限流
+                                log_line("refresh", f"⏸ 连续 {consecutive_fail} 家失败, 暂停 30s 退避")
+                                time.sleep(30)
+                                consecutive_fail = 0
                         _refresh_state["progress"]["done"] = i
+                    log_line("refresh", f"集团[{g.get('groupName')}] 刷新完成: 成功 {ok} 家, 失败 {fail} 家")
                     _refresh_state["last_run"] = time.time()
                 finally:
                     _refresh_state["running"] = False
@@ -1111,7 +1163,18 @@ def _sync_staff_names_worker(start_day, end_day):
             group_plan.append((g, shops))
             total_plan += len(shops)
         if not group_plan:
-            log_line("staff", "⚠️ 无任何集团店铺可同步")
+            # 全集团无店铺可同步: 打印 SQLite shops 平台分布 + 配置期望平台,
+            # 便于区分"shops 表确实空/缺平台" vs "platform 类型不匹配"(如手改 config 成字符串)
+            try:
+                dist = {}
+                for s in trace_store.get_shops():
+                    dist[s.get("platform")] = dist.get(s.get("platform"), 0) + 1
+                expect = [(g.get("groupName"), g.get("platform"), type(g.get("platform")).__name__)
+                          for g in ordered]
+                log_line("staff", f"⚠️ 无任何集团店铺可同步 (SQLite shops 平台分布: {dist}, "
+                                  f"配置期望: {expect})")
+            except Exception:
+                log_line("staff", "⚠️ 无任何集团店铺可同步")
             _staff_sync_state["error"] = "无店铺可同步"
             return
         _staff_sync_state["progress"] = {"done": 0, "total": total_plan, "current": ""}
@@ -1811,7 +1874,9 @@ def stat_trace_daily(shop_id, start, end, force=False, force_days=None, trim_ms=
                 total_results.extend(cached_days[ds])
                 continue
         try:
-            res = [_trim_trace_msg(r) for r in _fetch_trace_day(shop_id, ds)]
+            # 网络瞬时错误(SSL 断连/限流)退避重试 3 次, 避免一次失败就缺一天
+            res = [_trim_trace_msg(r) for r in _with_network_retry(
+                lambda: _fetch_trace_day(shop_id, ds), f"{shop_id} {ds}", tag="trace")]
         except RiskTriggered:
             raise
         except BusyQueueError:
