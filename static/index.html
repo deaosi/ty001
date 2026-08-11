@@ -155,6 +155,22 @@
   .progress-bar.show { display: block; }
   .progress-bar .fill { height: 100%; background: linear-gradient(90deg, var(--blue), var(--cyan)); border-radius: 2px; transition: width .4s; }
 
+  /* ---------- 切换集团加载读条 ---------- */
+  .group-sync-status {
+    display: none; align-items: center; gap: 10px; margin-top: 8px;
+    font-size: 12px; color: var(--cyan);
+  }
+  .group-sync-status .group-sync-bar {
+    width: 180px; height: 4px; background: rgba(91, 140, 255, .15);
+    border-radius: 2px; overflow: hidden;
+  }
+  .group-sync-status .group-sync-bar .fill {
+    position: relative; width: 30%; height: 100%;
+    background: linear-gradient(90deg, var(--blue), var(--cyan)); border-radius: 2px;
+    animation: groupSyncSlide 1.1s ease-in-out infinite;
+  }
+  @keyframes groupSyncSlide { 0% { left: -35%; } 100% { left: 115%; } }
+
   /* ---------- 风控横幅 ---------- */
   .risk-banner {
     max-width: 1480px; margin: 14px auto 0; padding: 10px 16px; display: flex; gap: 10px; align-items: center;
@@ -567,6 +583,10 @@
     <button class="btn btn-ghost" id="btnPrefetch" onclick="openPrefetchDialog()">📅 补抓数据</button>
   </div>
   <input type="file" id="importFile" accept=".xlsx" style="display:none" onchange="doImportExcel()">
+  <div class="group-sync-status" id="groupSyncStatus" style="display:none">
+    <div class="group-sync-bar"><div class="fill"></div></div>
+    <span id="groupSyncTxt">正在同步店铺列表…</span>
+  </div>
   <div class="progress-bar" id="progressBar"><div class="fill" id="progressFill"></div></div>
 </header>
 
@@ -1146,6 +1166,29 @@ function toggleGroupMenu(event) {
   document.getElementById('groupMenu').classList.toggle('open');
 }
 
+let groupSyncTimer = null;
+function showGroupSync(statusText) {
+  // 切换集团期间的加载读条: 后端 /api/groups/sync-status 汇报同步阶段
+  // (syncing/retry/fallback/done), 轮询展示阶段文案; detail 为后端可读文案。
+  document.getElementById('groupSyncStatus').style.display = 'flex';
+  document.getElementById('groupSyncTxt').textContent = statusText || '正在同步店铺列表…';
+  clearInterval(groupSyncTimer);
+  groupSyncTimer = setInterval(async () => {
+    try {
+      const s = await fetchJSON('/api/groups/sync-status');
+      const txt = document.getElementById('groupSyncTxt');
+      if (s.phase === 'retry') txt.textContent = s.detail || '网络波动, 正在自动重试…';
+      else if (s.phase === 'fallback') txt.textContent = s.detail || '网络异常, 已用本地缓存店铺';
+      else if (s.phase === 'syncing') txt.textContent = s.detail || '正在同步店铺列表…';
+      // done: 保持当前文案, 由 fetch 返回后的 hide 收尾
+    } catch (e) { /* 轮询失败忽略, 下一次再试 */ }
+  }, 1500);
+}
+function hideGroupSync() {
+  clearInterval(groupSyncTimer); groupSyncTimer = null;
+  document.getElementById('groupSyncStatus').style.display = 'none';
+}
+
 async function switchGroup(groupId) {
   const g = groups.find(x => x.groupId === groupId);
   if (!g) return;
@@ -1160,6 +1203,7 @@ async function switchGroup(groupId) {
   }
   document.getElementById('groupMenu').classList.remove('open');
   toast(`正在切换到 ${g.groupName || g.name || groupId} …`);
+  showGroupSync('正在同步店铺列表…');  // 网络波动会自动重试, 读条告知用户
   try {
     const r = await fetchJSON('/api/groups/switch', {
       method: 'POST',
@@ -1167,6 +1211,7 @@ async function switchGroup(groupId) {
       body: JSON.stringify({ group_id: groupId }),
     });
     toast(`已切换到 ${(r.group && r.group.name) || g.groupName || '新集团'} ✅ 正在加载店铺…`);
+    document.getElementById('groupSyncTxt').textContent = '店铺已同步, 正在加载看板…';
     stopAuditPolling();  // 后端已取消旧集团核算: 停掉旧轮询, 避免把旧组结果渲染到新组下
     await loadGroups();
     // 集团→平台联动: 跳到该集团对应的平台(该平台才有 summary 数据)
@@ -1184,11 +1229,13 @@ async function switchGroup(groupId) {
     }
     clearAuditSel();
     await loadShops();
+    hideGroupSync();
     loadOverview();
     reloadCachedAudit();  // 组切换后缓存已失效, 只加载缓存, 不自动核算
     renderStaffShopFilter();  // 客服池店铺下拉跟随新平台刷新
     loadStaffData();      // 客服面板跟随新平台刷新
   } catch (e) {
+    hideGroupSync();
     toast('切换集团失败: ' + e.message);
   }
 }

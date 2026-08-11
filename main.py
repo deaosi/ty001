@@ -660,11 +660,12 @@ _NETWORK_RETRIES = 3
 _NETWORK_BASE_DELAY = 5.0
 
 
-def _with_network_retry(fn, label, tag="refresh"):
+def _with_network_retry(fn, label, tag="refresh", on_retry=None):
     """网络瞬时错误指数退避重试(最多 3 次)
 
     仅对 requests 网络异常(SSLError/ConnectionError/Timeout)重试; 业务错误
     (风控/登录失效/接口错误码)不是 requests 网络异常, 原样抛出不重试。
+    on_retry(attempt, delay): 每次重试前回调(供前端加载读条展示重试阶段)。
     """
     delay = _NETWORK_BASE_DELAY
     for attempt in range(_NETWORK_RETRIES):
@@ -673,6 +674,11 @@ def _with_network_retry(fn, label, tag="refresh"):
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
             if attempt == _NETWORK_RETRIES - 1:
                 raise
+            if on_retry:
+                try:
+                    on_retry(attempt + 1, delay)
+                except Exception:
+                    pass
             log_line(tag, f"{label} 网络错误(第 {attempt+1}/{_NETWORK_RETRIES} 次, "
                           f"{type(e).__name__}), {delay:.0f}s 后重试")
             time.sleep(delay)
@@ -1064,6 +1070,15 @@ def _invalidate_audit_caches():
 # 店铺同步可靠性: 同集团短时间重复切换复用上次结果, 减少多人频繁切换对 tanyu brief 的请求
 SHOPS_SYNC_TTL = 60            # 秒
 _shops_sync_cache = {}         # {groupId: {"ts": float, "count": int}}
+# 切换集团时店铺同步阶段(供前端加载读条): phase=syncing/retry/fallback/done
+_group_sync_state = {"phase": "idle", "attempt": 0, "detail": "", "updated": 0}
+
+
+def _set_group_sync(phase, attempt=0, detail=""):
+    """更新店铺同步阶段(前端轮询 /api/groups/sync-status 展示加载读条)"""
+    global _group_sync_state
+    _group_sync_state = {"phase": phase, "attempt": attempt,
+                         "detail": detail, "updated": time.time()}
 
 
 def sync_shops_from_tanyu():
@@ -1093,6 +1108,7 @@ def sync_shops_from_tanyu():
         if shops:
             _atomic_write_text(SHOPS_FILE, json.dumps({"data": shops}, ensure_ascii=False, indent=2))
             _invalidate_audit_caches()
+            _set_group_sync("done", 0, f"TTL 缓存 {len(shops)} 家")
             log_line("group", f"店铺同步(TTL 缓存): {len(shops)} 家")
             return {"count": len(shops),
                     "platforms": {p: sum(1 for s in shops if s["platform"] == p) for p in set(s["platform"] for s in shops)},
@@ -1100,11 +1116,14 @@ def sync_shops_from_tanyu():
     try:
         _assert_no_risk()
         _rate_limit()
+        _set_group_sync("syncing", 0, "正在同步店铺列表…")
         try:
             r = _with_network_retry(
                 lambda: requests.get(f"{GC_API}/agent-personal/brief?searchValid=true",
                                      headers=get_headers(), timeout=20),
-                "brief 店铺列表", tag="group")
+                "brief 店铺列表", tag="group",
+                on_retry=lambda n, d: _set_group_sync(
+                    "retry", n, f"网络波动, 正在自动重试(第 {n}/{_NETWORK_RETRIES} 次, {d:.0f}s 后)…"))
             d = r.json()
         except (requests.exceptions.RequestException, ValueError) as e:
             return _sync_shops_fallback(e)
@@ -1140,6 +1159,7 @@ def sync_shops_from_tanyu():
             log_line("db", f"shops 同步失败: {e}")
         _invalidate_audit_caches()
         _shops_sync_cache[gid] = {"ts": time.time(), "count": len(shops)}
+        _set_group_sync("done", 0, f"同步完成 {len(shops)} 家")
         log_line("group", f"店铺同步完成: {len(shops)} 家")
         return {"count": len(shops),
                 "platforms": {p: sum(1 for s in shops if s["platform"] == p) for p in set(s["platform"] for s in shops)}}
@@ -1164,6 +1184,7 @@ def _sync_shops_fallback(reason):
             raise RuntimeError(f"同步店铺失败且本地无该集团缓存店铺: {reason}")
         _atomic_write_text(SHOPS_FILE, json.dumps({"data": shops}, ensure_ascii=False, indent=2))
         _invalidate_audit_caches()
+        _set_group_sync("done", 0, f"网络异常, 已用本地缓存 {len(shops)} 家")
         log_line("group", f"⚠️ 同步店铺失败({type(reason).__name__}), 用本地缓存 {len(shops)} 家兜底"
                           f"(新增店铺将在下次成功同步出现)")
         return {"count": len(shops),
@@ -2446,6 +2467,16 @@ def groups_switch(body: GroupSwitch):
         raise HTTPException(400, str(e))
     except RuntimeError as e:
         raise HTTPException(502, str(e))
+
+
+@app.get("/api/groups/sync-status")
+def groups_sync_status():
+    """切换集团时店铺同步阶段(供前端加载读条)
+
+    phase: idle 无切换 / syncing 请求中 / retry 网络波动重试中(attempt 第几次) /
+           fallback 已降级本地缓存 / done 完成。detail 为可读文案。
+    """
+    return dict(_group_sync_state)
 
 
 @app.post("/api/shops/sync")
