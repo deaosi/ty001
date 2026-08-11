@@ -171,6 +171,27 @@
   }
   @keyframes groupSyncSlide { 0% { left: -35%; } 100% { left: 115%; } }
 
+  /* ---------- 操作者徽标 + 操作日志面板 ---------- */
+  .op-chip {
+    font-size: 12px; color: var(--cyan); cursor: pointer; white-space: nowrap;
+    padding: 3px 10px; border: 1px solid rgba(91,140,255,.35); border-radius: 14px;
+    background: rgba(91,140,255,.08); user-select: none;
+  }
+  .op-chip:hover { background: rgba(91,140,255,.16); }
+  .oplog-box { width: 780px; max-width: 94vw; }
+  .oplog-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .oplog-toolbar select {
+    font-size: 12.5px; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--input-bg, transparent); color: var(--text); outline: none;
+  }
+  .oplog-list { max-height: 52vh; overflow: auto; border: 1px solid var(--border); border-radius: 10px; }
+  .oplog-list table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .oplog-list th, .oplog-list td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  .oplog-list th { position: sticky; top: 0; background: var(--bg, #12151c); color: var(--muted); font-weight: 600; }
+  .oplog-list td.path { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, Consolas, monospace; }
+  .oplog-list td.ok { color: var(--green, #34d399); }
+  .oplog-list td.err { color: var(--danger, #fb7185); }
+
   /* ---------- 风控横幅 ---------- */
   .risk-banner {
     max-width: 1480px; margin: 14px auto 0; padding: 10px 16px; display: flex; gap: 10px; align-items: center;
@@ -576,11 +597,13 @@
     <select id="platformSelect" class="platform-select" onchange="switchPlatform(this.value)">
       <option value="">全部平台</option>
     </select>
+    <span class="op-chip" id="opChip" title="当前操作者(点击设置昵称)" onclick="setOperatorName()">👤 未命名</span>
     <button class="btn btn-ghost" id="btnLogin" onclick="openLogin()">🔑 登录更新Cookie</button>
     <span class="cookie-expiry" id="cookieExpiry" title="登录 Cookie 到期时间"></span>
     <button class="btn btn-ghost" id="btnImport" onclick="openImportPicker()">📤 导入Excel</button>
     <button class="btn btn-primary" id="btnRefresh" onclick="startRefresh()">🔄 刷新数据</button>
     <button class="btn btn-ghost" id="btnPrefetch" onclick="openPrefetchDialog()">📅 补抓数据</button>
+    <button class="btn btn-ghost" id="btnOplog" onclick="openOplog()">📋 操作日志</button>
   </div>
   <input type="file" id="importFile" accept=".xlsx" style="display:none" onchange="doImportExcel()">
   <div class="group-sync-status" id="groupSyncStatus" style="display:none">
@@ -866,6 +889,23 @@
   </div>
 </div>
 
+<!-- 操作日志对话框(会话可追溯: 谁在哪台浏览器做了什么) -->
+<div class="login-dialog" id="oplogDialog">
+  <div class="login-box oplog-box">
+    <h3>📋 操作日志</h3>
+    <p style="font-size:12px;color:var(--text-sub);margin:6px 0 12px">记录每个浏览器身份的操作(切换集团/刷新/补抓/导入/核算等), 用于多人共用时追溯"谁做了什么"。点击右上角「👤」可设置本机昵称。</p>
+    <div class="oplog-toolbar">
+      <select id="oplogClient" onchange="loadOplog()"><option value="">全部操作者</option></select>
+      <span class="msg-count" id="oplogCount"></span>
+      <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px;margin-left:auto" onclick="loadOplog()">🔄 刷新</button>
+    </div>
+    <div class="oplog-list" id="oplogList"><div class="msg-empty">加载中…</div></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px">
+      <button class="btn btn-ghost" onclick="closeOplog()">关闭</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -990,6 +1030,13 @@ function toast(msg) {
 }
 
 async function fetchJSON(url, opts) {
+  opts = opts || {};
+  // 会话可追溯(无账号系统): 每请求带浏览器身份头, 后端中间件据此记操作日志
+  // 昵称 URL 编码(header 规范 latin-1, 中文直发后端会乱码, 编码后全 ASCII)
+  opts.headers = Object.assign({
+    'X-Client-Id': localStorage.getItem('tanyu_client_id') || '',
+    'X-Client-Name': encodeURIComponent(localStorage.getItem('tanyu_client_name') || ''),
+  }, opts.headers || {});
   const resp = await fetch(url, opts);
   if (!resp.ok) {
     // 优先取后端 detail(如 400/409 的明确原因), 否则退回 HTTP 状态码
@@ -3085,8 +3132,95 @@ function pollLogin() {
   }, 2000);
 }
 
+// ---------- 会话可追溯: 浏览器身份 + 操作日志 ----------
+function ensureClientIdentity() {
+  // 无账号系统: 每台浏览器首次访问生成唯一 ID(localStorage 持久), 识别"这台浏览器"
+  if (!localStorage.getItem('tanyu_client_id')) {
+    let id;
+    try { id = crypto.randomUUID(); } catch (e) { /* 旧浏览器 */ }
+    id = id || ('c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
+    localStorage.setItem('tanyu_client_id', id);
+  }
+  refreshOpChip();
+}
+function refreshOpChip() {
+  const name = (localStorage.getItem('tanyu_client_name') || '').trim();
+  const chip = document.getElementById('opChip');
+  if (chip) chip.textContent = name ? `👤 ${name}` : '👤 未命名';
+}
+function setOperatorName() {
+  // 点击徽标设置本机昵称, 让操作日志可读(谁做了什么)
+  const cur = (localStorage.getItem('tanyu_client_name') || '').trim();
+  const name = prompt('设置当前浏览器操作者昵称(显示在操作日志中):', cur);
+  if (name === null) return;
+  const trimmed = name.trim();
+  if (trimmed) localStorage.setItem('tanyu_client_name', trimmed.slice(0, 20));
+  else localStorage.removeItem('tanyu_client_name');
+  refreshOpChip();
+  toast(trimmed ? `操作者已设为「${trimmed.slice(0, 20)}」` : '已清除昵称');
+}
+
+// 路径 → 友好动作名(展示用, 未匹配显示原始路径)
+const ACTION_NAMES = {
+  '/api/groups/switch': '切换集团', '/api/shops/sync': '同步店铺列表',
+  '/api/refresh': '刷新数据', '/api/trace/prefetch': '手动补抓',
+  '/api/trace/prefetch/cancel': '取消补抓',
+  '/api/import/trace': '导入Excel',
+  '/api/staff/names/sync': '同步客服昵称',
+  '/api/trace/today': '抓取今天消息', '/api/trace/today/cancel': '取消抓取今天',
+  '/api/trace/overview/cancel': '取消核算', '/api/trace/overview/pause': '暂停核算',
+  '/api/trace/overview/resume': '恢复核算',
+  '/api/cookies': '更新Cookie', '/api/login/start': '发起登录',
+  '/api/dingtalk/config': '更新钉钉配置', '/api/dingtalk/push': '钉钉推送',
+  '/api/dingtalk/stream/start': '启动钉钉长连接', '/api/dingtalk/stream/stop': '停止钉钉长连接',
+};
+function actionName(p, method) {
+  if (method === 'GET' && p.startsWith('/api/trace/overview')) return '核算查询';
+  if (method === 'GET' && p.startsWith('/api/trace/messages/')) return '查看原始消息';
+  if (method === 'GET' && p.startsWith('/api/shop/')) return '查看店铺详情';
+  return ACTION_NAMES[p] || p;
+}
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+async function loadOplog() {
+  const sel = document.getElementById('oplogClient');
+  const filter = sel ? sel.value || undefined : undefined;
+  const d = await fetchJSON('/api/oplog?limit=300' + (filter ? '&client_id=' + encodeURIComponent(filter) : ''));
+  // 操作者筛选下拉(保留当前选择)
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">全部操作者</option>' +
+    (d.clients || []).map(c => `<option value="${escapeHtml(c.client_id)}">${escapeHtml(c.client_name || '(未命名)')}</option>`).join('');
+  if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
+  document.getElementById('oplogCount').textContent = `${(d.logs || []).length} 条`;
+  const list = document.getElementById('oplogList');
+  if (!d.logs || !d.logs.length) {
+    list.innerHTML = '<div class="msg-empty">暂无操作记录(操作后自动记录)</div>';
+    return;
+  }
+  list.innerHTML = `<table>
+    <tr><th>时间</th><th>操作者</th><th>IP</th><th>动作</th><th>方法</th><th>状态</th></tr>` +
+    d.logs.map(l => `<tr>
+      <td>${escapeHtml(l.ts)}</td>
+      <td>${escapeHtml(l.client_name || '(未命名)')}</td>
+      <td>${escapeHtml(l.ip || '')}</td>
+      <td class="path" title="${escapeHtml(l.path)}${l.query ? '?' + escapeHtml(l.query) : ''}">${escapeHtml(actionName(l.path, l.method))}</td>
+      <td>${escapeHtml(l.method)}</td>
+      <td class="${l.status >= 400 ? 'err' : 'ok'}">${l.status == null ? '—' : l.status}</td>
+    </tr>`).join('') + '</table>';
+}
+function openOplog() {
+  document.getElementById('oplogDialog').classList.add('show');
+  loadOplog().catch(e => toast('加载操作日志失败: ' + e.message));
+}
+function closeOplog() {
+  document.getElementById('oplogDialog').classList.remove('show');
+}
+
 // ---------- 初始化 ----------
 (async function init() {
+  ensureClientIdentity();  // 会话可追溯: 生成本机浏览器身份(无账号系统)
   // 平台列表是纯本地配置, 快; 集团下拉涉及远程 detail 请求(可能排队), 不阻塞核算渲染
   await loadPlatforms();
   refreshStatLabels();  // 表格列头小字首次渲染即带具体日期区间

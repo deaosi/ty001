@@ -20,6 +20,7 @@ import os
 import sys
 import threading
 import time
+import urllib.parse
 from io import BytesIO
 from pathlib import Path
 
@@ -46,7 +47,7 @@ try:
 except ImportError:
     _psutil = None
 import uvicorn
-from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -146,6 +147,42 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ---------- 操作日志中间件(会话可追溯, 无账号系统) ----------
+# 每个浏览器首访生成唯一 client_id(localStorage)并随请求头 X-Client-Id 带上,
+# 可选昵称 X-Client-Name 用于识别"这台浏览器是谁"。本中间件把非轮询类 /api
+# 请求记入 SQLite operation_log, 审计谁做了什么。记录失败绝不阻塞请求。
+# 跳过高频轮询 GET(前端 setInterval 定时拉取, 非用户主动操作, 刷屏无审计价值)。
+_OPLOG_SKIP_GET = {
+    "/api/tasks/refresh", "/api/groups/sync-status", "/api/trace/prefetch/status",
+    "/api/trace/today/status", "/api/trace/overview/status",
+    "/api/staff/names/status", "/api/login/status", "/api/risk", "/api/logs", "/api/oplog",
+}
+
+
+@app.middleware("http")
+async def _oplog_middleware(request: Request, call_next):
+    response = await call_next(request)
+    try:
+        path = request.url.path
+        if path.startswith("/api/"):
+            method = request.method
+            if method != "GET" or path not in _OPLOG_SKIP_GET:
+                # 昵称走 URL 编码(header 规范是 latin-1, 中文直发会乱码)
+                try:
+                    client_name = urllib.parse.unquote(request.headers.get("x-client-name", ""))
+                except Exception:
+                    client_name = request.headers.get("x-client-name", "")
+                trace_store.log_operation(
+                    request.headers.get("x-client-id", ""),
+                    client_name,
+                    request.client.host if request.client else "",
+                    method, path, request.url.query, response.status_code,
+                )
+    except Exception:
+        pass
+    return response
 
 
 # ---------- 进程内日志环形缓冲(供抽屉日志窗口展示) ----------
@@ -4234,6 +4271,15 @@ def logs_list(tag: str | None = None, limit: int = 200):
         wanted = {t for t in tag.split(",") if t.strip()}
         entries = [e for e in entries if e["tag"] in wanted]
     return {"logs": entries[-limit:], "total": len(entries), "limit": limit, "tag": tag or ""}
+
+
+@app.get("/api/oplog")
+def oplog_list(client_id: str | None = None, client_name: str | None = None,
+               limit: int = 100):
+    """操作日志查询(会话可追溯): 按浏览器身份/昵称筛选, 返回最近记录 + 去重操作者"""
+    limit = max(1, min(int(limit), 500))
+    logs = trace_store.query_operation_log(limit, client_id, client_name)
+    return {"logs": logs, "clients": trace_store.list_operation_clients()}
 
 
 @app.post("/api/cookies")

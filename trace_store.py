@@ -118,6 +118,19 @@ def _init_schema(c):
             is_excluded   INTEGER DEFAULT 0,
             PRIMARY KEY (third_shop_id, account)
         );
+        CREATE TABLE IF NOT EXISTS operation_log (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts          TEXT NOT NULL,
+            client_id   TEXT,
+            client_name TEXT,
+            ip          TEXT,
+            method      TEXT NOT NULL,
+            path        TEXT NOT NULL,
+            query       TEXT,
+            status      INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_oplog_ts ON operation_log(id);
+        CREATE INDEX IF NOT EXISTS idx_oplog_client ON operation_log(client_id);
         """
     )
     # 旧库的 trace_daily 可能没有 generation_rate 列(导入平台概览生成率卡用):
@@ -192,6 +205,71 @@ def init_db():
         c.commit()
     finally:
         c.close()
+
+
+# ---------- 操作日志(会话可追溯, 无账号系统) ----------
+def log_operation(client_id, client_name, ip, method, path, query, status):
+    """写一条操作日志: 按浏览器身份(client_id/昵称)区分操作者。
+
+    无账号系统下靠前端 localStorage 生成的唯一 client_id 标识"这台浏览器是谁",
+    配合可选昵称让日志可读。记录失败不抛异常(日志绝不能阻塞业务请求)。
+    """
+    try:
+        _ensure()
+        c = _conn(write=True)
+        try:
+            c.execute(
+                "INSERT INTO operation_log(ts, client_id, client_name, ip, method, path, query, status) "
+                "VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                 (client_id or "")[:64], (client_name or "")[:32], (ip or "")[:48],
+                 method, path, (query or "")[:256], int(status) if status else None),
+            )
+            c.commit()
+        finally:
+            c.close()
+    except Exception:
+        pass
+
+
+def query_operation_log(limit=100, client_id=None, client_name=None):
+    """最近操作日志(倒序); 可按客户端/昵称筛选"""
+    _ensure()
+    c = _conn(write=True)
+    try:
+        sql = ("SELECT id, ts, client_id, client_name, ip, method, path, query, status "
+               "FROM operation_log")
+        conds, args = [], []
+        if client_id:
+            conds.append("client_id = ?")
+            args.append(client_id)
+        if client_name:
+            conds.append("client_name = ?")
+            args.append(client_name)
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        sql += " ORDER BY id DESC LIMIT ?"
+        args.append(max(1, min(int(limit), 500)))
+        rows = c.execute(sql, args).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        c.close()
+
+
+def list_operation_clients():
+    """去重操作者(client_id + 最近昵称/IP)供前端筛选下拉"""
+    _ensure()
+    c = _conn(write=True)
+    try:
+        rows = c.execute(
+            "SELECT client_id, client_name, ip, MAX(id) AS last_id "
+            "FROM operation_log WHERE client_id != '' "
+            "GROUP BY client_id ORDER BY last_id DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        c.close()
+
 
 
 # ---------- 写入 ----------
