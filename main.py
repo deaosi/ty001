@@ -1299,6 +1299,8 @@ def _sync_staff_names_worker(start_day, end_day):
             return
         _staff_sync_state["progress"] = {"done": 0, "total": total_plan, "current": ""}
         done = 0
+        ok = fail = 0
+        consecutive_fail = 0
         for g, shops in group_plan:
             if _risk_state.get("triggered"):
                 log_line("staff", "⛔ 风控/登录失效, 同步停止")
@@ -1315,7 +1317,15 @@ def _sync_staff_names_worker(start_day, end_day):
                 if done > 0 or i > 1:
                     sleep_trace_shop()
                 try:
-                    rows = _fetch_staff_table_rows(shop, start_day, end_day)
+                    # 网络瞬时错误(SSL 断连/限流)指数退避重试, 与刷新/补抓同策略;
+                    # on_retry 把"自动重试中"写回进度, 前端可见
+                    rows = _with_network_retry(
+                        lambda: _fetch_staff_table_rows(shop, start_day, end_day),
+                        f"{shop.get('shopName', '')} 客服表", tag="staff",
+                        on_retry=lambda n, d: _staff_sync_state["progress"].update(
+                            current=f"集团[{g.get('groupName')}] {shop.get('shopName','')} · "
+                                    f"网络波动, 自动重试(第 {n}/{_NETWORK_RETRIES} 次)…"),
+                    )
                     plat = shop.get("platform")
                     for r in rows:
                         acct = r.get("serviceAccount")
@@ -1331,19 +1341,29 @@ def _sync_staff_names_worker(start_day, end_day):
                             "serviceName": sv,
                             "platform": plat,
                         }
+                    ok += 1
+                    consecutive_fail = 0
                 except RiskTriggered as e:
                     log_line("staff", f"⛔ 风控触发于 {shop.get('shopName', '')}: {e}")
                     _staff_sync_state["error"] = f"风控/登录失效, 已停止: {e}"
                     return
                 except Exception as e:
+                    fail += 1
+                    consecutive_fail += 1
                     log_line("staff", f"{shop.get('shopName', '')} 客服昵称抓取失败: {e}")
+                    if consecutive_fail >= 3:
+                        # 连续失败说明 tanyu 侧异常(SSL 断连/限流), 整体退避 30s 再继续,
+                        # 避免密集连打失败请求加剧限流
+                        log_line("staff", f"⏸ 连续 {consecutive_fail} 家失败, 暂停 30s 退避")
+                        time.sleep(30)
+                        consecutive_fail = 0
                 done += 1
                 _staff_sync_state["progress"]["done"] = done
         # 落盘(带抓取时间戳; 绝不写 cookie)
         _atomic_write_text(STAFF_NAMES_FILE, json.dumps(
             {"fetched_at": time.time(), "map": name_map}, ensure_ascii=False, indent=2))
         _staff_sync_state["last_run"] = time.time()
-        log_line("staff", f"客服昵称同步完成: {len(name_map)} 个客服账号")
+        log_line("staff", f"客服昵称同步完成: 成功 {ok} 家, 失败 {fail} 家, 共 {len(name_map)} 个客服账号")
     except Exception as e:
         _staff_sync_state["error"] = str(e)
     finally:
