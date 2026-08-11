@@ -1061,8 +1061,19 @@ def _invalidate_audit_caches():
     # 但旧集团文件留在磁盘无害(不会被新店铺 ID 读到)。如需回收可删 trace_days 目录。
 
 
+# 店铺同步可靠性: 同集团短时间重复切换复用上次结果, 减少多人频繁切换对 tanyu brief 的请求
+SHOPS_SYNC_TTL = 60            # 秒
+_shops_sync_cache = {}         # {groupId: {"ts": float, "count": int}}
+
+
 def sync_shops_from_tanyu():
-    """从探域 brief 接口抓取当前集团的全部店铺, 写入 shops.json"""
+    """从探域 brief 接口抓取当前集团的全部店铺, 写入 shops.json
+
+    可靠性: brief 请求带网络退避重试; 重试耗尽/接口异常时用本地 SQLite 该集团
+    平台店铺兜底(shops.json 切到该集团店铺), 不抛异常 —— 多人频繁切换 + tanyu
+    限流/断连下切换平台也不会有"加载失败"。同集团 SHOPS_SYNC_TTL 内重复切换
+    复用上次结果不发请求(降限速)。风控/登录失效/夜间抓取占用不兜底, 仍抛异常。
+    """
     # 集团/店铺集合将变化: 先取消进行中的核算(店铺数据即将失效, 旧 worker 结果会串组),
     # 避免旧 worker 继续抓取旧集团店铺。取消保留已完成店铺的部分结果供前端展示。
     with _lock:
@@ -1071,15 +1082,36 @@ def sync_shops_from_tanyu():
             _trace_state["paused"] = False
     if _trace_state.get("canceled"):
         _trace_resume_evt.set()  # 若 worker 阻塞在暂停等待中, 唤醒使其退出
+    cfg = load_config()
+    gid = cfg.get("cookies", {}).get("tanyu-group-id")
+    g = next((x for x in cfg.get("groups", []) if x.get("groupId") == gid), None)
+    plat = g.get("platform") if g else None
+    # TTL 缓存: 同集团短时间重复切换不发 brief 请求(多人切换降限速)
+    hit = _shops_sync_cache.get(gid)
+    if hit and time.time() - hit["ts"] < SHOPS_SYNC_TTL:
+        shops = load_all_shops(plat)
+        if shops:
+            _atomic_write_text(SHOPS_FILE, json.dumps({"data": shops}, ensure_ascii=False, indent=2))
+            _invalidate_audit_caches()
+            log_line("group", f"店铺同步(TTL 缓存): {len(shops)} 家")
+            return {"count": len(shops),
+                    "platforms": {p: sum(1 for s in shops if s["platform"] == p) for p in set(s["platform"] for s in shops)},
+                    "source": "cache"}
     try:
         _assert_no_risk()
         _rate_limit()
-        r = requests.get(f"{GC_API}/agent-personal/brief?searchValid=true", headers=get_headers(), timeout=20)
-        d = r.json()
+        try:
+            r = _with_network_retry(
+                lambda: requests.get(f"{GC_API}/agent-personal/brief?searchValid=true",
+                                     headers=get_headers(), timeout=20),
+                "brief 店铺列表", tag="group")
+            d = r.json()
+        except (requests.exceptions.RequestException, ValueError) as e:
+            return _sync_shops_fallback(e)
         if _check_risk(r, d):
             raise RuntimeError(f"风控/登录失效: {d.get('msg', r.status_code)}")
         if d.get("success") is False:
-            raise RuntimeError(d.get("msg", "店铺列表获取失败"))
+            return _sync_shops_fallback(RuntimeError(d.get("msg", "店铺列表获取失败")))
         data = d.get("data") or []
         if not isinstance(data, list):
             data = data.get("chatbotShops") or []
@@ -1095,7 +1127,7 @@ def sync_shops_from_tanyu():
                 "ifAgentReceipt": s.get("ifAgentReceipt", False),
             })
         if not shops:
-            raise RuntimeError("接口返回空店铺列表")
+            return _sync_shops_fallback(RuntimeError("接口返回空店铺列表"))
         for s in shops:
             s["platformName"] = PLATFORM_NAMES.get(s.get("platform"), str(s.get("platform")))
         # 原子写 shops.json: 与 8080 常驻并发写时互不读到半截 JSON(直接 write_text
@@ -1107,10 +1139,40 @@ def sync_shops_from_tanyu():
         except Exception as e:
             log_line("db", f"shops 同步失败: {e}")
         _invalidate_audit_caches()
+        _shops_sync_cache[gid] = {"ts": time.time(), "count": len(shops)}
         log_line("group", f"店铺同步完成: {len(shops)} 家")
-        return {"count": len(shops), "platforms": {p: sum(1 for s in shops if s["platform"] == p) for p in set(s["platform"] for s in shops)}}
+        return {"count": len(shops),
+                "platforms": {p: sum(1 for s in shops if s["platform"] == p) for p in set(s["platform"] for s in shops)}}
     except Exception as e:
         raise RuntimeError(f"同步店铺失败: {e}")
+
+
+def _sync_shops_fallback(reason):
+    """brief 同步失败降级: 用本地 SQLite 该集团平台店铺兜底, 切换不失败
+
+    仅用于网络瞬时错误/接口返回空等可降级场景(风控/夜间占用不进来)。
+    兜底同样写 shops.json, 保证 load_shops 读到当前集团的店铺, 且核算缓存失效
+    不串旧集团结果。新增店铺延迟到下次成功同步出现。本地也无该集团店铺时真失败。
+    """
+    try:
+        cfg = load_config()
+        gid = cfg.get("cookies", {}).get("tanyu-group-id")
+        g = next((x for x in cfg.get("groups", []) if x.get("groupId") == gid), None)
+        plat = g.get("platform") if g else None
+        shops = load_all_shops(plat)
+        if not shops:
+            raise RuntimeError(f"同步店铺失败且本地无该集团缓存店铺: {reason}")
+        _atomic_write_text(SHOPS_FILE, json.dumps({"data": shops}, ensure_ascii=False, indent=2))
+        _invalidate_audit_caches()
+        log_line("group", f"⚠️ 同步店铺失败({type(reason).__name__}), 用本地缓存 {len(shops)} 家兜底"
+                          f"(新增店铺将在下次成功同步出现)")
+        return {"count": len(shops),
+                "platforms": {p: sum(1 for s in shops if s["platform"] == p) for p in set(s["platform"] for s in shops)},
+                "source": "fallback"}
+    except RuntimeError:
+        raise
+    except Exception as e:
+        raise RuntimeError(f"同步店铺失败: {reason}; 本地兜底也失败: {e}")
 
 
 # ---------- 客服昵称同步 ----------
