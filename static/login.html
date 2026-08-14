@@ -450,16 +450,16 @@
       fctx.stroke();
     }
 
-    // 彗星 v3: 以鼠标为原点, 沿坐标轴分段行走, 随机 90° 转弯, 慢速缓动 + 脉动拖尾 + 终点消散
+    // 彗星 v4: 以鼠标为原点, 沿坐标轴行走, 只拐弯一次(2 段), 慢速缓动 + 脉动拖尾 + 终点消散
     var rays = [];
     var lastRayGen = 0;
     function spawnRays(mx, my) {
       var tNow = performance.now();
-      if (tNow - lastRayGen < 380) return;
+      if (tNow - lastRayGen < 560) return;
       lastRayGen = tNow;
-      if (rays.length > 8) return;
-      // 折线路径: 2~3 段, 每段沿 X/Y 轴, 段间随机 90° 转弯(左/右随机)
-      var nSeg = 2 + Math.floor(Math.random() * 2);
+      if (rays.length > 10) return;
+      // 折线路径: 固定 2 段(只拐弯一次), 每段沿 X/Y 轴, 段间 90° 转弯
+      var nSeg = 2;
       var pts = [{ x: mx, y: my }];
       var lens = [];
       var total = 0;
@@ -467,23 +467,25 @@
       var horizontal = Math.random() < 0.5;
       var dir = Math.random() < 0.5 ? 1 : -1;
       for (var s = 0; s < nSeg; s++) {
-        var len = 40 + Math.random() * 55;      // 每段 40~95px(短而慢)
+        var len = 80 + Math.random() * 90;      // 每段 80~170px(发射距离延长)
         if (horizontal) px += dir * len; else py += dir * len;
         pts.push({ x: px, y: py });
         lens.push(len);
         total += len;
         if (s < nSeg - 1) {
-          horizontal = !horizontal;             // 90° 转弯
+          horizontal = !horizontal;             // 90° 转弯(仅一次)
           dir = Math.random() < 0.5 ? 1 : -1;   // 转弯方向随机(左/右)
         }
       }
+      var dur = 5.6 + Math.random() * 3.0;      // 总移动时长 5.6~8.6s(速度减半)
+      var maxLife = dur + 1.6 + Math.random() * 0.8;   // 总寿命 = 移动时长 + 终点消散期
       rays.push({
         pts: pts, lens: lens, total: total,
         t: 0,
-        dur: 2.8 + Math.random() * 1.5,         // 总移动时长 2.8~4.3s(更慢)
+        dur: dur,
         life: 0,
-        maxLife: 4.0 + Math.random() * 1.7,     // 总寿命(含终点消散)
-        tail: 90 + Math.random() * 60,          // 彗尾长度(更长 90~150px)
+        maxLife: maxLife,
+        tail: 180 + Math.random() * 100,        // 彗尾长度 180~280px(拖尾延长)
         phase: Math.random() * Math.PI * 2      // 脉动相位
       });
     }
