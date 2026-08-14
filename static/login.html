@@ -450,64 +450,69 @@
       fctx.stroke();
     }
 
-    // 鼠标范围光线 v5: 随机拐弯折线, 沿发射方向整体外移, 渐渐消失
+    // 彗星 v3: 以鼠标为原点, 沿坐标轴分段行走, 随机 90° 转弯, 慢速缓动 + 脉动拖尾 + 终点消散
     var rays = [];
     var lastRayGen = 0;
     function spawnRays(mx, my) {
       var tNow = performance.now();
-      if (tNow - lastRayGen < 450) return;   // 慢节奏: 450ms 才发射一道
+      if (tNow - lastRayGen < 380) return;
       lastRayGen = tNow;
-      if (rays.length > 10) return;          // 一次不发散太多
-      // 发射点: 鼠标附近随机偏移(±90px)
-      var x = Math.max(10, Math.min(W - 10, mx + (Math.random() - 0.5) * 180));
-      var y = Math.max(10, Math.min(H - 10, my + (Math.random() - 0.5) * 180));
-      // 随机拐弯折线: 2~3 段, 每段方向独立随机(水平/垂直 + 正负), 可连续同向
-      var segs = [];
+      if (rays.length > 8) return;
+      // 折线路径: 2~3 段, 每段沿 X/Y 轴, 段间随机 90° 转弯(左/右随机)
       var nSeg = 2 + Math.floor(Math.random() * 2);
+      var pts = [{ x: mx, y: my }];
+      var lens = [];
+      var total = 0;
+      var px = mx, py = my;
+      var horizontal = Math.random() < 0.5;
+      var dir = Math.random() < 0.5 ? 1 : -1;
       for (var s = 0; s < nSeg; s++) {
-        segs.push({
-          dir: Math.random() < 0.5 ? 0 : 1,          // 随机: 水平 / 垂直
-          len: 60 + Math.random() * 100,             // 段长 60~160px
-          side: Math.random() < 0.5 ? -1 : 1         // 随机: 左/右, 上/下
-        });
+        var len = 40 + Math.random() * 55;      // 每段 40~95px(短而慢)
+        if (horizontal) px += dir * len; else py += dir * len;
+        pts.push({ x: px, y: py });
+        lens.push(len);
+        total += len;
+        if (s < nSeg - 1) {
+          horizontal = !horizontal;             // 90° 转弯
+          dir = Math.random() < 0.5 ? 1 : -1;   // 转弯方向随机(左/右)
+        }
       }
       rays.push({
-        x: x, y: y, segs: segs,
-        speed: 45 + Math.random() * 65,              // 外移速度 45~110 px/s(慢)
+        pts: pts, lens: lens, total: total,
+        t: 0,
+        dur: 2.8 + Math.random() * 1.5,         // 总移动时长 2.8~4.3s(更慢)
         life: 0,
-        maxLife: 1.8 + Math.random() * 1.5,          // 寿命 1.8~3.3s
-        fadeIn: 0.35, fadeOut: 1.0                   // 淡入 / 尾段渐隐
+        maxLife: 4.0 + Math.random() * 1.7,     // 总寿命(含终点消散)
+        tail: 90 + Math.random() * 60,          // 彗尾长度(更长 90~150px)
+        phase: Math.random() * Math.PI * 2      // 脉动相位
       });
     }
-
-    // 绘制一道光线: 随机拐弯折线, 起点灰 → 末端橙头(流星感), 整体平移
-    function drawRay(r, alpha) {
-      if (alpha <= 0.02) return;
-      var cx = r.x, cy = r.y;
-      var pts = [{ x: cx, y: cy }];
-      fctx.beginPath();
-      fctx.moveTo(cx, cy);
-      for (var s = 0; s < r.segs.length; s++) {
-        var sg = r.segs[s];
-        cx += (sg.dir === 0 ? sg.side * sg.len : 0);
-        cy += (sg.dir === 0 ? 0 : sg.side * sg.len);
-        fctx.lineTo(cx, cy);
-        pts.push({ x: cx, y: cy });
+    // 沿折线路径按距离插值取点
+    function pointAtPath(r, dist) {
+      var rem = dist;
+      for (var s = 0; s < r.lens.length; s++) {
+        var l = r.lens[s];
+        if (rem <= l) {
+          var a = r.pts[s], b = r.pts[s + 1];
+          var f = l > 0 ? rem / l : 0;
+          return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
+        }
+        rem -= l;
       }
-      var last = pts[pts.length - 1];
-      var g = fctx.createLinearGradient(pts[0].x, pts[0].y, last.x, last.y);
-      g.addColorStop(0, 'rgba(150,160,180,0)');
-      g.addColorStop(0.5, 'rgba(190,200,215,' + (0.3 * alpha).toFixed(3) + ')');
-      g.addColorStop(1, 'rgba(255,150,60,' + (0.7 * alpha).toFixed(3) + ')');
-      fctx.strokeStyle = g;
-      fctx.lineWidth = 2;
-      fctx.stroke();
-      // 末端橙色光点(飞行方向前端)
-      fctx.fillStyle = 'rgba(255,160,70,' + (0.8 * alpha).toFixed(3) + ')';
-      fctx.beginPath(); fctx.arc(last.x, last.y, 2.4, 0, Math.PI * 2); fctx.fill();
+      var last = r.pts[r.pts.length - 1];
+      return { x: last.x, y: last.y };
+    }
+    // 返回 dist 所在段索引
+    function segIndexAt(r, dist) {
+      var rem = dist;
+      for (var s = 0; s < r.lens.length; s++) {
+        if (rem <= r.lens[s]) return s;
+        rem -= r.lens[s];
+      }
+      return r.lens.length - 1;
     }
 
-    // 鼠标处柔和橙色范围光晕 + 光线池(沿发射方向外移 + 淡入淡出)
+    // 鼠标处柔和橙色范围光晕 + 彗星池
     function drawRays() {
       var mx = mouse.x, my = mouse.y;
       if (mx >= 0 && my >= 0 && mx <= W && my <= H) {
@@ -518,30 +523,43 @@
         fctx.fillStyle = rg;
         fctx.fillRect(mx - 110, my - 110, 220, 220);
       }
-      var i, r, alpha, f, s;
+      var i, r, prog, dist, head, tailPt, s1, s2, g, pulse, fadeP, hr;
       for (i = rays.length - 1; i >= 0; i--) {
         r = rays[i];
         r.life += 0.016;
-        // 整体沿第一段方向匀速外移(折线形状跟着移动)
-        f = r.segs[0];
-        r.x += (f.dir === 0 ? f.side * r.speed * 0.016 : 0);
-        r.y += (f.dir === 0 ? 0 : f.side * r.speed * 0.016);
-        // 出屏移除(按折线包围盒粗判)
-        var minX = r.x, maxX = r.x, minY = r.y, maxY = r.y;
-        var px = r.x, py = r.y;
-        for (s = 0; s < r.segs.length; s++) {
-          px += (r.segs[s].dir === 0 ? r.segs[s].side * r.segs[s].len : 0);
-          py += (r.segs[s].dir === 0 ? 0 : r.segs[s].side * r.segs[s].len);
-          if (px < minX) minX = px; if (px > maxX) maxX = px;
-          if (py < minY) minY = py; if (py > maxY) maxY = py;
-        }
-        if (maxX < -30 || minX > W + 30 || maxY < -30 || minY > H + 30) { rays.splice(i, 1); continue; }
-        // 亮度: 淡入 → 保持 → 尾段渐渐消失
-        if (r.life < r.fadeIn) alpha = r.life / r.fadeIn;
-        else if (r.life < r.maxLife - r.fadeOut) alpha = 1;
-        else alpha = Math.max(0, (r.maxLife - r.life) / r.fadeOut);
+        if (r.t < r.dur) r.t = Math.min(r.dur, r.t + 0.016);
+        prog = r.t / r.dur;
+        dist = r.total * prog;                   // 匀速移动(线性)
+        head = pointAtPath(r, dist);
+        tailPt = pointAtPath(r, Math.max(0, dist - r.tail));
+        // 亮度: 接近终点渐渐消散 + 光晕扩散
+        fadeP = Math.max(0, (prog - 0.8) / 0.2);
+        var alpha = 1 - fadeP * 0.92;
+        pulse = 0.85 + 0.15 * Math.sin(r.life * 7 + r.phase);   // 脉动
         if (r.life >= r.maxLife || alpha <= 0.02) { rays.splice(i, 1); continue; }
-        drawRay(r, alpha);
+        // 拖尾折线(经过中间拐点, 不切角)
+        s1 = segIndexAt(r, Math.max(0, dist - r.tail));
+        s2 = segIndexAt(r, dist);
+        g = fctx.createLinearGradient(tailPt.x, tailPt.y, head.x, head.y);
+        g.addColorStop(0, 'rgba(160,170,190,0)');
+        g.addColorStop(0.5, 'rgba(195,205,220,' + (0.3 * alpha).toFixed(3) + ')');
+        g.addColorStop(1, 'rgba(255,150,60,' + (0.75 * alpha * pulse).toFixed(3) + ')');
+        fctx.strokeStyle = g;
+        fctx.lineWidth = 2;
+        fctx.beginPath();
+        fctx.moveTo(tailPt.x, tailPt.y);
+        for (var k = s1 + 1; k <= s2 && k < r.pts.length - 1; k++) {
+          fctx.lineTo(r.pts[k].x, r.pts[k].y);   // 中间 90° 拐点
+        }
+        fctx.lineTo(head.x, head.y);
+        fctx.stroke();
+        // 彗头亮点
+        fctx.fillStyle = 'rgba(255,175,85,' + (0.95 * alpha * pulse).toFixed(3) + ')';
+        fctx.beginPath(); fctx.arc(head.x, head.y, 2.6, 0, Math.PI * 2); fctx.fill();
+        // 脉动光晕 + 终点扩散
+        hr = 2.6 + 1.4 * pulse + fadeP * 7;
+        fctx.fillStyle = 'rgba(255,190,120,' + (0.35 * alpha).toFixed(3) + ')';
+        fctx.beginPath(); fctx.arc(head.x, head.y, hr, 0, Math.PI * 2); fctx.fill();
       }
     }
 
