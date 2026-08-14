@@ -26,6 +26,8 @@ import sys
 import time
 from pathlib import Path
 
+import requests  # 瞬断网络错误(ConnectionError/Timeout)整轮重试的异常类型
+
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 TRACE_DAYS_DIR = DATA_DIR / "trace_days"
@@ -196,6 +198,56 @@ def _prune():
     log(f"滚动裁剪: 保留最近 {WINDOW_DAYS} 天, 删除 {deleted} 条过期消息")
 
 
+def _run_once(M, today, yesterday, dry_run):
+    """执行一轮夜间抓取(整轮); 成功返回 (outcome, post)。
+
+    outcome: None=正常 / "gap"=完成但窗口未满; requests 网络异常(ConnectionError/
+    Timeout)向上抛, 由 main() 整轮重试; 其他异常由外层 except 内化。
+    """
+    t0 = time.time()
+    log(f"=== 夜间抓取开始 today={today} 目标昨天={yesterday} (dry_run={dry_run}) ===")
+
+    # 1) 抓取前先看覆盖(记录进入前缺口, 用于判断昨晚是否漏抓)
+    pre = coverage_report(yesterday)
+    if pre["missing_cells"] > 0:
+        log(f"进入前覆盖: 缺 {pre['missing_cells']}/{pre['total_cells']} 格, "
+            f"缺口店 {len(pre['gap_shops'])} 家(含未补齐历史缺口; 若比昨晚多出 1+ 店×整窗, 可能昨晚漏抓)")
+
+    # 2) 增量抓取昨天(prune=False 不裁剪)
+    if not dry_run:
+        _fetch()
+        log(f"抓取完成, 耗时 {time.time() - t0:.0f}s")
+
+    # 3) 抓取后重新算覆盖
+    post = coverage_report(yesterday)
+    full = window_full(post)
+    log(f"覆盖: 总店 {post['total_shops']} 窗口 {post['window_days']} 天 "
+        f"({post['days_range'][0]} ~ {post['days_range'][1]}) "
+        f"缺格 {post['missing_cells']}/{post['total_cells']} "
+        f"缺口店 {len(post['gap_shops'])} 家"
+        + (f" → 窗口已满 {WINDOW_DAYS} 天" if full else f" → 未满, 缺 {post['missing_cells']} 格, 跳过裁剪"))
+    if post["gap_shops"]:
+        for g in post["gap_shops"][:10]:
+            log(f"  缺口店: {g['shop']}(平台{g['platform']}) 缺 {len(g['missing'])} 天")
+        if len(post["gap_shops"]) > 10:
+            log(f"  ...共 {len(post['gap_shops'])} 家缺口店")
+
+    # 4) 满窗才滚动裁剪; 不满只积累
+    if full and not dry_run:
+        _prune()
+    elif full:
+        log("(dry-run) 窗口已满, 将进入滚动裁剪")
+
+    log(f"=== 夜间抓取完成 耗时 {time.time() - t0:.0f}s ===" if not dry_run else
+        "=== dry-run 完成(未实际抓取/裁剪) ===")
+
+    # 5) 成功但窗口未满: 可能有历史缺口/某店缺天, 群里提醒(让用户知道需要手动补)
+    outcome = None
+    if not dry_run and not full:
+        outcome = "gap"
+    return outcome, post
+
+
 def main():
     dry_run = "--dry-run" in sys.argv
     if not dry_run:
@@ -211,46 +263,21 @@ def main():
         import main as M  # 顶部 import 会拉 uvicorn 等重依赖, 这里才 import
         today = datetime.date.today()
         yesterday = today - datetime.timedelta(days=1)
-        t0 = time.time()
-        log(f"=== 夜间抓取开始 today={today} 目标昨天={yesterday} (dry_run={dry_run}) ===")
-
-        # 1) 抓取前先看覆盖(记录进入前缺口, 用于判断昨晚是否漏抓)
-        pre = coverage_report(yesterday)
-        if pre["missing_cells"] > 0:
-            log(f"进入前覆盖: 缺 {pre['missing_cells']}/{pre['total_cells']} 格, "
-                f"缺口店 {len(pre['gap_shops'])} 家(含未补齐历史缺口; 若比昨晚多出 1+ 店×整窗, 可能昨晚漏抓)")
-
-        # 2) 增量抓取昨天(prune=False 不裁剪)
-        if not dry_run:
-            _fetch()
-            log(f"抓取完成, 耗时 {time.time() - t0:.0f}s")
-
-        # 3) 抓取后重新算覆盖
-        post = coverage_report(yesterday)
-        full = window_full(post)
-        log(f"覆盖: 总店 {post['total_shops']} 窗口 {post['window_days']} 天 "
-            f"({post['days_range'][0]} ~ {post['days_range'][1]}) "
-            f"缺格 {post['missing_cells']}/{post['total_cells']} "
-            f"缺口店 {len(post['gap_shops'])} 家"
-            + (f" → 窗口已满 {WINDOW_DAYS} 天" if full else f" → 未满, 缺 {post['missing_cells']} 格, 跳过裁剪"))
-        if post["gap_shops"]:
-            for g in post["gap_shops"][:10]:
-                log(f"  缺口店: {g['shop']}(平台{g['platform']}) 缺 {len(g['missing'])} 天")
-            if len(post["gap_shops"]) > 10:
-                log(f"  ...共 {len(post['gap_shops'])} 家缺口店")
-
-        # 4) 满窗才滚动裁剪; 不满只积累
-        if full and not dry_run:
-            _prune()
-        elif full:
-            log("(dry-run) 窗口已满, 将进入滚动裁剪")
-
-        log(f"=== 夜间抓取完成 耗时 {time.time() - t0:.0f}s ===" if not dry_run else
-            "=== dry-run 完成(未实际抓取/裁剪) ===")
-
-        # 5) 成功但窗口未满: 可能有历史缺口/某店缺天, 群里提醒(让用户知道需要手动补)
-        if not dry_run and not full:
-            outcome = "gap"
+        # 瞬断网络错误(DNS 解析失败/SSL 断连/超时)整轮重试: 一次失败 "昨天" 整天数据
+        # 就永久缺(下次夜间只抓新"昨天"), 宁可多等几十分钟把当天抓完。DNS 解析失败
+        # (getaddrinfo)通常几秒~几十秒自愈, 失败后等待再整轮重跑。只对 requests 网络
+        # 异常重试; 风控/登录失效/业务错误重试无意义, 立即报错推送。
+        retry_delays = (30, 120)  # 第 1/2 次重试前等待秒数(最多整轮重试 2 次)
+        for attempt, delay in enumerate((0,) + retry_delays):
+            try:
+                outcome, post = _run_once(M, today, yesterday, dry_run)
+                break  # 单轮成功(含 gap), 退出重试
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                if attempt >= len(retry_delays):
+                    raise  # 重试耗尽, 走外层异常处理(推送告警)
+                log(f"⏳ 瞬断网络错误(第 {attempt + 1} 次整轮重试): {type(e).__name__}: {e}")
+                log(f"   {delay}s 后重新开始夜间抓取…")
+                time.sleep(delay)
     except Exception as e:
         exc = e
         # 风控/登录失效(内核抛 RiskTriggered): 用户在群里被@踢出/换密码后, 夜间抓取

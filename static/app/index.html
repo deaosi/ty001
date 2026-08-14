@@ -1,0 +1,2992 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-bs-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>探域数据看板</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/vendor/tabler/tabler.min.css">
+<style>
+  /* ═══════════════ 框架级样式(Tabler 之上) ═══════════════ */
+  body { font-family: 'Inter', -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+
+  /* 品牌 */
+  .brand-logo {
+    width: 34px; height: 34px; border-radius: 9px; flex: 0 0 auto;
+    background: linear-gradient(135deg, #066fd1 0%, #4cc9f0 60%, #8b7cf6 120%);
+    display: flex; align-items: center; justify-content: center; color: #fff;
+    box-shadow: 0 4px 14px rgba(6, 111, 209, .35);
+  }
+  .navbar-vertical .navbar-brand { display: flex; align-items: center; gap: .6rem; padding: .9rem .85rem .5rem; }
+  .navbar-vertical .navbar-brand .brand-name { font-size: 1.02rem; font-weight: 700; line-height: 1.1; }
+  .navbar-vertical .navbar-brand .brand-sub { font-size: .68rem; opacity: .65; font-weight: 500; letter-spacing: .02em; }
+
+  /* 侧边栏 */
+  .navbar-vertical .navbar-nav { gap: 2px; padding: 0 .5rem .5rem; }
+  .navbar-vertical .nav-link {
+    display: flex; align-items: center; gap: .7rem;
+    padding: .55rem .75rem; border-radius: .5rem; font-size: .92rem;
+    color: var(--tblr-body-color); position: relative;
+  }
+  .navbar-vertical .nav-link .nav-link-icon { margin: 0; width: 1.15rem; height: 1.15rem; display: inline-flex; align-items: center; justify-content: center; opacity: .85; }
+  .navbar-vertical .nav-link:hover { background: var(--tblr-bg-surface-secondary); color: var(--tblr-body-color); }
+  .navbar-vertical .nav-link.active { background: var(--tblr-primary-bg-subtle); color: var(--tblr-primary); font-weight: 600; }
+  .navbar-vertical .nav-link.active::before { content: ''; position: absolute; left: -.5rem; top: 22%; bottom: 22%; width: 3px; border-radius: 3px; background: var(--tblr-primary); }
+  .navbar-vertical .nav-link.active .nav-link-icon { opacity: 1; }
+  .nav-group-label { font-size: .64rem; text-transform: uppercase; letter-spacing: .09em; color: var(--tblr-secondary); padding: .95rem .75rem .3rem; font-weight: 700; }
+  .navbar-vertical .sidebar-foot { padding: .7rem .85rem 1rem; }
+  .side-user-card { border: 1px solid var(--tblr-border-color); border-radius: .65rem; padding: .65rem .7rem; background: var(--tblr-bg-surface-secondary); }
+
+  /* 顶栏 */
+  .topbar { background: var(--tblr-bg-surface); }
+  .topbar .form-select { background: var(--tblr-bg-forms); }
+  .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 2.1rem; height: 2.1rem; border-radius: .5rem; color: var(--tblr-secondary); position: relative; border: 0; background: transparent; }
+  .icon-btn:hover { background: var(--tblr-bg-surface-secondary); color: var(--tblr-body-color); }
+  .icon-btn .dot { position: absolute; top: .3rem; right: .38rem; width: .42rem; height: .42rem; border-radius: 50%; background: var(--tblr-danger); border: 2px solid var(--tblr-bg-surface); }
+
+  /* 页面头 */
+  .page-pretitle { text-transform: none; letter-spacing: .02em; }
+  .api-hint { display: inline-flex; align-items: center; gap: .35rem; font-family: ui-monospace, 'JetBrains Mono', Consolas, monospace; font-size: .7rem; color: var(--tblr-secondary); background: var(--tblr-bg-surface-secondary); border: 1px solid var(--tblr-border-color); border-radius: 999px; padding: .2rem .6rem; }
+
+  /* 欢迎横幅 */
+  .welcome-card { position: relative; overflow: hidden; border: 0; background: linear-gradient(120deg, rgba(6,111,209,.22), rgba(139,124,246,.14) 55%, transparent), var(--tblr-bg-surface); }
+  .welcome-card .wc-title { font-size: 1.45rem; font-weight: 800; letter-spacing: -.02em; }
+  .welcome-card .wc-sub { color: var(--tblr-secondary); font-size: .88rem; }
+  .welcome-card .wc-date { font-variant-numeric: tabular-nums; }
+
+  /* KPI 卡 */
+  .stat-card { position: relative; overflow: hidden; }
+  .stat-card .stat-icon { width: 2.6rem; height: 2.6rem; border-radius: .7rem; display: flex; align-items: center; justify-content: center; }
+  .stat-card .stat-value { font-size: 1.65rem; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+  .stat-card .stat-delta { font-size: .78rem; font-weight: 600; }
+  .stat-card .stat-delta.up { color: var(--tblr-success); }
+  .stat-card .stat-delta.down { color: var(--tblr-danger); }
+  .stat-card .stat-delta.flat { color: var(--tblr-secondary); }
+
+  /* 进度环 */
+  .ring-wrap { position: relative; width: 86px; height: 86px; }
+  .ring-wrap .ring-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .ring-wrap .ring-v { font-size: 1.05rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .ring-wrap .ring-k { font-size: .62rem; color: var(--tblr-secondary); }
+
+  /* 采纳率胶囊 / 平台徽标 */
+  .rate-pill { display: inline-block; padding: .15rem .55rem; border-radius: 999px; font-size: .74rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .rate-good { background: rgba(47, 179, 68, .14); color: var(--tblr-success); }
+  .rate-mid  { background: rgba(240, 180, 41, .14); color: var(--tblr-warning); }
+  .rate-bad  { background: rgba(214, 57, 57, .14); color: var(--tblr-danger); }
+  .pf-badge { display: inline-flex; align-items: center; gap: .3rem; font-size: .74rem; font-weight: 600; padding: .15rem .5rem; border-radius: .35rem; }
+
+  /* 客服卡片 */
+  .staff-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(218px, 1fr)); gap: .7rem; }
+  .staff-card { border: 1px solid var(--tblr-border-color); border-radius: var(--tblr-border-radius); padding: .7rem .8rem; background: var(--tblr-bg-surface); transition: border-color .15s, box-shadow .15s; }
+  .staff-card:hover { border-color: var(--tblr-primary); box-shadow: 0 .25rem .75rem rgba(0,0,0,.08); }
+  .staff-card .s-name { font-weight: 600; font-size: .9rem; }
+  .staff-card .s-acct { font-size: .7rem; color: var(--tblr-secondary); font-family: ui-monospace, Consolas, monospace; }
+
+  /* 店铺双行单元格 */
+  .shop-cell .sc-name { font-weight: 600; font-size: .9rem; line-height: 1.3; cursor: pointer; text-decoration: none; }
+  .shop-cell .sc-name:hover { color: var(--tblr-primary); }
+  .shop-cell .sc-id { font-size: .68rem; color: var(--tblr-secondary); font-family: ui-monospace, Consolas, monospace; margin-top: .1rem; }
+  /* 勾选区域: 扩大点击热区, 与行点击完全隔离 */
+  .shop-check {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 28px; height: 28px; border-radius: .45rem; cursor: pointer; vertical-align: middle;
+  }
+  .shop-check:hover { background: var(--tblr-bg-surface-secondary); }
+  .shop-check input { cursor: pointer; }
+  .rate-cell { display: flex; flex-direction: column; align-items: flex-end; gap: .25rem; min-width: 110px; }
+  .rate-cell .progress { width: 100%; height: .3rem; }
+
+  /* 客服池: 按店铺分组 + 客服卡片(参考旧看板) */
+  .staff-group { border: 1px solid var(--tblr-border-color); border-radius: var(--tblr-border-radius); overflow: hidden; }
+  .staff-group-head { display: flex; align-items: center; gap: .6rem; padding: .5rem .75rem; background: var(--tblr-bg-surface-secondary); border-bottom: 1px solid var(--tblr-border-color-translucent); }
+  .staff-group-head .gh-name { font-weight: 600; font-size: .86rem; }
+  .staff-group-head .gh-meta { font-size: .72rem; color: var(--tblr-secondary); margin-left: auto; }
+  .staff-chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: .55rem; padding: .6rem; }
+  .staff-chip { border: 1px solid var(--tblr-border-color); border-radius: .6rem; padding: .55rem .65rem; background: var(--tblr-bg-surface); cursor: pointer; transition: border-color .15s, box-shadow .15s; }
+  .staff-chip:hover { border-color: var(--tblr-primary); box-shadow: 0 .2rem .6rem rgba(0,0,0,.06); }
+  .staff-chip-zero { opacity: .55; }
+  .staff-chip-top { display: flex; align-items: center; gap: .55rem; }
+  .staff-avatar { width: 2rem; height: 2rem; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; color: #fff; font-weight: 700; font-size: .78rem; flex: 0 0 auto; }
+  .staff-chip-name { flex: 1; min-width: 0; line-height: 1.25; }
+  .staff-chip-name .sc-n { font-weight: 600; font-size: .86rem; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .staff-chip-name .sc-a { font-size: .66rem; color: var(--tblr-secondary); font-family: ui-monospace, Consolas, monospace; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .staff-chip-arrow { color: var(--tblr-secondary); font-size: .7rem; transition: transform .15s; }
+  .staff-chip.open .staff-chip-arrow { transform: rotate(180deg); }
+  .staff-chip-meta { display: flex; align-items: center; justify-content: space-between; margin-top: .5rem; }
+  .staff-chip-meta .sc-count { font-size: .78rem; color: var(--tblr-secondary); font-variant-numeric: tabular-nums; }
+  .staff-chip-detail { display: none; margin-top: .5rem; border-top: 1px dashed var(--tblr-border-color); padding-top: .45rem; }
+  .staff-chip.open .staff-chip-detail { display: block; }
+  .staff-chip-detail .drow { display: flex; justify-content: space-between; font-size: .76rem; padding: .15rem 0; color: var(--tblr-secondary); }
+  .staff-chip-detail .drow b { color: var(--tblr-body-color); font-variant-numeric: tabular-nums; }
+  .load-more-wrap { text-align: center; padding: .8rem 0 .2rem; }
+
+  /* 表格 */
+  .table thead th { font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; color: var(--tblr-secondary); }
+  .table tbody td { vertical-align: middle; }
+  .table-sortable { cursor: pointer; user-select: none; }
+  .table-sortable .sort-arrow { font-size: .6rem; opacity: .5; margin-left: .2rem; }
+
+  /* 进度 / 活动流 */
+  .prog-sm { height: .4rem; }
+  .prog-label { font-size: .72rem; color: var(--tblr-secondary); font-variant-numeric: tabular-nums; }
+  .activity-item { display: flex; gap: .8rem; padding: .55rem 0; border-bottom: 1px solid var(--tblr-border-color-translucent); }
+  .activity-item:last-child { border-bottom: 0; }
+  .activity-item .a-dot { width: .6rem; height: .6rem; border-radius: 50%; margin-top: .38rem; flex: 0 0 auto; }
+  .activity-item .a-msg { font-size: .82rem; line-height: 1.5; flex: 1; min-width: 0; }
+  .activity-item .a-time { font-size: .68rem; color: var(--tblr-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+  /* 平台状态行 */
+  .platform-row { display: flex; align-items: center; gap: .8rem; padding: .6rem .1rem; border-bottom: 1px solid var(--tblr-border-color-translucent); }
+  .platform-row:last-child { border-bottom: 0; }
+
+  /* 消息明细(聊天气泡) */
+  .msg-bubble-row { display: flex; margin-bottom: .45rem; }
+  .msg-bubble-row.buyer { justify-content: flex-start; }
+  .msg-bubble-row.staff { justify-content: flex-end; }
+  .msg-bubble-row.system { justify-content: center; }
+  .msg-bubble {
+    max-width: 76%; padding: .5rem .75rem; border-radius: .75rem;
+    font-size: .84rem; line-height: 1.55; word-break: break-word;
+    background: var(--tblr-bg-surface-secondary); border: 1px solid var(--tblr-border-color);
+  }
+  .msg-bubble-row.staff .msg-bubble { background: var(--tblr-primary-bg-subtle); border-color: transparent; }
+  .msg-bubble-row.system .msg-bubble { background: transparent; border: 0; font-size: .72rem; color: var(--tblr-secondary); text-align: center; }
+  .msg-bubble .mb-meta { display: flex; align-items: center; gap: .45rem; flex-wrap: wrap; font-size: .66rem; color: var(--tblr-secondary); margin-bottom: .25rem; }
+  .msg-bubble .mb-content { white-space: pre-wrap; }
+
+  .empty-hint { color: var(--tblr-secondary); font-size: .85rem; }
+  .toast-container { z-index: 2000; }
+  .row-cards > [class*="col"] { padding-top: 1rem; padding-bottom: 1rem; }
+  .risk-banner { display: none; }
+  .risk-banner.show { display: flex; }
+  @media print { .navbar-vertical, .topbar, .d-print-none { display: none !important; } }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- ═══════════════ 侧边栏 ═══════════════ -->
+  <aside class="navbar navbar-vertical navbar-expand-lg" data-bs-theme="dark" id="sidebar">
+    <div class="container-fluid">
+      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-menu" aria-label="菜单">
+        <span class="navbar-toggler-icon"></span>
+      </button>
+      <h1 class="navbar-brand navbar-brand-autodark">
+        <span class="brand-logo" id="brandLogo"></span>
+        <span>
+          <span class="brand-name d-block">探域数据看板</span>
+          <span class="brand-sub">TANYU · 经营数据</span>
+        </span>
+      </h1>
+      <div class="collapse navbar-collapse" id="sidebar-menu">
+        <ul class="navbar-nav pt-lg-3">
+          <li class="nav-item"><a class="nav-link" href="#/dashboard" data-page="dashboard"><span class="nav-link-icon" data-ic="layout"></span>概览</a></li>
+          <li class="nav-group-label">经营数据</li>
+          <li class="nav-item"><a class="nav-link" href="#/shops" data-page="shops"><span class="nav-link-icon" data-ic="store"></span>店铺核算</a></li>
+          <li class="nav-item"><a class="nav-link" href="#/staff" data-page="staff"><span class="nav-link-icon" data-ic="users"></span>客服账号池</a></li>
+          <li class="nav-item"><a class="nav-link" href="#/trace" data-page="trace"><span class="nav-link-icon" data-ic="message"></span>消息轨迹</a></li>
+          <li class="nav-group-label">运营中心</li>
+          <li class="nav-item"><a class="nav-link" href="#/tasks" data-page="tasks"><span class="nav-link-icon" data-ic="tasks"></span>任务中心</a></li>
+          <li class="nav-item"><a class="nav-link" href="#/logs" data-page="logs"><span class="nav-link-icon" data-ic="logs"></span>日志中心</a></li>
+          <li class="nav-group-label">系统</li>
+          <li class="nav-item"><a class="nav-link" href="#/settings" data-page="settings"><span class="nav-link-icon" data-ic="sliders"></span>系统设置</a></li>
+          <li class="nav-item"><a class="nav-link" href="#/more" data-page="more"><span class="nav-link-icon" data-ic="grid"></span>更多</a></li>
+        </ul>
+        <div class="sidebar-foot">
+          <div class="side-user-card">
+            <div class="d-flex align-items-center gap-2 mb-1">
+              <span class="avatar avatar-sm bg-primary-lt text-primary fw-bold" id="sideAvatar">?</span>
+              <div class="lh-1">
+                <div class="fw-semibold" style="font-size:.8rem" id="sideUserName">…</div>
+                <div class="text-secondary" style="font-size:.68rem" id="sideUserRole">…</div>
+              </div>
+            </div>
+            <div class="d-flex align-items-center gap-1 mt-2">
+              <span class="status status-green"></span><span class="text-success" style="font-size:.72rem">服务运行正常 · v2.0</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ═══════════════ 主区域 ═══════════════ -->
+  <div class="page-wrapper">
+
+    <!-- 顶栏 -->
+    <header class="navbar navbar-expand-md navbar-light d-print-none topbar">
+      <div class="container-xl">
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#topbar-menu" aria-label="工具">
+          <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="navbar-nav flex-row order-md-last align-items-center gap-1 gap-md-2 ms-auto ms-md-0">
+          <div class="nav-item d-none d-md-flex">
+            <select id="topGroupSel" class="form-select form-select-sm" style="width:auto" title="当前集团"><option>加载中…</option></select>
+          </div>
+          <div class="nav-item d-none d-md-flex">
+            <select id="topPlatformSel" class="form-select form-select-sm" style="width:auto" title="平台筛选"><option value="">全部平台</option></select>
+          </div>
+          <div class="nav-item"><button class="icon-btn" id="btnRefresh" title="刷新" onclick="app.refresh()"></button></div>
+          <div class="nav-item"><button class="icon-btn" id="btnTheme" title="切换明暗主题" onclick="app.toggleTheme()"></button></div>
+          <div class="nav-item dropdown">
+            <button class="icon-btn" data-bs-toggle="dropdown" title="通知" id="btnBell"></button>
+            <div class="dropdown-menu dropdown-menu-end dropdown-menu-card" style="width:330px">
+              <div class="card">
+                <div class="card-header"><h3 class="card-title">通知</h3></div>
+                <div class="list-group list-group-flush" id="bellList"><div class="list-group-item text-secondary small">加载中…</div></div>
+              </div>
+            </div>
+          </div>
+          <div class="nav-item dropdown">
+            <a href="#" class="nav-link d-flex lh-1 text-reset p-0" data-bs-toggle="dropdown">
+              <span class="avatar avatar-sm bg-primary-lt text-primary fw-bold" id="userAvatar" style="font-size:.8rem">?</span>
+              <span class="d-none d-xl-block ps-2"><b class="d-block" style="font-size:.82rem" id="userName">…</b><span class="text-secondary" style="font-size:.72rem" id="userRole">…</span></span>
+            </a>
+            <div class="dropdown-menu dropdown-menu-end">
+              <a class="dropdown-item" href="#/settings"><span class="dropdown-item-icon" data-ic="sliders"></span>系统设置</a>
+              <a class="dropdown-item" href="/legacy" id="menuLegacy"><span class="dropdown-item-icon" data-ic="folder"></span>旧版看板</a>
+              <div class="dropdown-divider"></div>
+              <a class="dropdown-item text-danger" href="#" onclick="app.logout(event)"><span class="dropdown-item-icon" data-ic="logout"></span>退出登录</a>
+            </div>
+          </div>
+        </div>
+        <div class="collapse navbar-collapse" id="topbar-menu">
+          <div class="d-flex mt-3 mt-md-0 flex-fill align-items-center gap-2">
+            <div class="input-icon flex-fill" style="max-width:340px">
+              <span class="input-icon-addon" data-ic="search"></span>
+              <input type="search" class="form-control" placeholder="搜索店铺 / 客服 / 任务…" onkeydown="if(event.key==='Enter')app.searchHint()">
+            </div>
+            <span class="badge bg-green-lt d-none d-sm-inline-flex align-items-center gap-1" id="apiStateBadge"><span class="status status-green"></span>服务正常</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- 页面内容 -->
+    <div class="page-body">
+      <div class="container-xl">
+
+        <!-- 风控横幅 -->
+        <div class="alert alert-danger risk-banner align-items-center mt-3 mb-0" role="alert" id="riskBanner">
+          <span class="me-2" data-ic="alert"></span>
+          <div id="riskBannerText">风控已触发</div>
+        </div>
+
+        <div id="page-views" class="pb-4">
+
+          <!-- ═══════════ 概览(Dashboard) ═══════════ -->
+          <section data-view="dashboard">
+            <!-- 欢迎横幅 -->
+            <div class="card welcome-card mt-3">
+              <div class="card-body p-4">
+                <div class="row align-items-center">
+                  <div class="col">
+                    <div class="wc-title" id="welcomeTitle">👋 欢迎回来</div>
+                    <div class="wc-sub mt-1" id="welcomeSub">探域数据看板 · 经营数据一览</div>
+                    <div class="d-flex align-items-center gap-2 mt-2 flex-wrap" id="welcomeMeta"></div>
+                  </div>
+                  <div class="col-auto text-end">
+                    <div class="wc-date text-secondary small" id="welcomeDate"></div>
+                    <div class="btn-list mt-2">
+                      <button class="btn btn-sm btn-primary" onclick="app.startAudit()"><span class="me-1" data-ic="zap"></span>抓取今日数据</button>
+                      <button class="btn btn-sm btn-outline-secondary" onclick="app.gotoPrefetch()"><span class="me-1" data-ic="database"></span>补抓历史</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- KPI 卡 -->
+            <div class="row row-deck row-cards" id="overviewCards"></div>
+
+            <!-- 平台经营指标 -->
+            <div class="row row-cards mt-1" id="platformMetrics"></div>
+
+            <!-- 经营趋势(探域罗盘扩展: 平台销售额趋势) -->
+            <div class="row row-cards mt-1">
+              <div class="col-12">
+                <div class="card">
+                  <div class="card-header">
+                    <h3 class="card-title">销售额趋势 · <span id="salesTrendPlat">—</span></h3>
+                    <div class="card-actions">
+                      <div class="btn-group btn-group-sm" id="salesTrendTabs">
+                        <button class="btn btn-outline-primary active" data-days="7" onclick="app.salesTrendDays(7)">近7天</button>
+                        <button class="btn btn-outline-primary" data-days="14" onclick="app.salesTrendDays(14)">近14天</button>
+                        <button class="btn btn-outline-primary" data-days="30" onclick="app.salesTrendDays(30)">近30天</button>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="card-body" style="height:250px"><canvas id="chartSalesTrend"></canvas></div>
+                  <div class="card-footer d-flex justify-content-between text-secondary" style="font-size:.72rem" id="salesTrendMeta">加载中…</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 图表区 -->
+            <div class="row row-cards mt-1">
+              <div class="col-lg-8">
+                <div class="card">
+                  <div class="card-header">
+                    <h3 class="card-title">消息量 · 按平台</h3>
+                    <div class="card-actions">
+                      <div class="btn-group btn-group-sm" id="trendTabs">
+                        <button class="btn btn-outline-primary active" data-days="7" onclick="app.trendDays(7)">近7天</button>
+                        <button class="btn btn-outline-primary" data-days="14" onclick="app.trendDays(14)">近14天</button>
+                        <button class="btn btn-outline-primary" data-days="30" onclick="app.trendDays(30)">近30天</button>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="card-body" style="height:320px"><canvas id="chartTrend"></canvas></div>
+                </div>
+              </div>
+              <div class="col-lg-4">
+                <div class="card">
+                  <div class="card-header"><h3 class="card-title">平台消息占比</h3></div>
+                  <div class="card-body" style="height:320px"><canvas id="chartPlatform"></canvas></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 数据存储 / 集团状态 / 最近任务 -->
+            <div class="row row-cards mt-1">
+              <div class="col-lg-4">
+                <div class="card">
+                  <div class="card-header"><h3 class="card-title">数据存储</h3><span class="text-secondary small ms-auto">SQLite 轨迹库</span></div>
+                  <div class="card-body">
+                    <div class="row align-items-center">
+                      <div class="col-auto">
+                        <div class="ring-wrap" id="ringStorage">
+                          <svg viewBox="0 0 36 36" style="width:86px;height:86px">
+                            <circle cx="18" cy="18" r="15.9" fill="none" stroke="var(--tblr-border-color)" stroke-width="3"></circle>
+                            <circle id="ringArc" cx="18" cy="18" r="15.9" fill="none" stroke="#066fd1" stroke-width="3" stroke-dasharray="100" stroke-dashoffset="25" stroke-linecap="round" transform="rotate(-90 18 18)"></circle>
+                          </svg>
+                          <div class="ring-center"><div class="ring-v" id="ringVal">75%</div><div class="ring-k">预抓窗口</div></div>
+                        </div>
+                      </div>
+                      <div class="col">
+                        <div class="d-flex justify-content-between py-1"><span class="text-secondary small">消息条数</span><b id="dbMessages">—</b></div>
+                        <div class="d-flex justify-content-between py-1"><span class="text-secondary small">覆盖店铺</span><b id="dbShops">—</b></div>
+                        <div class="d-flex justify-content-between py-1"><span class="text-secondary small">日档记录</span><b id="dbDaily">—</b></div>
+                        <div class="d-flex justify-content-between py-1"><span class="text-secondary small">数据窗口</span><b id="dbWindow">—</b></div>
+                      </div>
+                    </div>
+                    <div class="text-secondary small mt-2" id="dbMeta"></div>
+                  </div>
+                </div>
+              </div>
+              <div class="col-lg-4">
+                <div class="card">
+                  <div class="card-header"><h3 class="card-title">集团状态</h3><span class="text-secondary small ms-auto">点击切换</span></div>
+                  <div class="card-body py-2" id="groupStatus"></div>
+                </div>
+              </div>
+              <div class="col-lg-4">
+                <div class="card">
+                  <div class="card-header"><h3 class="card-title">最近任务</h3><a class="card-link small" href="#/tasks">全部 →</a></div>
+                  <div class="table-responsive">
+                    <table class="table table-vcenter card-table">
+                      <thead><tr><th>状态</th><th>任务</th><th>进度</th></tr></thead>
+                      <tbody id="dashRecentTasks"><tr><td colspan="3" class="text-center empty-hint py-3">加载中…</td></tr></tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 活动流 / 快捷操作 -->
+            <div class="row row-cards mt-1">
+              <div class="col-lg-7">
+                <div class="card">
+                  <div class="card-header"><h3 class="card-title">最近活动</h3><span class="text-secondary small ms-auto">系统日志流</span></div>
+                  <div class="card-body py-2" id="activityList"></div>
+                </div>
+              </div>
+              <div class="col-lg-5">
+                <div class="card">
+                  <div class="card-header"><h3 class="card-title">快捷操作</h3></div>
+                  <div class="card-body"><div class="row g-3" id="quickActions"></div></div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ═══════════ 店铺核算 ═══════════ -->
+          <section data-view="shops" class="d-none">
+            <div class="page-header d-print-none">
+              <div class="row align-items-center">
+                <div class="col-auto">
+                  <h2 class="page-title">店铺核算</h2>
+                  <div class="page-pretitle text-secondary">按店铺统计消息量与采纳率(核算缓存)</div>
+                </div>
+                <div class="col-auto ms-auto">
+                  <div class="btn-list">
+                    <button class="btn btn-outline-primary" onclick="app.exportShops()"><span class="me-1" data-ic="download"></span>导出</button>
+                    <button class="btn btn-primary" onclick="app.startAudit()"><span class="me-1" data-ic="play"></span>开始核算</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-header">
+                <div class="row g-2 align-items-center w-100">
+                  <div class="col-12 col-md-auto"><select id="shopsPlatform" class="form-select form-select-sm" onchange="app.renderShops()"></select></div>
+                  <div class="col-12 col-md-auto">
+                    <select id="shopsRange" class="form-select form-select-sm" onchange="app.renderShops()">
+                      <option value="yesterday" selected>昨日</option>
+                      <option value="week">本周(自然周)</option>
+                      <option value="month">本月(自然月)</option>
+                      <option value="last7">近 7 天</option>
+                      <option value="last30">近 30 天</option>
+                    </select>
+                  </div>
+                  <div class="col-12 col-md">
+                    <div class="input-icon">
+                      <span class="input-icon-addon" data-ic="search"></span>
+                      <input type="search" class="form-control form-control-sm" id="shopsSearch" placeholder="搜索店铺名…" oninput="app.renderShopsTable()">
+                    </div>
+                  </div>
+                  <div class="col-12 col-md-auto text-md-end">
+                    <div class="d-flex align-items-center gap-2 justify-content-md-end flex-wrap">
+                      <span class="badge bg-blue-lt" id="shopsSelLabel" style="display:none"></span>
+                      <button class="btn btn-sm btn-primary" id="btnAuditSel" style="display:none" onclick="app.startAudit(true)"><span class="me-1" data-ic="play"></span>核算所选</button>
+                      <button class="btn btn-sm btn-ghost" id="btnClearSel" style="display:none" onclick="app.clearShopsSel()">清除</button>
+                      <span class="text-secondary small" id="shopsSummary"></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="table-responsive">
+                <table class="table table-vcenter card-table">
+                  <thead><tr>
+                    <th style="width:36px"><input type="checkbox" id="shopsSelAll" onclick="app.toggleShopsSelAll(this)" title="全选当前筛选的店铺"></th>
+                    <th class="table-sortable" data-key="name" onclick="app.sortShops('name')">店铺<span class="sort-arrow">↕</span></th>
+                    <th>平台</th>
+                    <th class="table-sortable text-end" data-key="total" onclick="app.sortShops('total')">消息总条数<span class="sort-arrow">↕</span></th>
+                    <th class="table-sortable text-end" data-key="adopted" onclick="app.sortShops('adopted')">采纳条数<span class="sort-arrow">↕</span></th>
+                    <th class="table-sortable text-end" data-key="rate" onclick="app.sortShops('rate')">采纳率<span class="sort-arrow">↕</span></th>
+                    <th class="text-end">操作</th>
+                  </tr></thead>
+                  <tbody id="shopsBody"></tbody>
+                </table>
+              </div>
+              <div class="card-footer d-flex align-items-center">
+                <p class="m-0 text-secondary small" id="shopsFooter"></p>
+                <div class="ms-auto btn-list">
+                  <button class="btn btn-sm btn-outline-secondary" onclick="app.shopsPage(-1)">上一页</button>
+                  <button class="btn btn-sm btn-outline-secondary" onclick="app.shopsPage(1)">下一页</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ═══════════ 客服账号池 ═══════════ -->
+          <section data-view="staff" class="d-none">
+            <div class="page-header d-print-none">
+              <div class="row align-items-center">
+                <div class="col-auto">
+                  <h2 class="page-title">客服账号池</h2>
+                  <div class="page-pretitle text-secondary">按客服/店铺统计消息采纳情况(近 7 天)</div>
+                </div>
+                <div class="col-auto ms-auto">
+                  <div class="btn-list">
+                    <button class="btn btn-outline-primary" onclick="app.exportStaff()"><span class="me-1" data-ic="download"></span>导出</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-header">
+                <div class="row g-2 align-items-center w-100">
+                  <div class="col-12 col-md-auto"><select id="staffPlatform" class="form-select form-select-sm" onchange="app.renderStaff()"></select></div>
+                  <div class="col-12 col-md-auto">
+                    <select id="staffDays" class="form-select form-select-sm" onchange="app.renderStaff()">
+                      <option value="1">今天</option><option value="3">近 3 天</option>
+                      <option value="7" selected>近 7 天</option><option value="14">近 14 天</option>
+                      <option value="30">近 30 天</option><option value="custom">自定义</option>
+                    </select>
+                  </div>
+                  <div class="col-12 col-md-auto" id="staffCustomRange" style="display:none">
+                    <div class="d-flex align-items-center gap-1">
+                      <input type="date" id="staffStart" class="form-control form-control-sm" style="width:auto" onchange="app.renderStaff()">
+                      <span class="text-secondary small">~</span>
+                      <input type="date" id="staffEnd" class="form-control form-control-sm" style="width:auto" onchange="app.renderStaff()">
+                    </div>
+                  </div>
+                  <div class="col-12 col-md-auto d-flex align-items-center gap-1 flex-wrap">
+                    <span class="text-secondary small">今日</span>
+                    <input type="time" id="staffTodayStart" step="1" value="00:00" class="form-control form-control-sm" style="width:auto" title="今日抓取开始时刻(精确到秒)">
+                    <span class="text-secondary small">~</span>
+                    <input type="time" id="staffTodayEnd" step="1" class="form-control form-control-sm" style="width:auto" title="今日抓取结束时刻(精确到秒)">
+                    <button class="btn btn-primary btn-sm" onclick="app.startStaffToday()" title="按上方时刻抓取当日客服实时数据">
+                      <span class="me-1" data-ic="zap"></span>抓取今日数据
+                    </button>
+                  </div>
+                  <div class="col-12 col-md">
+                    <div class="input-icon">
+                      <span class="input-icon-addon" data-ic="search"></span>
+                      <input type="search" class="form-control form-control-sm" id="staffSearch" placeholder="搜索客服昵称 / 账号 / 店铺…" oninput="app.renderStaffGrid()">
+                    </div>
+                  </div>
+                  <div class="col-12 col-md-auto">
+                    <div class="btn-group btn-group-sm">
+                      <button class="btn btn-outline-primary active" id="staffModeShop" onclick="app.staffMode(false)">按店铺</button>
+                      <button class="btn btn-outline-primary" id="staffModeAgg" onclick="app.staffMode(true)">按客服汇总</button>
+                    </div>
+                  </div>
+                  <div class="col-12 col-md-auto text-md-end">
+                    <span class="badge bg-cyan-lt text-cyan" id="staffRangeBadge" style="display:none"></span>
+                    <span class="text-secondary small" id="staffSummary"></span>
+                  </div>
+                </div>
+              </div>
+              <div class="card-body">
+                <div class="staff-grid" id="staffGrid"><span class="empty-hint">加载中…</span></div>
+                <div class="load-more-wrap" id="staffLoadMoreWrap" style="display:none">
+                  <button class="btn btn-outline-primary btn-sm" id="staffLoadMore" onclick="app.staffLoadMore()"><span class="me-1" data-ic="plus"></span>加载更多</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ═══════════ 消息轨迹 ═══════════ -->
+          <section data-view="trace" class="d-none">
+            <div class="page-header d-print-none">
+              <div class="row align-items-center">
+                <div class="col-auto">
+                  <h2 class="page-title">消息轨迹</h2>
+                  <div class="page-pretitle text-secondary">按店铺查看每日消息与原始明细</div>
+                </div>
+                <div class="col-auto ms-auto">
+                  <div class="btn-list">
+                    <button class="btn btn-primary" onclick="app.startAudit()"><span class="me-1" data-ic="zap"></span>抓取今日消息</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-header">
+                <div class="row g-2 align-items-center w-100">
+                  <div class="col-12 col-md-4"><select id="traceShop" class="form-select form-select-sm" onchange="app.renderTrace()"><option>加载中…</option></select></div>
+                  <div class="col-12 col-md-auto">
+                    <select id="traceRange" class="form-select form-select-sm" onchange="app.renderTrace()">
+                      <option value="7">近 7 天</option><option value="14">近 14 天</option><option value="30">近 30 天</option>
+                    </select>
+                  </div>
+                  <div class="col-12 col-md-auto ms-auto"><span class="text-secondary small" id="traceSummary"></span></div>
+                </div>
+              </div>
+              <div class="table-responsive">
+                <table class="table table-vcenter card-table">
+                  <thead><tr><th>日期</th><th class="text-end">消息数</th><th class="text-end">采纳数</th><th class="text-end">采纳率</th><th class="text-end">操作</th></tr></thead>
+                  <tbody id="traceBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <!-- ═══════════ 任务中心 ═══════════ -->
+          <section data-view="tasks" class="d-none">
+            <div class="page-header d-print-none">
+              <div class="row align-items-center">
+                <div class="col-auto">
+                  <h2 class="page-title">任务中心</h2>
+                  <div class="page-pretitle text-secondary">抓取 / 核算 / 预抓任务队列(实时轮询)</div>
+                </div>
+                <div class="col-auto ms-auto">
+                  <div class="btn-list">
+                    <button class="btn btn-outline-danger btn-ghost" id="btnDelTasks" style="display:none" onclick="app.delSelectedTasks()"><span class="me-1" data-ic="trash"></span>删除所选</button>
+                    <button class="btn btn-ghost" onclick="app.refresh()"><span class="me-1" data-ic="refresh"></span>刷新</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="row row-deck row-cards" id="taskStatCards"></div>
+            <div class="card mt-3">
+              <div class="table-responsive">
+                <table class="table table-vcenter card-table">
+                  <thead><tr>
+                    <th style="width:36px" id="tasksSelTh"><input type="checkbox" id="tasksSelAll" onclick="app.toggleTasksSelAll(this)" title="全选当前页"></th>
+                    <th>#</th><th>任务</th><th>类型</th><th>发起人</th><th>状态</th><th style="min-width:160px">进度</th><th>开始时间</th><th class="text-end">当前步骤</th>
+                  </tr></thead>
+                  <tbody id="tasksBody"></tbody>
+                </table>
+              </div>
+              <div class="card-footer d-flex align-items-center">
+                <p class="m-0 text-secondary small" id="tasksFooter"></p>
+                <div class="ms-auto btn-list">
+                  <button class="btn btn-sm btn-outline-secondary" onclick="app.tasksPage(-1)">上一页</button>
+                  <button class="btn btn-sm btn-outline-secondary" onclick="app.tasksPage(1)">下一页</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ═══════════ 日志中心 ═══════════ -->
+          <section data-view="logs" class="d-none">
+            <div class="page-header d-print-none">
+              <div class="row align-items-center">
+                <div class="col-auto">
+                  <h2 class="page-title">日志中心</h2>
+                  <div class="page-pretitle text-secondary" id="logsPretitle">操作日志 / 任务记录 / 系统日志</div>
+                </div>
+                <div class="col-auto ms-auto">
+                  <div class="btn-list">
+                    <button class="btn btn-outline-danger btn-ghost" onclick="app.pruneLogs()" id="pruneBtn"><span class="me-1" data-ic="trash"></span>清理</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-header">
+                <ul class="nav nav-pills card-header-pills" id="logTabs">
+                  <li class="nav-item"><a class="nav-link active" data-logtab="op" href="#" onclick="app.switchLogs(event,'op')">操作日志</a></li>
+                  <li class="nav-item"><a class="nav-link" data-logtab="task" href="#" onclick="app.switchLogs(event,'task')">任务记录</a></li>
+                  <li class="nav-item"><a class="nav-link" data-logtab="sys" href="#" onclick="app.switchLogs(event,'sys')">系统日志</a></li>
+                </ul>
+                <div class="card-actions ms-auto" id="logFilterBox"></div>
+              </div>
+              <div id="logPaneOp" class="table-responsive">
+                <table class="table table-vcenter card-table">
+                  <thead><tr><th>时间</th><th>用户</th><th>操作者</th><th>IP</th><th>动作</th><th>方法</th><th>状态</th></tr></thead>
+                  <tbody id="oplogBody"></tbody>
+                </table>
+              </div>
+              <div id="logPaneTask" class="table-responsive d-none">
+                <table class="table table-vcenter card-table">
+                  <thead><tr><th>#</th><th>状态</th><th>请求人</th><th>任务</th><th style="min-width:140px">进度</th><th>时间</th></tr></thead>
+                  <tbody id="tasklogBody"></tbody>
+                </table>
+              </div>
+              <div id="logPaneSys" class="table-responsive d-none">
+                <table class="table table-vcenter card-table">
+                  <thead><tr><th>时间</th><th>标签</th><th>内容</th></tr></thead>
+                  <tbody id="syslogBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <!-- ═══════════ 系统设置 ═══════════ -->
+          <section data-view="settings" class="d-none">
+            <div class="page-header d-print-none">
+              <div class="row align-items-center">
+                <div class="col-auto">
+                  <h2 class="page-title">系统设置</h2>
+                  <div class="page-pretitle text-secondary">Cookie / 集团 / 补抓 / 钉钉 / 用户</div>
+                </div>
+                <div class="col-auto ms-auto"></div>
+              </div>
+            </div>
+
+            <div class="alert alert-danger" role="alert" id="cookieExpireAlert" style="display:none">
+              <div class="d-flex align-items-center">
+                <span class="me-2" data-ic="alert"></span>
+                <div id="cookieExpireText"></div>
+              </div>
+            </div>
+
+            <div class="row row-cards">
+              <div class="col-lg-7">
+                <div class="card" id="cookieCard">
+                  <div class="card-header">
+                    <h3 class="card-title">Cookie 管理</h3>
+                    <span class="text-secondary small ms-auto">仅更新到期值, 页面不显示明文</span>
+                  </div>
+                  <div class="card-body">
+                    <div class="table-responsive mb-3">
+                      <table class="table table-vcenter">
+                        <thead><tr><th>键</th><th>到期时间</th><th style="min-width:220px">新值(留空=不修改)</th></tr></thead>
+                        <tbody id="cookiesFormBody"></tbody>
+                      </table>
+                    </div>
+                    <div class="d-flex justify-content-end">
+                      <button class="btn btn-primary" onclick="app.saveCookies()"><span class="me-1" data-ic="check"></span>保存 Cookie</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="card" id="wxQrCard">
+                  <div class="card-header">
+                    <h3 class="card-title">微信扫码登录(二维码)</h3>
+                    <span class="text-secondary small ms-auto">照搬探域后台二维码 · 免浏览器</span>
+                  </div>
+                  <div class="card-body">
+                    <div class="d-flex align-items-start gap-3 flex-wrap">
+                      <div class="text-center">
+                        <div id="wxQrBox" class="d-flex align-items-center justify-content-center" style="width:190px;height:190px;border:1px dashed var(--tblr-border-color);border-radius:10px;background:#fff">
+                          <button class="btn btn-sm btn-primary" onclick="app.wxQrStart()"><span class="me-1" data-ic="scan"></span>生成二维码</button>
+                        </div>
+                        <div class="text-secondary mt-2" style="font-size:.72rem" id="wxQrTip">用绑定探域的微信扫码</div>
+                      </div>
+                      <div class="flex-fill" style="min-width:220px">
+                        <div class="text-secondary small mb-2">Cookie 过期后无需再打开浏览器: <b>生成二维码 → 微信扫码 → 选择集团</b>, 自动获取并保存 4 个 tanyu-* Cookie, 同步店铺列表, 解除风控。</div>
+                        <div id="wxQrPanel" class="small"><span class="text-secondary">未开始</span></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="col-lg-5">
+                <div class="card">
+                  <div class="card-header"><h3 class="card-title">集团配置</h3></div>
+                  <div class="list-group list-group-flush" id="groupsBody"></div>
+                </div>
+
+                <div class="card" id="calibCard" style="display:none">
+                  <div class="card-header"><h3 class="card-title">数据校准</h3><span class="text-secondary small ms-auto">同步 tanyu 人工变更</span></div>
+                  <div class="card-body">
+                    <div class="text-secondary small mb-3">
+                      tanyu 会对已抓消息回溯更新发送状态(客服补发/编辑后 草稿→已发送)。夜间预抓每天自动强制重抓最近 N 天; 也可随时手动校准, 让采纳率与 tanyu 后台对齐。
+                    </div>
+                    <div class="row g-2 align-items-end mb-3">
+                      <div class="col-7">
+                        <label class="form-label">夜间强制重写天数</label>
+                        <input type="number" class="form-control form-control-sm" id="cfgForceDays" min="0" max="7">
+                        <div class="form-hint">0=关闭 · 1~7=夜间预抓时强制重抓最近 N 天</div>
+                      </div>
+                      <div class="col-5">
+                        <button class="btn btn-outline-primary btn-sm w-100" onclick="app.saveTraceConfig()">保存配置</button>
+                      </div>
+                    </div>
+                    <hr class="my-2">
+                    <div class="d-flex align-items-end gap-2">
+                      <div class="flex-fill">
+                        <label class="form-label">立即校准最近 N 天</label>
+                        <input type="number" class="form-control form-control-sm" id="calibDays" min="1" max="7" value="2">
+                      </div>
+                      <button class="btn btn-primary btn-sm" onclick="app.startCalibrate()"><span class="me-1" data-ic="refresh"></span>立即校准</button>
+                    </div>
+                    <div class="form-hint mt-2">忽略缓存强制重抓最近 N 天(逐集团串行, 遇风控自动停止), 进度见任务中心</div>
+                  </div>
+                </div>
+
+                <div class="card" id="tanyuAcctCard" style="display:none">
+                  <div class="card-header"><h3 class="card-title">抓取账号(tanyu)</h3><span class="text-secondary small ms-auto">凭据仅存 config.json</span></div>
+                  <div class="card-body" id="tanyuAcctBody">加载中…</div>
+                </div>
+
+                <div class="card">
+                  <div class="card-header"><h3 class="card-title">手动补抓数据</h3><span class="text-secondary small ms-auto">上限 35 天, 不含今天</span></div>
+                  <div class="card-body">
+                    <div class="row g-3">
+                      <div class="col-6">
+                        <label class="form-label">开始日期</label>
+                        <input type="date" class="form-control" id="pfStart">
+                      </div>
+                      <div class="col-6">
+                        <label class="form-label">结束日期</label>
+                        <input type="date" class="form-control" id="pfEnd">
+                      </div>
+                      <div class="col-12">
+                        <button class="btn btn-primary w-100" onclick="app.startPrefetch()"><span class="me-1" data-ic="database"></span>开始补抓(逐集团)</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="card" id="dingtalkCard">
+                  <div class="card-header"><h3 class="card-title">钉钉机器人</h3></div>
+                  <div class="card-body" id="dingtalkBody">加载中…</div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ═══════════ 更多(预留板块) ═══════════ -->
+          <section data-view="more" class="d-none">
+            <div class="page-header d-print-none">
+              <div class="row align-items-center">
+                <div class="col-auto">
+                  <h2 class="page-title">更多</h2>
+                  <div class="page-pretitle text-secondary">扩展功能(预留板块)</div>
+                </div>
+                <div class="col-auto ms-auto"></div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header"><h3 class="card-title">预留板块</h3><span class="text-secondary small ms-auto">更多功能将陆续开放</span></div>
+              <div class="card-body">
+                <div class="empty" style="padding:2.5rem 0">
+                  <div class="empty-img text-secondary" style="font-size:2.6rem">🚧</div>
+                  <p class="empty-title">此板块为后续功能预留</p>
+                  <p class="empty-subtitle text-secondary">报表导出、多店对比、趋势分析、预警通知等功能将在此开放</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="card" id="usersCard" style="display:none">
+              <div class="card-header">
+                <h3 class="card-title">用户管理</h3>
+                <div class="card-actions">
+                  <div class="form-check form-switch me-2">
+                    <input class="form-check-input" type="checkbox" id="regSwitch" onchange="app.toggleRegister()">
+                    <label class="form-check-label small" for="regSwitch">开放注册</label>
+                  </div>
+                  <button class="btn btn-sm btn-primary" onclick="app.createUser()"><span class="me-1" data-ic="plus"></span>新建用户</button>
+                </div>
+              </div>
+              <div class="table-responsive">
+                <table class="table table-vcenter card-table">
+                  <thead><tr><th>ID</th><th>用户名</th><th>角色</th><th>状态</th><th>注册时间</th><th>最后登录</th><th>到期时间</th><th>备注</th><th class="text-end">旧版看板</th><th class="text-end">操作</th></tr></thead>
+                  <tbody id="usersBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+        </div>
+      </div>
+    </div>
+
+    <footer class="footer footer-transparent d-print-none">
+      <div class="container-xl">
+        <div class="row text-center align-items-center flex-row-reverse">
+          <div class="col-lg-auto ms-lg-auto">
+            <ul class="list-inline list-inline-dots mb-0">
+              <li class="list-inline-item"><a href="/legacy" class="legacyLink">旧版看板</a></li>
+            </ul>
+          </div>
+          <div class="col-12 col-lg-auto mt-3 mt-lg-0">
+            <span class="text-secondary">© 2026 探域数据看板</span>
+          </div>
+        </div>
+      </div>
+    </footer>
+  </div>
+</div>
+
+<!-- 模态框 -->
+<div class="modal fade" id="mTraceDetail" tabindex="-1">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="mTraceTitle">原始消息</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <!-- 工具栏: 日期 / 角色 / 发送状态 / 搜索 -->
+        <div class="d-flex align-items-center gap-2 flex-wrap mb-3">
+          <select id="msgDaySel" class="form-select form-select-sm" style="width:auto" title="切换日期" onchange="app.msgDayChange()"></select>
+          <select id="msgTypeSel" class="form-select form-select-sm" style="width:auto" title="按角色筛选" onchange="app.renderMsgList()">
+            <option value="all">全部角色</option><option value="buyer">买家</option><option value="staff">客服</option><option value="system">系统</option>
+          </select>
+          <select id="msgStSel" class="form-select form-select-sm" style="width:auto" title="按发送状态筛选" onchange="app.renderMsgList()">
+            <option value="all">全部发送状态</option><option value="1">自动发送</option><option value="2">侧边栏点击</option><option value="3">编辑后发送</option><option value="0">未发送</option>
+          </select>
+          <input type="search" id="msgKw" class="form-control form-control-sm" style="width:190px" placeholder="🔍 搜索消息内容…" oninput="app.renderMsgList()">
+          <span class="text-secondary small ms-auto" id="msgCount"></span>
+        </div>
+        <!-- 消息列表(聊天气泡, 分批懒渲染) -->
+        <div id="msgList" style="max-height:60vh; overflow-y:auto"></div>
+        <div class="load-more-wrap" id="msgLoadMoreWrap" style="display:none">
+          <button class="btn btn-outline-primary btn-sm" onclick="app.msgLoadMore()"><span class="me-1" data-ic="plus"></span>加载更多</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="mShopDetail" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="mShopTitle">店铺明细</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" id="mShopBody"></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="mCreateUser" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header"><h5 class="modal-title">新建用户</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <div class="mb-3"><label class="form-label">用户名</label><input class="form-control" id="cuName" placeholder="请输入用户名"></div>
+        <div class="mb-3"><label class="form-label">初始密码(至少 6 位)</label><input type="password" class="form-control" id="cuPwd"></div>
+        <div class="row g-3">
+          <div class="col-6">
+            <label class="form-label">角色</label>
+            <select class="form-select" id="cuRole"><option value="user">普通用户</option><option value="admin">管理员</option></select>
+          </div>
+          <div class="col-6">
+            <label class="form-label">到期时间</label>
+            <input type="date" class="form-control" id="cuExpire">
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-link link-secondary" data-bs-dismiss="modal">取消</button>
+        <button class="btn btn-primary" onclick="app.doCreateUser()">创建</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast-container position-fixed bottom-0 end-0 p-3" id="toasts"></div>
+
+<script src="/static/vendor/tabler/tabler.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script>
+/* ══════════════════════════════════════════════════════════════
+   探域数据看板 v2.0 · Tabler 框架级后台
+   鉴权: localStorage tanyu_token(Bearer) + X-Client-Id/Name 头
+   未登录/401 → 跳转 /login
+   ══════════════════════════════════════════════════════════════ */
+(function () {
+  'use strict';
+
+  /* ---------- 图标 ---------- */
+  var I = {
+    layout: '<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>',
+    store: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M9 21v-6h6v6"/>',
+    users: '<circle cx="9" cy="8" r="3.5"/><path d="M3.5 20a5.5 5.5 0 0 1 11 0"/><circle cx="17" cy="9" r="2.5"/><path d="M16.5 14.6a5 5 0 0 1 4.5 5"/>',
+    message: '<path d="M21 12a8 8 0 0 1-8 8H4l2.2-2.6A8 8 0 1 1 21 12Z"/><path d="M8.5 9.5h7M8.5 13h4"/>',
+    tasks: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="m8.5 12 2.5 2.5 4.5-5"/>',
+    logs: '<path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1" fill="currentColor" stroke="none"/><circle cx="3.5" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="3.5" cy="18" r="1" fill="currentColor" stroke="none"/>',
+    sliders: '<path d="M4 7h16M4 12h16M4 17h16"/><circle cx="9" cy="7" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="7" cy="17" r="2"/>',
+    search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+    refresh: '<path d="M20 11a8 8 0 0 0-14.9-3M4 13a8 8 0 0 0 14.9 3"/><path d="M20 4v4h-4M4 20v-4h4"/>',
+    sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+    moon: '<path d="M20 14.5A8.5 8.5 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5Z"/>',
+    bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    download: '<path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 21h16"/>',
+    play: '<path d="M7 4v16l13-8Z"/>',
+    trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6"/>',
+    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    database: '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',
+    shield: '<path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6Z"/><path d="m9 12 2 2 4-4"/>',
+    logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/>',
+    code: '<path d="m8 8-4 4 4 4M16 8l4 4-4 4M13 5l-2 14"/>',
+    alert: '<path d="M12 3 2.5 20h19Z"/><path d="M12 10v4M12 17.5h.01"/>',
+    zap: '<path d="M13 2 4 14h6l-1 8 9-12h-6Z"/>',
+    activity: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
+    chart: '<path d="M3 21h18M6 21v-7M11 21V8M16 21v-4M21 21V5"/>',
+    send: '<path d="m3 11 18-8-8 18-2.5-7.5Z"/>',
+    box: '<path d="m12 3 8 4v10l-8 4-8-4V7Z"/><path d="m4 7 8 4 8-4M12 11v10"/>',
+    grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
+    check: '<path d="m5 12 5 5L20 7"/>',
+    scan: '<path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/>',
+    folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>'
+  };
+  function icon(name, size) {
+    size = size || 24;
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="' + size + '" height="' + size + '">' + (I[name] || '') + '</svg>';
+  }
+
+  /* ---------- 工具 ---------- */
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
+  function fmt(n) { return (n == null ? 0 : n).toLocaleString('zh-CN'); }
+  function pct(n) { return (Number(n) == null ? 0 : Number(n)).toFixed(2) + '%'; }
+  function rateCls(r) { r = Number(r) || 0; return r >= 70 ? 'rate-good' : r >= 40 ? 'rate-mid' : 'rate-bad'; }
+  function ratePill(r) { return '<span class="rate-pill ' + rateCls(r) + '">' + pct(r) + '</span>'; }
+  function pfBadge(p) {
+    var m = { 1: ['拼多多', 'bg-green-lt text-success'], 5: ['抖音', 'bg-cyan-lt text-cyan'], 7: ['京东', 'bg-red-lt text-danger'], 10: ['天猫1', 'bg-purple-lt text-purple'], 11: ['天猫2', 'bg-purple-lt text-purple'] };
+    var x = m[p] || [String(p), 'bg-secondary-lt'];
+    return '<span class="pf-badge ' + x[1] + '">' + x[0] + '</span>';
+  }
+  function badge(text, kind) { return '<span class="badge ' + kind + '">' + text + '</span>'; }
+  function toast(msg, kind) {
+    kind = kind || 'primary';
+    var el = document.createElement('div');
+    el.className = 'toast show align-items-center border-0';
+    el.setAttribute('role', 'alert');
+    el.innerHTML = '<div class="d-flex"><div class="toast-body">' + esc(msg) + '</div><button type="button" class="btn-close me-2 m-auto" data-bs-dismiss="toast"></button></div>';
+    $('toasts').appendChild(el);
+    setTimeout(function () { el.remove(); }, 3200);
+  }
+  /* 模态框助手(Tabler 打包版未暴露 window.bootstrap, 不用其 Modal API) */
+  function showModal(id) {
+    var el = $(id);
+    if (!el) return;
+    el.classList.add('show');
+    el.style.display = 'block';
+    document.body.classList.add('modal-open');
+    var bd = document.createElement('div');
+    bd.className = 'modal-backdrop fade show';
+    bd.dataset.for = id;
+    bd.onclick = function () { hideModal(id); };
+    document.body.appendChild(bd);
+  }
+  function hideModal(id) {
+    var el = $(id);
+    if (el) { el.classList.remove('show'); el.style.display = ''; }
+    var bd = document.querySelector('.modal-backdrop[data-for="' + id + '"]');
+    if (bd) bd.remove();
+    document.body.classList.remove('modal-open');
+  }
+  // 模态框内 [data-bs-dismiss="modal"] 按钮 + Esc 关闭(Tabler 未暴露 bootstrap)
+  document.addEventListener('click', function (e) {
+    var t = e.target.closest ? e.target.closest('[data-bs-dismiss="modal"]') : null;
+    if (t) {
+      var m = t.closest('.modal');
+      if (m) hideModal(m.id);
+    }
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+      var open = document.querySelector('.modal.show');
+      if (open) hideModal(open.id);
+    }
+  });
+  function fmtTime(ts) {
+    if (!ts) return '';
+    var d = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts);
+    if (isNaN(d.getTime())) return String(ts);
+    return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  }
+
+  /* ---------- 鉴权与请求 ---------- */
+  function ensureClientIdentity() {
+    if (!localStorage.getItem('tanyu_client_id')) {
+      var id;
+      try { id = crypto.randomUUID(); } catch (e) {}
+      id = id || ('c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
+      localStorage.setItem('tanyu_client_id', id);
+    }
+  }
+  function clientHeaders() {
+    return {
+      'X-Client-Id': localStorage.getItem('tanyu_client_id') || '',
+      'X-Client-Name': encodeURIComponent(localStorage.getItem('tanyu_client_name') || ''),
+    };
+  }
+  var authRedirecting = false;
+  function goLogin() {
+    if (authRedirecting) return;
+    authRedirecting = true;
+    localStorage.removeItem('tanyu_token');
+    localStorage.removeItem('tanyu_user');
+    location.replace('/login');
+  }
+  async function api(url, opts) {
+    opts = opts || {};
+    opts.headers = Object.assign(clientHeaders(), opts.headers || {});
+    var token = localStorage.getItem('tanyu_token');
+    if (token) opts.headers['Authorization'] = 'Bearer ' + token;
+    var resp = await fetch(url, opts);
+    if (resp.status === 401) { goLogin(); throw new Error('未登录或登录已过期'); }
+    if (!resp.ok) {
+      var msg = 'HTTP ' + resp.status;
+      try { var d = await resp.json(); if (d && d.detail) msg = resp.status + ': ' + d.detail; else if (d && d.message) msg = resp.status + ': ' + d.message; } catch (e) {}
+      throw new Error(msg);
+    }
+    return resp.json();
+  }
+  async function checkAuth() {
+    var token = localStorage.getItem('tanyu_token');
+    if (token) {
+      try {
+        var d = await api('/api/auth/me');
+        currentUser = d.user;
+        localStorage.setItem('tanyu_user', JSON.stringify(currentUser));
+        return true;
+      } catch (e) { if (authRedirecting) return false; }
+    }
+    goLogin();
+    return false;
+  }
+
+  /* ---------- 页面元信息 ---------- */
+  var PAGES = {
+    dashboard: { title: '概览', parent: '首页', icon: 'layout' },
+    shops:     { title: '店铺核算', parent: '经营数据', icon: 'store' },
+    staff:     { title: '客服账号池', parent: '经营数据', icon: 'users' },
+    trace:     { title: '消息轨迹', parent: '经营数据', icon: 'message' },
+    tasks:     { title: '任务中心', parent: '运营中心', icon: 'tasks' },
+    logs:      { title: '日志中心', parent: '运营中心', icon: 'logs' },
+    settings:  { title: '系统设置', parent: '系统', icon: 'sliders' },
+    more:      { title: '更多', parent: '系统', icon: 'grid' }
+  };
+
+  /* ---------- 状态 ---------- */
+  var state = {
+    platform: '', groupId: null, theme: 'light', trendDays: 7, salesTrendDays: 7,
+    shopsSort: { key: 'total', dir: -1 }, shopsPage: 1, shopsPageSize: 8,
+    staffAgg: false, logTab: 'op',
+    tasksPage: 1,
+    selShops: {}   // 核算店铺勾选(thirdShopId -> true)
+  };
+  var currentUser = null;
+  var platformInfo = null;
+  var groupsData = null;
+  var allShops = [];
+  var staffCache = [];
+  var shopsCache = [];
+  var adminUsersCache = [];
+  var isAdmin = false;
+  var rendered = {};
+
+  /* ---------- 路由 ---------- */
+  function route() {
+    var h = (location.hash || '#/dashboard').replace(/^#\/?/, '');
+    var name = PAGES[h] ? h : 'dashboard';
+    var views = document.querySelectorAll('[data-view]');
+    for (var i = 0; i < views.length; i++) views[i].classList.toggle('d-none', views[i].dataset.view !== name);
+    var links = document.querySelectorAll('#sidebar .nav-link[data-page]');
+    for (var j = 0; j < links.length; j++) links[j].classList.toggle('active', links[j].dataset.page === name);
+    document.title = PAGES[name].title + ' · 探域数据看板';
+    if (name !== 'login' && !rendered[name]) { rendered[name] = true; renderPage(name); }
+    if (name === 'dashboard') renderDashboard();
+    window.scrollTo(0, 0);
+    var sb = $('sidebar-menu');
+    if (sb && sb.classList.contains('show')) sb.classList.remove('show');
+  }
+  function renderPage(name) {
+    var map = { dashboard: renderDashboard, shops: renderShops, staff: renderStaff, trace: renderTrace, tasks: renderTasks, logs: renderLogs, settings: renderSettings, more: renderMore };
+    if (map[name]) map[name]();
+  }
+  function currentViewName() {
+    var h = (location.hash || '#/dashboard').replace(/^#\/?/, '');
+    return PAGES[h] ? h : 'dashboard';
+  }
+
+  /* ---------- 平台 / 集团 ---------- */
+  function fillPlatformSelect(sel, includeAll) {
+    sel.innerHTML = (includeAll ? '<option value="">全部平台</option>' : '');
+    var list = [];
+    (platformInfo ? platformInfo.fetch || [] : []).forEach(function (p) { list.push([String(p.id), p.name, false]); });
+    (platformInfo ? platformInfo.import || [] : []).forEach(function (p) { list.push([String(p.id), p.name + ' (导入)', false]); });
+    if (!list.length) list = [[1, '拼多多', false], [5, '抖音', false], [7, '京东', false]];
+    list.forEach(function (x) {
+      var o = document.createElement('option');
+      o.value = x[0]; o.textContent = x[1];
+      sel.appendChild(o);
+    });
+    if (state.platform) sel.value = state.platform;
+  }
+  async function loadPlatforms() {
+    try { platformInfo = await api('/api/platforms'); } catch (e) { platformInfo = null; }
+    fillPlatformSelect($('topPlatformSel'), true);
+    fillPlatformSelect($('shopsPlatform'), true);
+    fillPlatformSelect($('staffPlatform'), true);
+  }
+  async function loadGroups() {
+    try { groupsData = await api('/api/groups'); } catch (e) { groupsData = { groups: [], current: null }; }
+    var sel = $('topGroupSel');
+    sel.innerHTML = '';
+    (groupsData.groups || []).forEach(function (g) {
+      var o = document.createElement('option');
+      o.value = g.groupId; o.textContent = g.groupName || g.groupId;
+      if (g.current) { o.selected = true; state.groupId = g.groupId; }
+      sel.appendChild(o);
+    });
+    if (!sel.options.length) { var o2 = document.createElement('option'); o2.textContent = '无集团'; sel.appendChild(o2); }
+    var cur = (groupsData.groups || []).find(function (g) { return g.current; }) || null;
+    if (cur && cur.platform) {
+      state.platform = String(cur.platform);
+      var ts = $('topPlatformSel'); if (ts) ts.value = state.platform;
+      var ss = $('shopsPlatform'); if (ss) ss.value = state.platform;
+      var st = $('staffPlatform'); if (st) st.value = state.platform;
+    }
+  }
+  async function switchGroup(groupId) {
+    if (!groupId) return;
+    toast('正在切换集团并同步店铺…');
+    try {
+      var d = await api('/api/groups/switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ group_id: groupId }) });
+      toast('已切换到: ' + ((d.group && d.group.groupName) || groupId), 'success');
+      await loadGroups();
+      api('/api/shops/sync').then(function () { toast('店铺列表已同步', 'success'); }).catch(function (e) { toast('店铺同步失败: ' + e.message, 'danger'); });
+      reloadCurrent();
+    } catch (e) {
+      toast('切换失败: ' + e.message, 'danger');
+    }
+  }
+  function reloadCurrent() {
+    var name = currentViewName();
+    rendered[name] = false;
+    renderPage(name);
+  }
+
+  /* ---------- 概览 Dashboard ---------- */
+  function renderWelcome() {
+    var now = new Date();
+    var h = now.getHours();
+    var greet = h < 6 ? '凌晨好' : h < 9 ? '早上好' : h < 12 ? '上午好' : h < 14 ? '中午好' : h < 18 ? '下午好' : '晚上好';
+    var uname = currentUser ? currentUser.username : '';
+    $('welcomeTitle').textContent = greet + ', ' + uname + ' 👋';
+    $('welcomeDate').textContent = now.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
+    // 当前集团 / 平台徽标
+    var meta = [];
+    if (groupsData && groupsData.current && groupsData.current.name) {
+      meta.push('<span class="badge bg-secondary-lt">集团: ' + esc(groupsData.current.name) + '</span>');
+    }
+    if (state.platform) {
+      var pname = state.platform;
+      (platformInfo ? platformInfo.all || [] : []).forEach(function (p) { if (String(p.id) === state.platform) pname = p.name; });
+      meta.push('<span class="badge bg-blue-lt text-blue">平台: ' + esc(pname) + '</span>');
+    }
+    $('welcomeMeta').innerHTML = meta.join('');
+  }
+
+  async function renderDashboard() {
+    renderWelcome();
+    // KPI 指标卡
+    $('overviewCards').innerHTML = '<div class="col-12"><span class="empty-hint">加载中…</span></div>';
+    try {
+      var plat = state.platform || '1';
+      var d = await api('/api/overview?platform=' + plat + '&stat_type=natural_day');
+      var items = d.items || {};
+      var cards;
+      if (d.source === 'history' || d.source === 'import' || d.source === 'local-fallback') {
+        cards = [
+          { key: 'history_msg_total', label: '消息量', isPct: false, color: 'bg-blue-lt text-blue', ic: 'message' },
+          { key: 'history_adopted_total', label: '采纳数', isPct: false, color: 'bg-green-lt text-green', ic: 'target' },
+          { key: 'history_accept_rate', label: '采纳率', isPct: true, color: 'bg-purple-lt text-purple', ic: 'activity' },
+          { key: 'history_gen_rate', label: '生成率', isPct: true, color: 'bg-amber-lt text-amber', ic: 'chart' }
+        ];
+        $('welcomeSub').textContent = '基于本地库' + (d.source === 'import' ? '(Excel 导入)' : '') + ' · ' + (d.platformName || '') + ' · ' + (d.startDate || '') + ' ~ ' + (d.endDate || '');
+      } else {
+        cards = [
+          { key: 'service_3m_response_rate', label: '3分钟响应率', isPct: true, color: 'bg-blue-lt text-blue', ic: 'activity' },
+          { key: 'ai_consult_response_accept_rate', label: '采纳率', isPct: true, color: 'bg-purple-lt text-purple', ic: 'target' },
+          { key: 'ai_consult_response_rate', label: '生成率', isPct: true, color: 'bg-amber-lt text-amber', ic: 'chart' }
+        ];
+        $('welcomeSub').textContent = (d.platformName || '') + ' · ' + (d.startDate || '') + ' ~ ' + (d.endDate || '') + ' · tanyu 实时口径';
+      }
+      $('overviewCards').innerHTML = cards.map(function (c) {
+        var m = items[c.key] || {};
+        var cur = m.current;
+        var cp = m.comparePercent;
+        var val = c.isPct ? (cur == null ? '--' : Number(cur).toFixed(2) + '%') : fmt(cur);
+        var dCls = cp > 0 ? 'up' : cp < 0 ? 'down' : 'flat';
+        var arrow = cp > 0 ? '▲' : cp < 0 ? '▼' : '—';
+        var deltaTxt = cp == null ? '—' : (arrow + ' ' + (cp > 0 ? '+' : '') + Number(cp).toFixed(2) + '%');
+        var prevTxt = c.isPct ? (m.previous == null ? '' : ' vs 上期 ' + Number(m.previous).toFixed(2) + '%') : (m.previous == null ? '' : ' vs 上期 ' + fmt(m.previous));
+        return '<div class="col-sm-6 col-xl-' + (cards.length === 3 ? 4 : 3) + '"><div class="card stat-card"><div class="card-body">' +
+          '<div class="d-flex align-items-start justify-content-between">' +
+          '<div><div class="text-secondary" style="font-size:.8rem">' + c.label + '</div><div class="stat-value mt-1">' + val + '</div></div>' +
+          '<span class="stat-icon ' + c.color + '">' + icon(c.ic, 20) + '</span></div>' +
+          '<div class="d-flex align-items-center gap-2 mt-2"><span class="stat-delta ' + dCls + '">' + deltaTxt + '</span>' +
+          '<span class="text-secondary" style="font-size:.74rem">' + prevTxt + '</span></div>' +
+          '</div></div></div>';
+      }).join('');
+    } catch (e) {
+      $('overviewCards').innerHTML = '<div class="col-12"><span class="empty-hint">概览加载失败: ' + esc(e.message) + '</span></div>';
+    }
+
+    drawPlatformCharts();
+    drawSalesTrend();
+    renderGroupStatus();
+    renderDbStatus();
+    renderRecentTasks();
+    renderActivity();
+    renderQuickActions();
+  }
+
+  /* 图表 + 平台指标(共用一次平台核算缓存拉取) */
+  var chartRun = 0;
+  async function loadPlatformTotals(days) {
+    var ps = [1, 5, 7];
+    var rows = [];
+    await Promise.all(ps.map(async function (p) {
+      try {
+        var r = await api('/api/trace/overview?days=' + days + '&platform=' + p + '&from_cache=1');
+        var res = r.result || {};
+        rows.push({ p: p, total: res.total || 0, adopted: res.adopted || 0, shops: (res.shopList || []).length, start: res.startDate, end: res.endDate });
+      } catch (e) { rows.push({ p: p, total: 0, adopted: 0, shops: 0, start: '', end: '' }); }
+    }));
+    return rows;
+  }
+  function renderPlatformMetrics(rows) {
+    var el = $('platformMetrics');
+    if (!el) return;
+    var days = state.trendDays;
+    var names = { 1: ['拼多多', 'bg-green-lt text-success'], 5: ['抖音', 'bg-cyan-lt text-cyan'], 7: ['京东', 'bg-red-lt text-danger'] };
+    el.innerHTML = rows.map(function (r) {
+      var n = names[r.p] || [String(r.p), 'bg-secondary-lt'];
+      var rate = r.total ? (r.adopted / r.total * 100) : 0;
+      var bar = rate >= 70 ? 'bg-success' : rate >= 40 ? 'bg-warning' : 'bg-danger';
+      var range = (r.start && r.end) ? (r.start + ' ~ ' + r.end) : '';
+      return '<div class="col-md-4"><div class="card"><div class="card-body">' +
+        '<div class="d-flex justify-content-between align-items-center">' +
+        '<span class="pf-badge ' + n[1] + '">' + n[0] + '</span>' +
+        '<span class="text-secondary small">' + (r.shops || 0) + ' 家店铺</span></div>' +
+        '<div class="d-flex align-items-baseline justify-content-between mt-2">' +
+        '<div><div class="text-secondary" style="font-size:.7rem">近 ' + days + ' 天消息量</div>' +
+        '<div class="fw-bold" style="font-size:1.3rem;font-variant-numeric:tabular-nums">' + fmt(r.total) + '</div></div>' +
+        '<div class="text-end"><div class="text-secondary" style="font-size:.7rem">采纳率</div>' + ratePill(rate) + '</div></div>' +
+        '<div class="progress mt-2" style="height:.4rem"><div class="progress-bar ' + bar + '" style="width:' + Math.min(100, rate) + '%"></div></div>' +
+        '<div class="text-secondary mt-1" style="font-size:.7rem">采纳 ' + fmt(r.adopted) + ' 条' + (range ? ' · ' + range : '') + '</div>' +
+        '</div></div></div>';
+    }).join('');
+  }
+  async function drawPlatformCharts() {
+    var run = ++chartRun;
+    var rows = await loadPlatformTotals(state.trendDays);
+    if (run !== chartRun) return;  // 已有更新的调用, 丢弃本次
+    renderPlatformMetrics(rows);
+    var C = window.Chart;
+    var c1 = $('chartTrend'), c2 = $('chartPlatform');
+    if (!c1 || !c2) return;
+    if (!C) {
+      c1.parentElement.innerHTML = '<div class="h-100 d-flex align-items-center justify-content-center text-secondary small">Chart.js 未加载(离线)</div>';
+      c2.parentElement.innerHTML = '<div class="h-100 d-flex align-items-center justify-content-center text-secondary small">Chart.js 未加载(离线)</div>';
+      return;
+    }
+    var dark = state.theme === 'dark';
+    var grid = dark ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.06)';
+    var tick = dark ? '#9aa3b2' : '#6b7480';
+    var names = { 1: '拼多多', 5: '抖音', 7: '京东' };
+    var labels = rows.map(function (r) { return names[r.p] || r.p; });
+    var totals = rows.map(function (r) { return r.total; });
+    var adopts = rows.map(function (r) { return r.adopted; });
+    if (window._chartTrend) { window._chartTrend.destroy(); window._chartTrend = null; }
+    if (window._chartPlatform) { window._chartPlatform.destroy(); window._chartPlatform = null; }
+    window._chartTrend = new C(c1, {
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: [
+          { label: '消息量', data: totals, backgroundColor: 'rgba(6,111,209,.75)', borderRadius: 6, barPercentage: .55, categoryPercentage: .55 },
+          { label: '采纳数', data: adopts, backgroundColor: 'rgba(47,179,68,.65)', borderRadius: 6, barPercentage: .55, categoryPercentage: .55 }
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: tick, boxWidth: 10, boxHeight: 10 } } },
+        scales: { x: { grid: { color: grid }, ticks: { color: tick, font: { size: 11 } } }, y: { grid: { color: grid }, ticks: { color: tick, font: { size: 10 } }, beginAtZero: true } }
+      }
+    });
+    var shareColors = ['#066fd1', '#4cc9f0', '#8b7cf6'];
+    window._chartPlatform = new C(c2, {
+      type: 'doughnut',
+      data: { labels: labels, datasets: [{ data: totals, backgroundColor: shareColors, borderWidth: 2, borderColor: dark ? '#1f2937' : '#fff' }] },
+      options: {
+        responsive: true, maintainAspectRatio: false, cutout: '62%',
+        plugins: {
+          legend: { position: 'bottom', labels: { color: tick, boxWidth: 10, boxHeight: 10, font: { size: 10 } } },
+          tooltip: { callbacks: { label: function (ctx) { return ' ' + ctx.label + ': ' + fmt(ctx.parsed) + ' 条'; } } }
+        }
+      }
+    });
+  }
+  function trendDays(days) {
+    state.trendDays = days;
+    var btns = document.querySelectorAll('#trendTabs .btn');
+    for (var i = 0; i < btns.length; i++) btns[i].classList.toggle('active', btns[i].dataset.days === String(days));
+    drawPlatformCharts();
+  }
+
+  /* ---------- 销售额趋势(罗盘 section/trend) ---------- */
+  var METRIC_NAMES = {
+    ops_order_payment_amount: '销售额',
+    ops_order_payment_uv: '支付人数',
+    ops_order_refund_amount_by_pay_time: '退款金额',
+    service_consult_cnt: '咨询量',
+    service_accept_cnt: '采纳数',
+    service_sale_amount: '客服销售额',
+    ai_consult_msg_cnt: '咨询消息数',
+    ai_consult_response_accept_cnt: '采纳数',
+    ai_consult_response_rate: '采纳率'
+  };
+  function metricName(k) { return METRIC_NAMES[k] || k; }
+  function fmtMoney(n) {
+    n = Number(n) || 0;
+    if (Math.abs(n) >= 10000) return (n / 10000).toFixed(2) + ' 万';
+    return n.toLocaleString('zh-CN', { maximumFractionDigits: 1 });
+  }
+  function platformNameOf(pid) {
+    var all = [].concat(platformInfo ? platformInfo.fetch || [] : [], platformInfo ? platformInfo.import || [] : []);
+    for (var i = 0; i < all.length; i++) if (String(all[i].id) === String(pid)) return all[i].name;
+    return '平台 ' + pid;
+  }
+  var salesTrendRun = 0;
+  var TREND_COLORS = ['#066fd1', '#8b7cf6', '#e05d5d'];
+  async function drawSalesTrend() {
+    var run = ++salesTrendRun;
+    var plat = state.platform || '1';
+    var days = state.salesTrendDays || 7;
+    var cv = $('chartSalesTrend');
+    if (!cv) return;
+    if (window._chartSalesTrend) { window._chartSalesTrend.destroy(); window._chartSalesTrend = null; }
+    $('salesTrendPlat').textContent = platformNameOf(plat);
+    $('salesTrendMeta').textContent = '加载中…';
+    var C = window.Chart;
+    if (!C) { cv.parentElement.innerHTML = '<div class="h-100 d-flex align-items-center justify-content-center text-secondary small">Chart.js 未加载(离线)</div>'; return; }
+    var d;
+    try {
+      d = await api('/api/trend/platform?platform=' + plat + '&days=' + days + '&section=operations');
+    } catch (e) {
+      if (run !== salesTrendRun) return;
+      cv.parentElement.innerHTML = '<div class="h-100 d-flex align-items-center justify-content-center text-secondary small">' + esc(e.message) + '</div>';
+      $('salesTrendMeta').textContent = '接口暂不可用';
+      return;
+    }
+    if (run !== salesTrendRun) return;
+    var dates = d.dates || [], series = d.series || [];
+    $('salesTrendMeta').innerHTML = '<span>' + (d.platformName || '') + ' · ' + (d.startDate || '') + ' ~ ' + (d.endDate || '') + ' · ' + (d.source === 'cache' ? '缓存' : '实时') + '</span>' +
+      (series.length ? '<span>' + series.map(function (s) { return metricName(s.metricKey) + ': ' + fmtMoney(s.data[s.data.length - 1]); }).join(' · ') + '</span>' : '');
+    if (!dates.length || !series.length) {
+      cv.parentElement.innerHTML = '<div class="h-100 d-flex align-items-center justify-content-center text-secondary small">暂无趋势数据' + (d.source === 'import' ? '(导入平台无罗盘数据)' : '') + '</div>';
+      return;
+    }
+    var labels = dates.map(function (x) { return x.slice(5); });
+    var dark = state.theme === 'dark';
+    var grid = dark ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.06)';
+    var tick = dark ? '#9aa3b2' : '#6b7480';
+    var datasets = series.map(function (s, i) {
+      var color = TREND_COLORS[i % TREND_COLORS.length];
+      return {
+        label: metricName(s.metricKey), data: s.data,
+        borderColor: color, backgroundColor: 'rgba(6,111,209,.08)',
+        fill: true, tension: .35, pointRadius: 3, pointBackgroundColor: color, borderWidth: 2
+      };
+    });
+    window._chartSalesTrend = new C(cv, {
+      type: 'line',
+      data: { labels: labels, datasets: datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { labels: { color: tick, boxWidth: 10, boxHeight: 10, font: { size: 11 } } },
+          tooltip: { callbacks: { label: function (ctx) { return ' ' + ctx.dataset.label + ': ' + fmtMoney(ctx.parsed.y); } } }
+        },
+        scales: {
+          x: { grid: { color: grid }, ticks: { color: tick, font: { size: 10 } } },
+          y: { grid: { color: grid }, ticks: { color: tick, font: { size: 10 }, callback: function (v) { return fmtMoney(v); } }, beginAtZero: true }
+        }
+      }
+    });
+  }
+  function salesTrendDays(days) {
+    state.salesTrendDays = days;
+    var btns = document.querySelectorAll('#salesTrendTabs .btn');
+    for (var i = 0; i < btns.length; i++) btns[i].classList.toggle('active', btns[i].dataset.days === String(days));
+    drawSalesTrend();
+  }
+
+  /* 集团状态 */
+  function renderGroupStatus() {
+    $('groupStatus').innerHTML = (groupsData && groupsData.groups ? groupsData.groups : []).map(function (g) {
+      var cur = g.current ? badge('当前', 'bg-blue') : '';
+      var sw = g.current ? '' : '<button class="btn btn-sm btn-outline-primary" onclick="app.switchGroup(\'' + esc(g.groupId) + '\')">切换</button>';
+      return '<div class="platform-row">' + (g.ifEnable === false ? '<span class="status status-gray"></span>' : '<span class="status status-green"></span>') +
+        '<div class="flex-fill"><div class="fw-semibold" style="font-size:.88rem">' + esc(g.groupName || g.groupId) + '</div>' +
+        '<div class="text-secondary" style="font-size:.72rem">' + (g.platform != null ? pfBadge(g.platform) : '') + '</div></div>' +
+        '<div class="text-end d-flex align-items-center gap-2">' + cur + sw + '</div></div>';
+    }).join('') || '<span class="empty-hint">暂无集团</span>';
+  }
+
+  /* 数据存储 */
+  async function renderDbStatus() {
+    try {
+      var d = await api('/api/db/status');
+      $('dbMessages').textContent = fmt(d.messages);
+      $('dbShops').textContent = fmt(d.shops);
+      $('dbDaily').textContent = fmt(d.daily);
+      $('dbWindow').textContent = (d.window && d.window[0]) ? (d.window[0] + ' ~ ' + (d.window[1] || '')) : '—';
+      var win = d.prefetch_days || 35;
+      var covered = 0;
+      if (d.window && d.window[0] && d.window[1]) {
+        var lo = new Date(d.window[0]), hi = new Date(d.window[1]);
+        covered = Math.round((hi - lo) / 86400000) + 1;
+      }
+      var pctv = Math.min(100, Math.round(covered / win * 100));
+      $('ringVal').textContent = (pctv || 0) + '%';
+      $('ringArc').setAttribute('stroke-dashoffset', String(100 - (pctv || 0)));
+      $('dbMeta').textContent = '配置窗口 ' + win + ' 天 · 最近预抓耗时 ' + (d.prefetch_duration != null ? Math.round(d.prefetch_duration) + 's' : '—');
+    } catch (e) {
+      $('dbMeta').textContent = '存储状态加载失败: ' + e.message;
+    }
+  }
+
+  /* 最近任务 */
+  async function renderRecentTasks() {
+    try {
+      var t = await api('/api/tasks/list?limit=5');
+      var list = t.tasks || [];
+      $('dashRecentTasks').innerHTML = list.length ? list.map(function (x) {
+        var s = TASK_STATUS[x.status] || ['未知', 'bg-secondary'];
+        var p = x.progress || {};
+        var pctv = p.total ? Math.round((p.done || 0) / p.total * 100) : (x.status === 'running' ? 100 : 0);
+        return '<tr><td>' + badge(s[0], s[1]) + '</td><td class="small text-truncate" style="max-width:180px" title="' + esc(x.label || '') + '">' + esc(x.label || x.type || '') + '</td>' +
+          '<td style="min-width:100px"><div class="progress prog-sm"><div class="progress-bar" style="width:' + pctv + '%"></div></div>' +
+          '<div class="prog-label mt-1">' + (p.done || 0) + '/' + (p.total || 0) + '</div></td></tr>';
+      }).join('') : '<tr><td colspan="3" class="text-center empty-hint py-3">暂无任务</td></tr>';
+    } catch (e) { $('dashRecentTasks').innerHTML = '<tr><td colspan="3" class="text-center empty-hint py-3">加载失败</td></tr>'; }
+  }
+
+  /* 最近活动(系统日志流, 空时回退最近任务) */
+  async function renderActivity() {
+    var el = $('activityList');
+    el.innerHTML = '<span class="empty-hint">加载中…</span>';
+    try {
+      var d = await api('/api/logs?limit=15');
+      var entries = d.logs || d.entries || [];
+      var colors = { fetch: '#066fd1', prefetch: '#4cc9f0', dingtalk: '#8b7cf6', auth: '#2fb344', db: '#f0b429', risk: '#d63939' };
+      if (!entries.length) {
+        // 回退: 用最近任务充当活动流
+        var t = await api('/api/tasks/list?limit=8');
+        var tasks = t.tasks || [];
+        if (!tasks.length) { el.innerHTML = '<span class="empty-hint">暂无系统活动(预抓/抓取任务运行后自动记录)</span>'; return; }
+        el.innerHTML = tasks.map(function (x) {
+          var s = TASK_STATUS[x.status] || [x.status || '未知', 'bg-secondary'];
+          var p = x.progress || {};
+          var pctv = p.total ? Math.round((p.done || 0) / p.total * 100) : 0;
+          return '<div class="activity-item">' +
+            '<span class="a-dot" style="background:' + (x.status === 'error' ? '#d63939' : x.status === 'running' ? '#066fd1' : '#2fb344') + '"></span>' +
+            '<div class="a-msg"><span class="badge ' + s[1] + ' me-1" style="font-size:.62rem">' + s[0] + '</span>' + esc(x.label || x.type || '') +
+            '<div class="progress prog-sm mt-1"><div class="progress-bar" style="width:' + pctv + '%"></div></div></div>' +
+            '<span class="a-time">' + fmtTime(x.started_at) + '</span></div>';
+        }).join('');
+        return;
+      }
+      el.innerHTML = entries.map(function (x) {
+        var ts = x.ts || '';
+        var msg = x.msg || '';
+        var tag = x.tag || '';
+        return '<div class="activity-item">' +
+          '<span class="a-dot" style="background:' + (colors[tag] || '#6b7480') + '"></span>' +
+          '<div class="a-msg"><span class="badge bg-secondary-lt me-1" style="font-size:.62rem">' + esc(tag) + '</span>' + esc(msg) + '</div>' +
+          '<span class="a-time">' + esc(String(ts).slice(5, 16)) + '</span></div>';
+      }).join('');
+    } catch (e) {
+      el.innerHTML = '<span class="empty-hint">活动加载失败: ' + esc(e.message) + '</span>';
+    }
+  }
+
+  /* 快捷操作 */
+  function renderQuickActions() {
+    var acts = [
+      { ic: 'zap', t: '抓取今日数据', d: '实时抓取当日核算数据', act: 'startAudit', color: 'bg-blue-lt text-blue' },
+      { ic: 'database', t: '手动补抓历史', d: '补齐 35 天窗口漏抓日期', act: 'gotoPrefetch', color: 'bg-cyan-lt text-cyan' },
+      { ic: 'box', t: '同步店铺列表', d: '从探域同步当前集团店铺', act: 'syncShops', color: 'bg-purple-lt text-purple' }
+    ];
+    // 推送钉钉日报: 仅管理员可见
+    if (isAdmin) acts.push({ ic: 'send', t: '推送钉钉日报', d: '推送当前核算结果到钉钉群', act: 'pushDingtalk', color: 'bg-green-lt text-green' });
+    $('quickActions').innerHTML = acts.map(function (q) {
+      return '<div class="col-md-6 col-xl-3"><div class="card h-100"><div class="card-body">' +
+        '<div class="d-flex align-items-center gap-3"><span class="stat-icon ' + q.color + '">' + icon(q.ic, 20) + '</span>' +
+        '<div><div class="fw-semibold" style="font-size:.92rem">' + q.t + '</div><div class="text-secondary" style="font-size:.76rem">' + q.d + '</div></div></div>' +
+        '<button class="btn btn-sm btn-outline-primary w-100 mt-3" onclick="app.' + q.act + '()">执行</button>' +
+        '</div></div></div>';
+    }).join('');
+  }
+
+  /* ---------- 店铺核算 ---------- */
+  /* 时间筛选与探域「数据罗盘」对齐: 统计口径(自然日/自然周/自然月) + 快捷区间
+     (昨日/近7天/近30天)。区间计算与罗盘前端一致:
+       昨日    = 昨天 ~ 昨天
+       本周    = 本周一 ~ 今天
+       本月    = 本月1日 ~ 今天
+       近7天   = 昨天-7 ~ 昨天(罗盘 E('last7') 语义)
+       近30天  = 昨天-30 ~ 昨天(罗盘 E('last30') 语义) */
+  function shopsRangeDates(rng) {
+    function iso(d) {
+      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    }
+    var today = new Date();
+    var y = new Date(today.getTime() - 86400000);   // 昨天
+    var start, end;
+    if (rng === 'yesterday') { start = iso(y); end = iso(y); }
+    else if (rng === 'week') {
+      var monday = new Date(today);
+      monday.setDate(today.getDate() - ((today.getDay() + 6) % 7));  // 本周一
+      start = iso(monday); end = iso(today);
+    }
+    else if (rng === 'month') { start = iso(new Date(today.getFullYear(), today.getMonth(), 1)); end = iso(today); }
+    else if (rng === 'last30') { start = iso(new Date(y.getTime() - 30 * 86400000)); end = iso(y); }
+    else { start = iso(new Date(y.getTime() - 7 * 86400000)); end = iso(y); }  // last7
+    return { start: start, end: end };
+  }
+  async function renderShops() {
+    var body = $('shopsBody');
+    body.innerHTML = '<tr><td colspan="7" class="text-center empty-hint py-4">加载中…</td></tr>';
+    var rng = $('shopsRange').value, pf = $('shopsPlatform').value || state.platform;
+    var rd = shopsRangeDates(rng);
+    try {
+      var d = await api('/api/trace/overview?start=' + rd.start + '&end=' + rd.end + '&platform=' + (pf || '') + '&from_cache=1');
+      var res = d.result;
+      if (!res || !res.shopList) {
+        body.innerHTML = '<tr><td colspan="7" class="text-center empty-hint py-4">该平台/区间暂无核算缓存, 点击右上角"开始核算"生成</td></tr>';
+        $('shopsSummary').textContent = rd.start + ' ~ ' + rd.end + ' · 暂无核算缓存(点击右上角「开始核算」生成)';
+        return;
+      }
+      shopsCache = res.shopList.map(function (s) {
+        return {
+          name: (s.shop && s.shop.shopName) || '未知',
+          platform: (s.shop && s.shop.platform) || '',
+          platformName: (s.shop && s.shop.platformName) || '',
+          id: (s.shop && s.shop.thirdShopId) || '',
+          total: s.total || 0, adopted: s.adopted || 0,
+          rate: s.total ? (s.adopted / s.total * 100) : 0
+        };
+      });
+      // 清理已不在当前列表中的勾选
+      var valid = {};
+      shopsCache.forEach(function (s) { if (state.selShops[s.id]) valid[s.id] = true; });
+      state.selShops = valid;
+      renderShopsTable();
+      updateShopsSelUI();
+      $('shopsSummary').textContent = (res.startDate || '') + ' ~ ' + (res.endDate || '') + ' · 共 ' + fmt(res.total || 0) + ' 条 · 采纳率 ' + pct(res.rate || 0);
+    } catch (e) {
+      body.innerHTML = '<tr><td colspan="7" class="text-center empty-hint py-4">加载失败: ' + esc(e.message) + '</td></tr>';
+    }
+  }
+  function renderShopsTable() {
+    var kw = ($('shopsSearch').value || '').trim().toLowerCase();
+    var list = shopsCache.filter(function (s) { return !kw || s.name.toLowerCase().includes(kw); });
+    var key = state.shopsSort.key, dir = state.shopsSort.dir;
+    list.sort(function (a, b) {
+      var va = key === 'name' ? a.name : a[key], vb = key === 'name' ? b.name : b[key];
+      if (va < vb) return -1 * dir; if (va > vb) return 1 * dir; return 0;
+    });
+    var pages = Math.max(1, Math.ceil(list.length / state.shopsPageSize));
+    state.shopsPage = Math.min(state.shopsPage, pages);
+    var start = (state.shopsPage - 1) * state.shopsPageSize;
+    var page = list.slice(start, start + state.shopsPageSize);
+    $('shopsFooter').textContent = '第 ' + state.shopsPage + ' / ' + pages + ' 页 · 共 ' + list.length + ' 家';
+    if (!page.length) { $('shopsBody').innerHTML = '<tr><td colspan="7" class="text-center empty-hint py-4">没有符合条件的店铺</td></tr>'; return; }
+    $('shopsBody').innerHTML = page.map(function (s) {
+      var rate = s.rate || 0;
+      var rateBar = rate >= 70 ? 'bg-success' : rate >= 40 ? 'bg-warning' : 'bg-danger';
+      return '<tr>' +
+        '<td><label class="shop-check" title="勾选用于核算所选店铺" onclick="event.stopPropagation()">' +
+        '<input type="checkbox" class="shop-sel" value="' + esc(s.id) + '"' + (state.selShops[s.id] ? ' checked' : '') +
+        ' onchange="app.toggleShopSel(this.value,this.checked)"></label></td>' +
+        '<td><div class="shop-cell"><a href="#" class="sc-name link-primary" onclick="event.preventDefault();event.stopPropagation();app.shopDetail(\'' + esc(s.id) + '\')">' + esc(s.name) + '</a>' + (s.id ? '<div class="sc-id">' + esc(s.id) + '</div>' : '') + '</div></td>' +
+        '<td>' + (s.platformName ? esc(s.platformName) : pfBadge(s.platform)) + '</td>' +
+        '<td class="text-end fw-semibold">' + fmt(s.total) + '</td>' +
+        '<td class="text-end">' + fmt(s.adopted) + '</td>' +
+        '<td class="text-end"><div class="rate-cell">' + ratePill(rate) +
+        '<div class="progress"><div class="progress-bar ' + rateBar + '" style="width:' + Math.min(100, rate) + '%"></div></div></div></td>' +
+        '<td class="text-end"><div class="btn-list justify-content-end">' +
+        '<button class="btn btn-sm btn-ghost" onclick="app.shopDetail(\'' + esc(s.id) + '\')">明细</button>' +
+        '<button class="btn btn-sm btn-ghost" onclick="app.viewShopTrace(\'' + esc(s.id) + '\',\'' + esc(s.name) + '\')">轨迹</button></div></td></tr>';
+    }).join('');
+    updateShopsSelUI();
+  }
+
+  /* ---------- 核算店铺勾选(旧版"核算所选"功能) ---------- */
+  function selShopsCount() {
+    return Object.keys(state.selShops).filter(function (k) { return state.selShops[k]; }).length;
+  }
+  function toggleShopSel(id, checked) {
+    state.selShops[id] = !!checked;
+    updateShopsSelUI();
+  }
+  function toggleShopsSelAll(cb) {
+    var rows = document.querySelectorAll('#shopsBody .shop-sel');
+    for (var i = 0; i < rows.length; i++) {
+      rows[i].checked = cb.checked;
+      state.selShops[rows[i].value] = cb.checked;
+    }
+    updateShopsSelUI();
+  }
+  function clearShopsSel() {
+    state.selShops = {};
+    var cb = $('shopsSelAll');
+    if (cb) cb.checked = false;
+    updateShopsSelUI();
+    renderShopsTable();
+  }
+  function updateShopsSelUI() {
+    var n = selShopsCount();
+    var label = $('shopsSelLabel'), btn = $('btnAuditSel'), clear = $('btnClearSel');
+    if (label) { label.style.display = n ? '' : 'none'; label.innerHTML = '已选 <b>' + n + '</b> 家店铺'; }
+    if (btn) btn.style.display = n ? '' : 'none';
+    if (clear) clear.style.display = n ? '' : 'none';
+    var all = $('shopsSelAll');
+    if (all) {
+      var rows = document.querySelectorAll('#shopsBody .shop-sel');
+      var checked = 0;
+      for (var i = 0; i < rows.length; i++) if (rows[i].checked) checked++;
+      all.checked = rows.length > 0 && checked === rows.length;
+      all.indeterminate = checked > 0 && checked < rows.length;
+    }
+  }
+  function sortShops(key) {
+    if (state.shopsSort.key === key) state.shopsSort.dir *= -1; else state.shopsSort = { key: key, dir: -1 };
+    renderShopsTable();
+  }
+  function shopsPage(d) { state.shopsPage += d; renderShopsTable(); }
+
+  /* 店铺明细弹窗(参考旧看板抽屉: 汇总 + 按日趋势图 + 明细表) */
+  async function shopDetail(id) {
+    var s = shopsCache.find(function (x) { return x.id === id; });
+    var shopName = s ? s.name : id;
+    $('mShopTitle').textContent = shopName;
+    // 立即弹窗 + 加载态(数据后台加载, 点击即有反馈)
+    $('mShopBody').innerHTML =
+      '<div class="empty-hint py-5 text-center"><div class="spinner-border spinner-border-sm me-2"></div>正在加载店铺明细…</div>';
+    showModal('mShopDetail');
+    try {
+      var d = await api('/api/trace/shop/' + encodeURIComponent(id) + '?days=7');
+      var stat = d.stat || {};
+      var daily = stat.daily || [];
+      var rate = stat.total ? (stat.adopted / stat.total * 100) : 0;
+      // 头部信息
+      var head = '<div class="d-flex align-items-center gap-3 flex-wrap mb-3">' +
+        (s ? (s.platformName ? '<span class="pf-badge bg-secondary-lt">' + esc(s.platformName) + '</span>' : pfBadge(s.platform)) : '') +
+        '<span class="text-secondary small">消息总条数 <b class="text-body">' + fmt(stat.total || 0) + '</b></span>' +
+        '<span class="text-secondary small">采纳条数 <b class="text-body">' + fmt(stat.adopted || 0) + '</b></span>' +
+        '<span class="text-secondary small">采纳率 <b class="text-body">' + pct(rate) + '</b></span>' +
+        '<span class="text-secondary small">区间 <b class="text-body">' + ((stat.startDate || d.startDate) + ' ~ ' + (stat.endDate || d.endDate)) + '</b></span>' +
+        '<button class="btn btn-sm btn-outline-primary ms-auto" onclick="app.viewShopTraceFromModal(\'' + esc(id) + '\',\'' + esc(shopName) + '\')">查看消息轨迹</button></div>';
+      // 罗盘扩展: 销售额趋势(近7天) + 客服经营汇总
+      var trend = null, salesHtml = '', csHtml = '';
+      try {
+        trend = await api('/api/shop/' + encodeURIComponent(id) + '/trend?days=7&section=operations');
+        if ((trend.dates || []).length && (trend.series || []).length && window.Chart) {
+          salesHtml = '<div class="card mb-3" style="border:1px solid var(--tblr-border-color)"><div class="card-header py-2"><h3 class="card-title" style="font-size:.9rem">销售额趋势 · 近7天</h3><span class="text-secondary small ms-auto">' + esc((trend.startDate || '') + ' ~ ' + (trend.endDate || '')) + '</span></div><div class="card-body" style="height:180px"><canvas id="mShopSalesChart"></canvas></div></div>';
+        }
+      } catch (e2) { trend = null; }
+      try {
+        var cs = await api('/api/shop/' + encodeURIComponent(id) + '/cs-summary?days=7');
+        var csItems = cs.items || {};
+        var csDefs = [
+          { key: 'service_consult_cnt', f: 'num' },
+          { key: 'service_sale_amount', f: 'money' },
+          { key: 'service_payment_conversion_rate', f: 'pct' },
+          { key: 'service_3m_response_rate', f: 'pct' }
+        ];
+        var csCards = csDefs.filter(function (x) { return csItems[x.key]; }).map(function (x) {
+          var it = csItems[x.key];
+          var cur = it.current, cp = it.comparePercent;
+          var val = x.f === 'pct' ? (cur == null ? '--' : Number(cur).toFixed(2) + '%') : x.f === 'money' ? fmtMoney(cur) : fmt(cur);
+          var dCls = cp > 0 ? 'up' : cp < 0 ? 'down' : 'flat';
+          var arrow = cp > 0 ? '▲' : cp < 0 ? '▼' : '—';
+          var delta = cp == null ? '—' : (arrow + ' ' + (cp > 0 ? '+' : '') + Number(cp).toFixed(2) + '%');
+          return '<div class="col-6 col-xl-3"><div class="card stat-card mb-0"><div class="card-body p-3">' +
+            '<div class="text-secondary" style="font-size:.72rem">' + esc(it.label || x.key) + '</div>' +
+            '<div class="stat-value mt-1" style="font-size:1.15rem">' + val + '</div>' +
+            '<div class="mt-1"><span class="stat-delta ' + dCls + '" style="font-size:.72rem">' + delta + '</span></div>' +
+            '</div></div></div>';
+        }).join('');
+        if (csCards) {
+          csHtml = '<div class="card mb-3" style="border:1px solid var(--tblr-border-color)"><div class="card-header py-2"><h3 class="card-title" style="font-size:.9rem">客服经营汇总 · 近7天</h3><span class="text-secondary small ms-auto">' + esc((cs.startDate || '') + ' ~ ' + (cs.endDate || '')) + '</span></div><div class="card-body p-3"><div class="row g-2">' + csCards + '</div></div></div>';
+        }
+      } catch (e3) {}
+      var chartHtml = '';
+      if (daily.length && window.Chart) {
+        chartHtml = '<div class="card mb-3" style="border:1px solid var(--tblr-border-color)"><div class="card-body" style="height:220px"><canvas id="mShopChart"></canvas></div></div>';
+      }
+      var table;
+      if (!daily.length) {
+        table = '<div class="empty-hint">该区间无按日明细(可先抓取今日数据)</div>';
+      } else {
+        table = '<div class="table-responsive"><table class="table table-vcenter"><thead><tr><th>日期</th><th class="text-end">消息数</th><th class="text-end">采纳数</th><th class="text-end">采纳率</th></tr></thead><tbody>' +
+          daily.map(function (r) {
+            var date = r.date || r.day || r.ts || '';
+            var total = r.total || 0, adopted = r.adopted || 0;
+            var rRate = total ? adopted / total * 100 : 0;
+            return '<tr><td class="fw-semibold">' + esc(date) + '</td><td class="text-end">' + fmt(total) + '</td><td class="text-end">' + fmt(adopted) + '</td><td class="text-end">' + ratePill(rRate) + '</td></tr>';
+          }).join('') + '</tbody></table></div>';
+      }
+      $('mShopBody').innerHTML = head + salesHtml + csHtml + chartHtml + table;
+      if (window._mShopSalesChart) { window._mShopSalesChart.destroy(); window._mShopSalesChart = null; }
+      if (window._shopChart) { window._shopChart.destroy(); window._shopChart = null; }
+      if (daily.length && window.Chart) drawShopDetailChart(daily);
+      if ($('mShopSalesChart') && window.Chart && trend) drawShopSalesChart(trend);
+    } catch (e) {
+      $('mShopBody').innerHTML = '<div class="empty-hint py-4 text-center">加载失败: ' + esc(e.message) + '<br><button class="btn btn-sm btn-outline-primary mt-3" onclick="app.shopDetail(\'' + esc(id) + '\')">重试</button></div>';
+    }
+  }
+  function drawShopSalesChart(trend) {
+    var C = window.Chart, cv = $('mShopSalesChart');
+    if (!C || !cv) return;
+    var dark = state.theme === 'dark';
+    var grid = dark ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.06)';
+    var tick = dark ? '#9aa3b2' : '#6b7480';
+    var labels = (trend.dates || []).map(function (x) { return x.slice(5); });
+    var series = trend.series || [];
+    var datasets = series.map(function (s, i) {
+      var color = TREND_COLORS[i % TREND_COLORS.length];
+      return {
+        label: metricName(s.metricKey), data: s.data,
+        borderColor: color, backgroundColor: 'rgba(6,111,209,.08)',
+        fill: true, tension: .35, pointRadius: 3, pointBackgroundColor: color, borderWidth: 2
+      };
+    });
+    window._mShopSalesChart = new C(cv, {
+      type: 'line',
+      data: { labels: labels, datasets: datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { labels: { color: tick, boxWidth: 10, boxHeight: 10, font: { size: 10 } } },
+          tooltip: { callbacks: { label: function (ctx) { return ' ' + ctx.dataset.label + ': ' + fmtMoney(ctx.parsed.y); } } }
+        },
+        scales: {
+          x: { grid: { color: grid }, ticks: { color: tick, font: { size: 10 } } },
+          y: { grid: { color: grid }, ticks: { color: tick, font: { size: 10 }, callback: function (v) { return fmtMoney(v); } }, beginAtZero: true }
+        }
+      }
+    });
+  }
+  function drawShopDetailChart(daily) {
+    if (window._shopChart) { window._shopChart.destroy(); window._shopChart = null; }
+    var C = window.Chart, cv = $('mShopChart');
+    if (!C || !cv) return;
+    var dark = state.theme === 'dark';
+    var grid = dark ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.06)';
+    var tick = dark ? '#9aa3b2' : '#6b7480';
+    var labels = daily.map(function (r) { return (r.date || r.day || r.ts || '').slice(5); });
+    var totals = daily.map(function (r) { return r.total || 0; });
+    var rates = daily.map(function (r) { var t = r.total || 0; return t ? Math.round((r.adopted || 0) / t * 1000) / 10 : 0; });
+    window._shopChart = new C(cv, {
+      data: {
+        labels: labels,
+        datasets: [
+          { type: 'bar', label: '消息量', data: totals, backgroundColor: 'rgba(6,111,209,.65)', borderRadius: 4, barPercentage: .5, categoryPercentage: .6, yAxisID: 'y' },
+          { type: 'line', label: '采纳率(%)', data: rates, borderColor: '#2fb344', tension: .35, pointRadius: 3, pointBackgroundColor: '#2fb344', borderWidth: 2, yAxisID: 'y1' }
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: tick, boxWidth: 10, boxHeight: 10 } } },
+        scales: {
+          x: { grid: { color: grid }, ticks: { color: tick, font: { size: 10 } } },
+          y: { position: 'left', grid: { color: grid }, ticks: { color: tick, font: { size: 10 } }, beginAtZero: true },
+          y1: { position: 'right', grid: { drawOnChartArea: false }, ticks: { color: tick, font: { size: 10 } }, min: 0, max: 100 }
+        }
+      }
+    });
+  }
+  function viewShopTraceFromModal(id, name) {
+    hideModal('mShopDetail');
+    viewShopTrace(id, name);
+  }
+  function exportShops() {
+    if (!shopsCache.length) { toast('暂无数据可导出'); return; }
+    var rows = [['店铺', '平台', '消息总条数', '采纳条数', '采纳率']].concat(shopsCache.map(function (s) {
+      return [s.name, s.platformName || s.platform, s.total, s.adopted, s.rate.toFixed(2) + '%'];
+    }));
+    downloadCSV('店铺核算_' + (state.platform || '全部') + '.csv', rows);
+  }
+
+  /* ---------- 客服账号池 ---------- */
+  async function renderStaff() {
+    $('staffGrid').innerHTML = '<span class="empty-hint">加载中…</span>';
+    // 今日抓取结束时刻默认当前时间(秒级)
+    if ($('staffTodayEnd') && !$('staffTodayEnd').value) {
+      var now = new Date();
+      $('staffTodayEnd').value = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0') + ':' + String(now.getSeconds()).padStart(2, '0');
+    }
+    var pf = $('staffPlatform').value || state.platform;
+    var daysSel = $('staffDays');
+    var custom = daysSel && daysSel.value === 'custom';
+    var rangeBox = $('staffCustomRange');
+    if (rangeBox) rangeBox.style.display = custom ? '' : 'none';
+    if (custom && (!$('staffStart').value || !$('staffEnd').value)) {
+      // 自定义默认近 7 天(不含今天)
+      var ds = function (x) { return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0'); };
+      if (!$('staffStart').value) $('staffStart').value = ds(new Date(Date.now() - 7 * 86400000));
+      if (!$('staffEnd').value) $('staffEnd').value = ds(new Date(Date.now() - 86400000));
+    }
+    var q = custom
+      ? (($('staffStart').value && $('staffEnd').value) ? ('start=' + $('staffStart').value + '&end=' + $('staffEnd').value) : 'days=7')
+      : ('days=' + (daysSel ? daysSel.value : '7'));
+    try {
+      var d = await api('/api/trace/staff?' + q + '&platform=' + (pf || ''));
+      staffCache = (d.byStaff || []).map(function (x) {
+        return {
+          name: (x.nick || x.name) || x.accountShort || x.account || '?',
+          acct: x.accountShort || x.account || '',
+          shop: x.shopName || '',
+          platform: x.platform || '',
+          total: x.total || 0, adopted: x.adopted || 0,
+          rate: x.rate != null ? x.rate : (x.total ? (x.adopted / x.total * 100) : 0)
+        };
+      });
+      renderStaffGrid();
+      var range = (d.startDate || '') + ' ~ ' + (d.endDate || '');
+      $('staffSummary').textContent = '共 ' + staffCache.length + ' 人' + (range ? ' · ' + range : '');
+      var badgeEl = $('staffRangeBadge');
+      if (badgeEl) { badgeEl.style.display = range ? '' : 'none'; badgeEl.textContent = '数据范围 ' + range; }
+    } catch (e) {
+      $('staffGrid').innerHTML = '<span class="empty-hint">加载失败: ' + esc(e.message) + '</span>';
+    }
+  }
+
+  /* 抓取当日客服数据(实时, mode=staff, 支持秒级时刻范围) */
+  async function startStaffToday() {
+    var pf = $('staffPlatform').value || state.platform;
+    var params = [];
+    if (pf) params.push('platform=' + pf);
+    params.push('mode=staff');
+    var ts = $('staffTodayStart').value, te = $('staffTodayEnd').value;
+    if (ts) params.push('start_ts=' + encodeURIComponent(ts));
+    if (te) params.push('end_ts=' + encodeURIComponent(te));
+    try {
+      await api('/api/trace/today?' + params.join('&'), { method: 'POST' });
+      toast('已发起抓取当日客服数据任务(' + (ts || '00:00') + ' ~ ' + (te || '当前') + '), 正在跳转任务中心…', 'success');
+      location.hash = '#/tasks';
+    } catch (e) { toast('发起失败: ' + e.message, 'danger'); }
+  }
+  /* ---------- 客服账号池(参考旧看板: 按店铺分组 + 卡片展开明细) ---------- */
+  var STAFF_PAGE_GROUPS = 30;   // 普通视图每页店铺组数
+  var STAFF_PAGE_CARDS = 120;   // 汇总视图每页卡片数
+  var staffViewCache = [];      // 当前渲染源: 普通=店铺组数组, 汇总=客服数组
+  var staffShown = 0;
+  var staffChipData = {};       // seqKey -> 明细 HTML 构建函数(懒渲染)
+  var staffChipSeq = 0;
+  var AVATAR_COLORS = ['#066fd1', '#4cc9f0', '#8b7cf6', '#f0b429', '#2fb344', '#d63939', '#e879f9', '#fb923c'];
+  function hashStr(s) {
+    var h = 0;
+    s = String(s == null ? '' : s);
+    for (var i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) >>> 0; }
+    return h;
+  }
+  function staffIdentityKey(x) {
+    if (x.accountId) return 'id:' + x.accountId;
+    if (x.name) return 'nm:' + x.name;
+    return 'ac:' + (x.account || x.acct || '');
+  }
+  function staffChipHtml(x, seqKey) {
+    var av = AVATAR_COLORS[Math.abs(hashStr(x.name || x.acct || '?')) % AVATAR_COLORS.length];
+    var initial = (x.name || x.acct || '?').charAt(0).toUpperCase();
+    var zeroCls = (x.total || 0) === 0 ? ' staff-chip-zero' : '';
+    staffChipData[seqKey] = function () {
+      return '<div class="drow"><span>消息总条数</span><b>' + fmt(x.total) + '</b></div>' +
+        '<div class="drow"><span>采纳条数</span><b>' + fmt(x.adopted) + '</b></div>' +
+        '<div class="drow"><span>采纳占比</span><b>' + pct(x.total ? x.adopted / x.total * 100 : 0) + '</b></div>';
+    };
+    return '<div class="staff-chip' + zeroCls + '" onclick="app.toggleStaffChip(this,\'' + seqKey + '\')" title="点击展开占比明细">' +
+      '<div class="staff-chip-top">' +
+      '<span class="staff-avatar" style="background:' + av + '">' + esc(initial) + '</span>' +
+      '<span class="staff-chip-name"><span class="sc-n">' + esc(x.name) + '</span><span class="sc-a">' + esc(x.acct) + '</span></span>' +
+      '<span class="staff-chip-arrow">▾</span></div>' +
+      '<div class="staff-chip-meta"><span class="sc-count">' + fmt(x.total) + ' 条</span>' + ratePill(x.rate) + '</div>' +
+      '<div class="staff-chip-detail"></div></div>';
+  }
+  function toggleStaffChip(el, seqKey) {
+    var detail = el.querySelector('.staff-chip-detail');
+    if (!detail) return;
+    if (el.classList.contains('open')) { el.classList.remove('open'); return; }
+    if (!detail.dataset.rendered) {
+      var build = staffChipData[seqKey];
+      if (build) { detail.innerHTML = build(); detail.dataset.rendered = '1'; delete staffChipData[seqKey]; }
+    }
+    el.classList.add('open');
+  }
+  function renderStaffGrid() {
+    var kw = ($('staffSearch').value || '').trim().toLowerCase();
+    var list = staffCache.filter(function (x) {
+      return !kw || x.name.toLowerCase().includes(kw) || x.acct.toLowerCase().includes(kw) || x.shop.toLowerCase().includes(kw);
+    });
+    var grid = $('staffGrid');
+    if (!list.length) {
+      grid.innerHTML = '<span class="empty-hint">没有符合条件的客服</span>';
+      $('staffLoadMoreWrap').style.display = 'none';
+      return;
+    }
+    staffChipData = {}; staffChipSeq = 0; staffShown = 0;
+    grid.innerHTML = '';
+    if (state.staffAgg) {
+      // 汇总视图: 按客服身份归并跨店数据(抖音客服常跨多店)
+      var map = {};
+      list.forEach(function (x) {
+        var k = staffIdentityKey(x);
+        if (!map[k]) map[k] = { name: x.name, acct: x.acct, total: 0, adopted: 0, shops: [] };
+        map[k].total += x.total; map[k].adopted += x.adopted;
+        if (x.shop && map[k].shops.indexOf(x.shop) < 0) map[k].shops.push(x.shop);
+      });
+      staffViewCache = Object.keys(map).map(function (k) { return map[k]; }).sort(function (a, b) { return b.total - a.total; });
+      staffViewCache.forEach(function (x) { x.rate = x.total ? x.adopted / x.total * 100 : 0; });
+      renderStaffCards();
+    } else {
+      // 普通视图: 按店铺分组(店名排序, 组内客服按消息量降序)
+      var groups = {};
+      list.forEach(function (x) {
+        var key = x.shop || '__noShop__';
+        if (!groups[key]) groups[key] = { shop: x.shop || '未归属', items: [] };
+        groups[key].items.push(x);
+      });
+      staffViewCache = Object.keys(groups).map(function (k) { return groups[k]; })
+        .sort(function (a, b) { return (a.shop || '').localeCompare(b.shop || '', 'zh'); });
+      renderStaffGroups();
+    }
+  }
+  function renderStaffGroups() {
+    var grid = $('staffGrid');
+    var batch = staffViewCache.slice(staffShown, staffShown + STAFF_PAGE_GROUPS);
+    var html = '';
+    for (var i = 0; i < batch.length; i++) {
+      var g = batch[i];
+      var items = g.items.slice().sort(function (a, b) { return b.total - a.total; });
+      var groupTotal = items.reduce(function (s, x) { return s + (x.total || 0); }, 0);
+      html += '<div class="staff-group"><div class="staff-group-head">' +
+        '<span class="gh-name">' + esc(g.shop) + '</span>' +
+        '<span class="gh-meta">' + items.length + ' 人 · 共 ' + fmt(groupTotal) + ' 条</span></div>' +
+        '<div class="staff-chips">' + items.map(function (x) {
+          if (x.name == null) x.name = x.acct || '?';
+          if (x.rate == null) x.rate = x.total ? x.adopted / x.total * 100 : 0;
+          return staffChipHtml(x, 'reg' + (++staffChipSeq));
+        }).join('') + '</div></div>';
+    }
+    grid.innerHTML += html;
+    staffShown += batch.length;
+    $('staffLoadMoreWrap').style.display = staffShown < staffViewCache.length ? '' : 'none';
+  }
+  function renderStaffCards() {
+    var grid = $('staffGrid');
+    var batch = staffViewCache.slice(staffShown, staffShown + STAFF_PAGE_CARDS);
+    grid.innerHTML += batch.map(function (x) {
+      if (x.name == null) x.name = x.acct || '?';
+      return staffChipHtml(x, 'agg' + (++staffChipSeq));
+    }).join('');
+    staffShown += batch.length;
+    $('staffLoadMoreWrap').style.display = staffShown < staffViewCache.length ? '' : 'none';
+  }
+  function staffLoadMore() {
+    if (state.staffAgg) renderStaffCards(); else renderStaffGroups();
+  }
+  function staffMode(agg) {
+    state.staffAgg = agg;
+    $('staffModeShop').classList.toggle('active', !agg);
+    $('staffModeAgg').classList.toggle('active', agg);
+    renderStaffGrid();
+  }
+  function exportStaff() {
+    if (!staffCache.length) { toast('暂无数据可导出'); return; }
+    var rows = [['客服', '账号', '店铺', '消息总条数', '采纳数', '采纳率']].concat(staffCache.map(function (x) {
+      return [x.name, x.acct, x.shop, x.total, x.adopted, x.rate.toFixed(2) + '%'];
+    }));
+    downloadCSV('客服账号池_' + (state.platform || '全部') + '.csv', rows);
+  }
+
+  /* ---------- 消息轨迹 ---------- */
+  async function loadTraceShops() {
+    var sel = $('traceShop');
+    if (sel && sel.options.length > 1) return;  // 已填充过, 不再重建(避免重置用户选择)
+    if (allShops.length) { fillTraceShopSelect(); return; }
+    try {
+      var d = await api('/api/shops');
+      allShops = d.shops || [];
+      fillTraceShopSelect();
+    } catch (e) {}
+  }
+  function fillTraceShopSelect() {
+    var sel = $('traceShop');
+    var prev = sel.value;  // 保留当前选择(联动跳转/用户选择)
+    sel.innerHTML = '<option value="">选择店铺…</option>' + allShops.map(function (s) {
+      return '<option value="' + esc(s.thirdShopId) + '">' + esc(s.shopName || s.thirdShopId) + '</option>';
+    }).join('');
+    if (prev && Array.prototype.some.call(sel.options, function (o) { return o.value === prev; })) {
+      sel.value = prev;
+    }
+  }
+  async function renderTrace() {
+    var sel = $('traceShop');
+    await loadTraceShops();
+    var id = sel.value;
+    $('traceBody').innerHTML = '<tr><td colspan="5" class="text-center empty-hint py-4">' + (id ? '加载中…' : '请先选择店铺') + '</td></tr>';
+    $('traceSummary').textContent = '';
+    if (!id) return;
+    var rng = $('traceRange').value;
+    try {
+      var d = await api('/api/trace/shop/' + encodeURIComponent(id) + '?days=' + rng);
+      var stat = d.stat || {};
+      var daily = stat.daily || [];
+      $('traceSummary').textContent = (stat.startDate || d.startDate || '') + ' ~ ' + (stat.endDate || d.endDate || '') + ' · 共 ' + fmt(stat.total || 0) + ' 条 · 采纳率 ' + pct(stat.rate || 0);
+      if (!daily.length) { $('traceBody').innerHTML = '<tr><td colspan="5" class="text-center empty-hint py-4">该区间无消息数据(可先抓取今日数据)</td></tr>'; return; }
+      $('traceBody').innerHTML = daily.map(function (r) {
+        var date = r.date || r.day || r.ts || '';
+        var total = r.total || 0, adopted = r.adopted || 0;
+        var rate = total ? adopted / total * 100 : 0;
+        return '<tr><td class="fw-semibold">' + esc(date) + '</td><td class="text-end">' + fmt(total) + '</td>' +
+          '<td class="text-end">' + fmt(adopted) + '</td><td class="text-end">' + ratePill(rate) + '</td>' +
+          '<td class="text-end"><button class="btn btn-sm btn-ghost" onclick="app.viewMessages(\'' + esc(date) + '\')">原始消息</button></td></tr>';
+      }).join('');
+    } catch (e) {
+      $('traceBody').innerHTML = '<tr><td colspan="5" class="text-center empty-hint py-4">加载失败: ' + esc(e.message) + '</td></tr>';
+    }
+  }
+  /* ---------- 原始消息弹窗(按天拉取 + 聊天气泡 + 分批懒渲染) ---------- */
+  var msgState = { shopId: '', date: '', days: [], messages: [], filtered: [], shown: 0, pageSize: 100, loaded: false };
+  function normalizeDate(d) {
+    if (!d) { var t = new Date(); return t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0'); }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
+    return new Date().getFullYear() + '-' + d;  // 兜底补年份
+  }
+  function msgRole(m) {
+    // 后端 type 枚举: CONSULT_PRODUCT=买家咨询 / CONSULT_REPLY=客服回复
+    var t = String(m.type || '');
+    if (t === 'CONSULT_REPLY') return 'staff';
+    if (t === 'CONSULT_PRODUCT') return 'buyer';
+    if (m.staff || m.agent) return 'staff';
+    if (m.buyer || m.sender) return 'buyer';
+    return 'system';
+  }
+  function msgContent(m) {
+    var c = m.content || m.msg || '';
+    return Array.isArray(c) ? c.join('\n') : String(c);
+  }
+  function sendTypeBadge(st) {
+    var map = { 1: ['自动发送', 'bg-blue-lt text-blue'], 2: ['侧边栏点击', 'bg-purple-lt text-purple'], 3: ['编辑后发送', 'bg-cyan-lt text-cyan'] };
+    var x = map[st] || ['未发送', 'bg-secondary-lt'];
+    return '<span class="badge ' + x[1] + '" style="font-size:.6rem">' + x[0] + '</span>';
+  }
+  function msgBubbleHtml(m) {
+    var ts = m.time || m.ts || '';
+    var role = msgRole(m);
+    var st = m.sendType != null ? m.sendType : (m.send_status != null ? m.send_status : (m.status != null ? m.status : null));
+    var who = role === 'staff' ? (m.staff || m.agent || '客服') : role === 'buyer' ? (m.buyer || m.sender || '买家') : '';
+    return '<div class="msg-bubble-row ' + role + '"><div class="msg-bubble">' +
+      '<div class="mb-meta"><span class="font-monospace">' + esc(ts) + '</span>' +
+      (st != null ? sendTypeBadge(st) : '') +
+      (who ? '<span>' + esc(who) + '</span>' : '') + '</div>' +
+      '<div class="mb-content">' + esc(msgContent(m)) + '</div></div></div>';
+  }
+  function fillMsgDaySel() {
+    var sel = $('msgDaySel');
+    if (!sel || !msgState.days.length) return;
+    var prev = sel.value || msgState.date;
+    sel.innerHTML = msgState.days.map(function (d) {
+      return '<option value="' + d + '"' + (d === prev ? ' selected' : '') + '>' + d + '</option>';
+    }).join('');
+    msgState.date = sel.value || msgState.date;
+  }
+  async function loadMsgDays() {
+    try {
+      var d = await api('/api/trace/shop/' + encodeURIComponent(msgState.shopId) + '?days=7');
+      var daily = (d.stat && d.stat.daily) || [];
+      msgState.days = daily.map(function (r) { return normalizeDate(r.date || r.day || r.ts || ''); }).filter(Boolean);
+    } catch (e) { msgState.days = []; }
+    fillMsgDaySel();
+  }
+  async function loadMsgData() {
+    msgState.loaded = false;
+    $('msgList').innerHTML = '<div class="empty-hint py-4 text-center"><div class="spinner-border spinner-border-sm me-2"></div>正在加载当日消息…</div>';
+    try {
+      var d = await api('/api/trace/messages/' + encodeURIComponent(msgState.shopId) + '?start=' + msgState.date + '&end=' + msgState.date);
+      msgState.messages = d.messages || [];
+      msgState.loaded = true;
+      renderMsgList();
+    } catch (e) {
+      $('msgList').innerHTML = '<div class="empty-hint py-3 text-center">加载失败: ' + esc(e.message) + '</div>';
+    }
+  }
+  function renderMsgList() {
+    var kw = ($('msgKw').value || '').trim().toLowerCase();
+    var type = $('msgTypeSel').value, stSel = $('msgStSel').value;
+    msgState.filtered = msgState.messages.filter(function (m) {
+      if (type !== 'all' && msgRole(m) !== type) return false;
+      if (stSel !== 'all') {
+        var s = m.sendType != null ? m.sendType : (m.send_status != null ? m.send_status : (m.status != null ? m.status : null));
+        var want = stSel === '0' ? !(s === 1 || s === 2 || s === 3) : s === +stSel;
+        if (!want) return false;
+      }
+      if (kw && msgContent(m).toLowerCase().indexOf(kw) < 0) return false;
+      return true;
+    });
+    msgState.shown = 0;
+    var list = $('msgList');
+    list.innerHTML = '';
+    if (!msgState.filtered.length) {
+      list.innerHTML = '<div class="empty-hint py-4 text-center">' + (msgState.messages.length ? '没有匹配筛选条件的消息' : '该店铺当日无原始消息记录(导入平台仅有天级汇总)') + '</div>';
+      $('msgLoadMoreWrap').style.display = 'none';
+    } else {
+      appendMsgBatch();
+    }
+    $('msgCount').textContent = '共 ' + fmt(msgState.messages.length) + ' 条 · ' + msgState.date + (msgState.filtered.length !== msgState.messages.length ? ' · 筛选 ' + fmt(msgState.filtered.length) : '');
+  }
+  function appendMsgBatch() {
+    var batch = msgState.filtered.slice(msgState.shown, msgState.shown + msgState.pageSize);
+    var html = batch.map(msgBubbleHtml).join('');
+    $('msgList').insertAdjacentHTML('beforeend', html);
+    msgState.shown += batch.length;
+    $('msgLoadMoreWrap').style.display = msgState.shown < msgState.filtered.length ? '' : 'none';
+  }
+  async function viewMessages(dayStr) {
+    var id = $('traceShop').value;
+    if (!id) { toast('请先选择店铺'); return; }
+    var shopName = allShops.find(function (s) { return s.thirdShopId === id; });
+    shopName = shopName ? shopName.shopName : id;
+    msgState.shopId = id;
+    msgState.date = normalizeDate(dayStr);
+    $('mTraceTitle').textContent = '原始消息 · ' + shopName;
+    $('msgCount').textContent = '';
+    $('msgList').innerHTML = '<div class="empty-hint py-4 text-center"><div class="spinner-border spinner-border-sm me-2"></div>正在加载当日消息…</div>';
+    $('msgLoadMoreWrap').style.display = 'none';
+    showModal('mTraceDetail');  // 立即弹窗, 数据后台加载
+    await Promise.all([loadMsgDays(), loadMsgData()]);
+  }
+  function msgDayChange() {
+    var sel = $('msgDaySel');
+    if (sel.value) { msgState.date = sel.value; loadMsgData(); }
+  }
+  function msgLoadMore() { appendMsgBatch(); }
+  function viewShopTrace(id, name) {
+    location.hash = '#/trace';
+    var sel = $('traceShop');
+    if (sel.options.length <= 1) {
+      var trySet = setInterval(function () {
+        var s2 = $('traceShop');
+        if (s2.options.length > 1) { s2.value = id; clearInterval(trySet); renderTrace(); }
+      }, 200);
+      setTimeout(function () { clearInterval(trySet); }, 5000);
+    } else {
+      sel.value = id;
+      renderTrace();
+    }
+  }
+
+  /* ---------- 任务中心 ---------- */
+  var TASK_STATUS = { running: ['运行中', 'bg-blue'], queued: ['排队中', 'bg-yellow'], done: ['完成', 'bg-green'], error: ['失败', 'bg-red'], canceled: ['已取消', 'bg-secondary'] };
+  var taskCache = [];
+  var taskSel = {};   // 任务勾选(id -> true, 管理员删除用)
+  var TASKS_PAGE_SIZE = 20;   // 每页 20 条, 超过自动分页(同店铺核算池)
+
+  async function loadTasksPage(page) {
+    var offset = (page - 1) * TASKS_PAGE_SIZE;
+    try {
+      return await api('/api/tasks/list?limit=' + TASKS_PAGE_SIZE + '&offset=' + offset + '&since_hours=6');
+    } catch (e) { return { tasks: [], total: 0 }; }
+  }
+  // 统计卡: 基于近 6 小时全量(独立于分页)
+  async function renderTaskStats() {
+    try {
+      var d = await api('/api/tasks/list?limit=100&since_hours=6');
+      var list = d.tasks || [];
+      var sts = { running: 0, queued: 0, done: 0, error: 0 };
+      list.forEach(function (t) { if (sts[t.status] != null) sts[t.status]++; });
+      $('taskStatCards').innerHTML = [
+        { label: '运行中', val: sts.running, color: 'blue', ic: 'activity' },
+        { label: '排队中', val: sts.queued, color: 'yellow', ic: 'clock' },
+        { label: '近 6 小时完成', val: sts.done, color: 'green', ic: 'check' },
+        { label: '失败', val: sts.error, color: 'red', ic: 'alert' }
+      ].map(function (s) {
+        return '<div class="col-sm-6 col-xl-3"><div class="card"><div class="card-body d-flex align-items-center gap-3">' +
+          '<span class="stat-icon" style="width:2.3rem;height:2.3rem;border-radius:.6rem;display:flex;align-items:center;justify-content:center;background:var(--tblr-' + s.color + '-bg-subtle);color:var(--tblr-' + s.color + ')">' + icon(s.ic, 18) + '</span>' +
+          '<div><div class="text-secondary" style="font-size:.76rem">' + s.label + '</div><div class="fw-bold" style="font-size:1.3rem">' + s.val + '</div></div></div></div></div>';
+      }).join('');
+    } catch (e) { /* 统计失败不阻塞表格 */ }
+  }
+  async function renderTasks() {
+    var d = await loadTasksPage(state.tasksPage);
+    var list = d.tasks || [];
+    var total = d.total != null ? d.total : list.length;
+    var pages = Math.max(1, Math.ceil(total / TASKS_PAGE_SIZE));
+    if (state.tasksPage > pages) { state.tasksPage = pages; renderTasks(); return; }  // 越界回退
+    taskCache = list;
+    renderTaskStats();
+    // 勾选列仅管理员可见
+    var th = $('tasksSelTh');
+    if (th) th.style.display = isAdmin ? '' : 'none';
+    $('btnDelTasks').style.display = 'none';
+    updateTaskSelUI();
+    $('tasksFooter').textContent = '第 ' + state.tasksPage + ' / ' + pages + ' 页 · 共 ' + total + ' 条 · 仅保留最近 6 小时, 超时自动清理';
+    if (!list.length) { $('tasksBody').innerHTML = '<tr><td colspan="9" class="text-center empty-hint py-4">暂无任务</td></tr>'; return; }
+    $('tasksBody').innerHTML = list.map(function (t) {
+      var s = TASK_STATUS[t.status] || [t.status || '未知', 'bg-secondary'];
+      var p = t.progress || {};
+      var pctv = p.total ? Math.round((p.done || 0) / p.total * 100) : (t.status === 'running' ? 100 : 0);
+      var selCol = isAdmin && t.id != null
+        ? '<td><label class="shop-check" onclick="event.stopPropagation()"><input type="checkbox" class="task-sel" value="' + t.id + '"' + (taskSel[t.id] ? ' checked' : '') + ' onchange="app.toggleTaskSel(this.value,this.checked)"></label></td>'
+        : '<td></td>';
+      return '<tr>' + selCol +
+        '<td class="text-secondary font-monospace">' + (t.id != null ? '#' + t.id : '') + '</td>' +
+        '<td class="small fw-semibold">' + esc(t.label || t.type || '') + '</td>' +
+        '<td><span class="badge bg-secondary-lt">' + esc(t.type || '') + '</span></td>' +
+        '<td class="small text-secondary">' + esc(t.requested_by || '') + '</td>' +
+        '<td>' + badge(s[0], s[1]) + '</td>' +
+        '<td><div class="d-flex align-items-center gap-2"><div class="progress prog-sm flex-fill"><div class="progress-bar" style="width:' + pctv + '%"></div></div>' +
+        '<span class="prog-label">' + (p.done || 0) + '/' + (p.total || 0) + '</span></div></td>' +
+        '<td class="small text-secondary">' + fmtTime(t.started_at) + '</td>' +
+        '<td class="text-end small text-secondary text-truncate" style="max-width:160px" title="' + esc(p.current || '') + '">' + esc(p.current || '') + '</td></tr>';
+    }).join('');
+    updateTaskSelUI();
+  }
+  function tasksPage(d) { state.tasksPage += d; renderTasks(); }
+
+  /* ---------- 任务勾选删除(管理员) ---------- */
+  function taskSelCount() {
+    return Object.keys(taskSel).filter(function (k) { return taskSel[k]; }).length;
+  }
+  function toggleTaskSel(id, checked) {
+    taskSel[id] = !!checked;
+    updateTaskSelUI();
+  }
+  function toggleTasksSelAll(cb) {
+    var rows = document.querySelectorAll('#tasksBody .task-sel');
+    for (var i = 0; i < rows.length; i++) {
+      rows[i].checked = cb.checked;
+      taskSel[rows[i].value] = cb.checked;
+    }
+    updateTaskSelUI();
+  }
+  function updateTaskSelUI() {
+    var n = taskSelCount();
+    var btn = $('btnDelTasks');
+    if (btn) btn.style.display = (isAdmin && n) ? '' : 'none';
+    var all = $('tasksSelAll');
+    if (all) {
+      var rows = document.querySelectorAll('#tasksBody .task-sel');
+      var checked = 0;
+      for (var i = 0; i < rows.length; i++) if (rows[i].checked) checked++;
+      all.checked = rows.length > 0 && checked === rows.length;
+      all.indeterminate = checked > 0 && checked < rows.length;
+    }
+  }
+  async function delSelectedTasks() {
+    var ids = Object.keys(taskSel).filter(function (k) { return taskSel[k]; });
+    if (!ids.length) return;
+    if (!confirm('确认删除所选 ' + ids.length + ' 条任务记录?')) return;
+    try {
+      var r = await api('/api/logs/tasks?task_ids=' + ids.join(','), { method: 'DELETE' });
+      toast('已删除 ' + (r.deleted || 0) + ' 条', 'success');
+      taskSel = {};
+      renderTasks();
+    } catch (e) { toast('删除失败: ' + e.message, 'danger'); }
+  }
+
+  /* ---------- 日志中心 ---------- */
+  async function renderLogs() {
+    $('logsPretitle').textContent = isAdmin ? '操作日志 / 任务记录 / 系统日志(管理员)' : '任务记录(操作/系统日志仅管理员可见)';
+    $('pruneBtn').style.display = isAdmin ? '' : 'none';
+    if (!isAdmin) {
+      $('logTabs').querySelector('[data-logtab="op"]').parentElement.style.display = 'none';
+      $('logTabs').querySelector('[data-logtab="sys"]').parentElement.style.display = 'none';
+      if (state.logTab !== 'task') switchLogs(null, 'task');
+      await renderTaskLogs();
+      return;
+    }
+    $('logTabs').querySelector('[data-logtab="op"]').parentElement.style.display = '';
+    $('logTabs').querySelector('[data-logtab="sys"]').parentElement.style.display = '';
+    try {
+      var d = await api('/api/logs/center?op_limit=50&task_limit=20&task_since_hours=6&sys_limit=50');
+      renderOpLogs(d.oplog ? d.oplog.logs : []);
+      renderTaskLogs(d.tasks ? d.tasks.logs : []);
+      renderSysLogs(d.system ? d.system.logs : [], d.system ? d.system.tags : []);
+      $('logFilterBox').innerHTML = '';
+    } catch (e) {
+      $('oplogBody').innerHTML = '<tr><td colspan="7" class="text-center empty-hint py-4">加载失败: ' + esc(e.message) + '</td></tr>';
+    }
+  }
+  function renderOpLogs(logs) {
+    $('oplogBody').innerHTML = logs.length ? logs.map(function (l) {
+      var act = l.path || '';
+      return '<tr><td class="small text-secondary font-monospace" style="white-space:nowrap">' + esc(l.ts || l.created_at || '') + '</td>' +
+        '<td class="small">' + esc(l.user_name || '') + '</td>' +
+        '<td class="small text-secondary">' + esc(l.client_name || '') + '</td>' +
+        '<td class="small text-secondary font-monospace">' + esc(l.ip || '') + '</td>' +
+        '<td class="small fw-semibold" title="' + esc(act + (l.query ? '?' + l.query : '')) + '">' + esc(act) + '</td>' +
+        '<td><span class="badge bg-secondary-lt">' + esc(l.method || '') + '</span></td>' +
+        '<td>' + (l.status != null && l.status >= 400 ? badge(String(l.status), 'bg-red') : badge(String(l.status == null ? '' : l.status), 'bg-green-lt text-success')) + '</td></tr>';
+    }).join('') : '<tr><td colspan="7" class="text-center empty-hint py-4">暂无操作日志</td></tr>';
+  }
+  function renderTaskLogs(logs) {
+    // 清理后后端返回空数组: 必须显示空, 不能回退到内存缓存 taskCache
+    var list = (logs !== undefined) ? (logs || []) : taskCache;
+    $('tasklogBody').innerHTML = list.length ? list.map(function (t) {
+      var s = TASK_STATUS[t.status] || [t.status || '未知', 'bg-secondary'];
+      var p = t.progress || {};
+      var pctv = p.total ? Math.round((p.done || 0) / p.total * 100) : 0;
+      return '<tr><td class="text-secondary font-monospace">' + (t.id != null ? t.id : '') + '</td>' +
+        '<td>' + badge(s[0], s[1]) + '</td>' +
+        '<td class="small text-secondary">' + esc(t.requested_by || '') + '</td>' +
+        '<td class="small">' + esc(t.label || t.type || '') + '</td>' +
+        '<td><div class="progress prog-sm"><div class="progress-bar" style="width:' + pctv + '%"></div></div></td>' +
+        '<td class="small text-secondary">' + fmtTime(t.created_at || t.started_at) + '</td></tr>';
+    }).join('') : '<tr><td colspan="6" class="text-center empty-hint py-4">暂无任务记录</td></tr>';
+  }
+  function renderSysLogs(logs, tags) {
+    var tagSel = $('sysTagSel');
+    var tag = tagSel ? tagSel.value : '';
+    var list = tag ? (logs || []).filter(function (l) { return l.tag === tag; }) : (logs || []);
+    var colors = { fetch: 'bg-blue-lt text-blue', prefetch: 'bg-cyan-lt text-cyan', dingtalk: 'bg-purple-lt text-purple', auth: 'bg-green-lt text-green', db: 'bg-amber-lt text-amber' };
+    $('logFilterBox').innerHTML = '<select class="form-select form-select-sm" id="sysTagSel" style="width:auto" onchange="app.renderSysLogs()">' +
+      '<option value="">全部标签</option>' + (tags || []).map(function (x) {
+        return '<option value="' + esc(x.tag) + '"' + (tag === x.tag ? ' selected' : '') + '>' + esc(x.tag) + '(' + (x.count || 0) + ')</option>';
+      }).join('') + '</select>';
+    $('syslogBody').innerHTML = list.length ? list.map(function (l) {
+      return '<tr><td class="small text-secondary font-monospace" style="white-space:nowrap">' + esc(l.ts || '') + '</td>' +
+        '<td><span class="badge ' + (colors[l.tag] || 'bg-secondary-lt') + '">' + esc(l.tag || '') + '</span></td>' +
+        '<td class="small" style="max-width:560px">' + esc(l.msg || '') + '</td></tr>';
+    }).join('') : '<tr><td colspan="3" class="text-center empty-hint py-4">暂无系统日志</td></tr>';
+  }
+  function switchLogs(ev, tab) {
+    if (ev) ev.preventDefault();
+    state.logTab = tab;
+    var tabs = $('logTabs').querySelectorAll('.nav-link');
+    for (var i = 0; i < tabs.length; i++) tabs[i].classList.toggle('active', tabs[i].dataset.logtab === tab);
+    $('logPaneOp').classList.toggle('d-none', tab !== 'op');
+    $('logPaneTask').classList.toggle('d-none', tab !== 'task');
+    $('logPaneSys').classList.toggle('d-none', tab !== 'sys');
+  }
+  async function pruneLogs() {
+    if (!isAdmin) return;
+    if (!confirm('清理当前 Tab 的日志记录?')) return;
+    try {
+      var r;
+      if (state.logTab === 'op') r = await api('/api/oplog/records', { method: 'DELETE' });
+      else if (state.logTab === 'task') r = await api('/api/logs/tasks', { method: 'DELETE' });
+      else {
+        var tag = ($('sysTagSel') || {}).value || '';
+        r = await api('/api/logs/system' + (tag ? '?sys_tag=' + encodeURIComponent(tag) : ''), { method: 'DELETE' });
+      }
+      toast('已清理 ' + (r.deleted || 0) + ' 条', 'success');
+      renderLogs();
+    } catch (e) { toast('清理失败: ' + e.message, 'danger'); }
+  }
+
+  /* ---------- 系统设置 ---------- */
+  var COOKIE_KEYS = ['tanyu-account-id', 'tanyu-agent-account', 'tanyu-group-account', 'tanyu-group-id'];
+  var cookieExpiryCache = { expires: {}, daysLeft: null };
+  async function loadCookieExpiry() {
+    try { cookieExpiryCache = await api('/api/auth/cookie-expiry'); } catch (e) {}
+    var exp = cookieExpiryCache.expires || {};
+    var daysLeft = cookieExpiryCache.daysLeft;
+    var alertEl = $('cookieExpireAlert');
+    var keys = Object.keys(exp);
+    if (!keys.length) { alertEl.style.display = 'none'; }
+    else {
+      var nearest = null, nearestDay = null;
+      keys.forEach(function (k) { if (!nearestDay || exp[k] < nearestDay) { nearestDay = exp[k]; nearest = k; } });
+      $('cookieExpireText').innerHTML = '<b>Cookie 到期提醒:</b> <code>' + esc(nearest) + '</code> 将于 <b>' + esc(nearestDay) + '</b> 到期' + (daysLeft != null ? '(剩余 ' + Math.max(daysLeft, 0) + ' 天)' : '') + ', 请及时更新下方 Cookie 值。';
+      alertEl.style.display = 'block';
+    }
+    $('cookiesFormBody').innerHTML = COOKIE_KEYS.map(function (k) {
+      var expTxt = exp[k] || '未记录';
+      var st = exp[k] ? badge(esc(exp[k]), 'bg-secondary-lt') : badge('未配置', 'bg-yellow');
+      return '<tr><td class="font-monospace small">' + esc(k) + '</td><td>' + st + '</td>' +
+        '<td><input type="password" class="form-control form-control-sm" data-cookie="' + esc(k) + '" placeholder="留空 = 不修改" autocomplete="off"></td></tr>';
+    }).join('');
+    return cookieExpiryCache;
+  }
+  async function saveCookies() {
+    var inputs = document.querySelectorAll('[data-cookie]');
+    var cookies = {};
+    var any = false;
+    inputs.forEach(function (inp) {
+      if (inp.value) { cookies[inp.dataset.cookie] = inp.value; any = true; }
+    });
+    if (!any) { toast('没有输入任何新值'); return; }
+    try {
+      await api('/api/cookies', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cookies: cookies }) });
+      toast('Cookie 已保存', 'success');
+      inputs.forEach(function (inp) { inp.value = ''; });
+    } catch (e) { toast('保存失败: ' + e.message, 'danger'); }
+  }
+
+  /* ---------- 微信扫码登录(二维码, 免浏览器) ---------- */
+  var wxQrTimer = null, wxQrActive = false, wxQrConfirmed = false;
+  async function wxQrStart() {
+    var box = $('wxQrBox'), tip = $('wxQrTip'), panel = $('wxQrPanel');
+    if (!box) return;
+    box.innerHTML = '<span class="text-secondary small">生成中…</span>';
+    panel.innerHTML = '<span class="text-secondary">正在获取二维码…</span>';
+    wxQrActive = true; wxQrConfirmed = false;
+    var d;
+    try {
+      d = await api('/api/wx-qr/start', { method: 'POST' });
+    } catch (e) {
+      wxQrActive = false;
+      box.innerHTML = '<button class="btn btn-sm btn-primary" onclick="app.wxQrStart()">重新生成</button>';
+      panel.innerHTML = '<span class="text-danger">' + esc(e.message) + '</span>';
+      return;
+    }
+    box.innerHTML = '<img src="' + (d.qrImage || esc(d.qrCodeUrl)) + '" style="width:178px;height:178px;border-radius:6px" alt="微信扫码登录二维码">';
+    tip.textContent = '有效期约 ' + (d.expiresIn || 150) + ' 秒, 请尽快扫码';
+    panel.innerHTML = '<span class="text-secondary">等待扫码…</span>';
+    clearInterval(wxQrTimer);
+    wxQrTimer = setInterval(wxQrPoll, 2000);
+  }
+  async function wxQrPoll() {
+    if (!wxQrActive) return;
+    var d;
+    try { d = await api('/api/wx-qr/status'); } catch (e) { return; }
+    var panel = $('wxQrPanel'), box = $('wxQrBox'), tip = $('wxQrTip');
+    if (!panel) { wxQrActive = false; return; }
+    if (d.phase === 'waiting') return;
+    if (d.phase === 'confirmed') {
+      var infos = d.accountInfos || [];
+      if (infos.length && !wxQrConfirmed) {
+        wxQrConfirmed = true;
+        tip.textContent = '已扫码, 请选择集团';
+        panel.innerHTML = '<div class="text-success fw-semibold mb-2">✓ 扫码成功, 请选择要进入的集团</div>' +
+          infos.map(function (g, i) {
+            var name = g.groupName || g.accountName || ('集团 ' + (i + 1));
+            return '<div class="d-flex align-items-center justify-content-between border rounded-2 px-3 py-2 mb-2">' +
+              '<span class="fw-semibold">' + esc(name) + '</span>' +
+              '<button class="btn btn-sm btn-primary" onclick="app.wxQrSelect(\'' + esc(String(g.accountId)) + '\',\'' + esc(String(g.accountType == null ? 3 : g.accountType)) + '\')">进入</button></div>';
+          }).join('') || '<span class="text-danger">未返回可进入的集团</span>';
+      }
+      return;
+    }
+    if (d.phase === 'done') {
+      clearInterval(wxQrTimer); wxQrTimer = null; wxQrActive = false;
+      box.innerHTML = '<div class="text-success" style="font-size:2.4rem;line-height:1">✓</div>';
+      tip.textContent = 'Cookie 已更新';
+      panel.innerHTML = '<span class="text-success fw-semibold">登录成功, Cookie 已自动保存</span>';
+      loadCookieExpiry();
+      loadGroups();
+      renderGroups();
+      toast('登录成功, Cookie 已更新', 'success');
+      return;
+    }
+    if (d.phase === 'expired' || d.phase === 'error') {
+      clearInterval(wxQrTimer); wxQrTimer = null; wxQrActive = false;
+      box.innerHTML = '<button class="btn btn-sm btn-primary" onclick="app.wxQrStart()">重新生成</button>';
+      tip.textContent = '用绑定探域的微信扫码';
+      panel.innerHTML = '<span class="text-danger">' + esc(d.error || (d.phase === 'expired' ? '二维码已过期, 请重新生成' : '登录失败')) + '</span>';
+      return;
+    }
+  }
+  async function wxQrSelect(accountId, accountType) {
+    var panel = $('wxQrPanel');
+    if (!panel) return;
+    panel.innerHTML = '<span class="text-secondary">正在登录并获取 Cookie…</span>';
+    clearInterval(wxQrTimer); wxQrTimer = null; wxQrActive = false;
+    try {
+      var d = await api('/api/wx-qr/select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id: String(accountId), account_type: Number(accountType || 3) })
+      });
+      var box = $('wxQrBox'), tip = $('wxQrTip');
+      box.innerHTML = '<div class="text-success" style="font-size:2.4rem;line-height:1">✓</div>';
+      tip.textContent = 'Cookie 已更新';
+      panel.innerHTML = '<span class="text-success fw-semibold">登录成功' + (d.group && d.group.name ? ' · ' + esc(d.group.name) : '') + '</span>' +
+        '<div class="text-secondary mt-1">Cookie 已自动保存, 店铺列表已同步</div>';
+      loadCookieExpiry();
+      loadGroups();
+      renderGroups();
+      toast('登录成功, Cookie 已更新', 'success');
+    } catch (e) {
+      panel.innerHTML = '<span class="text-danger">' + esc(e.message) + '</span>' +
+        '<div class="mt-2"><button class="btn btn-sm btn-outline-primary" onclick="app.wxQrStart()">重新登录</button></div>';
+    }
+  }
+  function renderGroups() {
+    $('groupsBody').innerHTML = (groupsData && groupsData.groups ? groupsData.groups : []).map(function (g) {
+      var cur = g.current ? badge('当前', 'bg-blue') : '';
+      var sw = g.current ? '' : '<button class="btn btn-sm btn-outline-primary" onclick="app.switchGroup(\'' + esc(g.groupId) + '\')">切换</button>';
+      return '<div class="list-group-item"><div class="row align-items-center">' +
+        '<div class="col-auto">' + (g.platform != null ? pfBadge(g.platform) : '') + '</div>' +
+        '<div class="col"><div class="fw-semibold" style="font-size:.9rem">' + esc(g.groupName || g.groupId) + '</div>' +
+        '<div class="text-secondary small font-monospace">' + esc(g.groupId) + '</div></div>' +
+        '<div class="col-auto d-flex align-items-center gap-2">' + cur + sw + '</div></div></div>';
+    }).join('') || '<div class="list-group-item text-secondary small">暂无集团</div>';
+  }
+  async function startPrefetch() {
+    var s = $('pfStart').value, e = $('pfEnd').value;
+    if (!s || !e) { toast('请选择开始与结束日期'); return; }
+    try {
+      await api('/api/trace/prefetch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ start: s, end: e }) });
+      toast('补抓任务已启动, 可到任务中心查看进度', 'success');
+      location.hash = '#/tasks';
+    } catch (err) { toast('启动失败: ' + err.message, 'danger'); }
+  }
+  async function renderDingtalk() {
+    var el = $('dingtalkBody');
+    try {
+      var d = await api('/api/dingtalk/status');
+      var rows = [
+        ['模块状态', d.enabled ? badge('已启用', 'bg-green-lt text-success') : badge('未启用', 'bg-yellow')],
+        ['Webhook', d.webhook_configured ? badge('已配置', 'bg-green-lt text-success') : badge('未配置', 'bg-secondary-lt')],
+        ['长连接', d.stream_configured ? (d.stream_running ? badge('运行中', 'bg-green-lt text-success') : badge('未运行', 'bg-yellow')) : badge('未配置', 'bg-secondary-lt')]
+      ];
+      el.innerHTML = rows.map(function (r) {
+        return '<div class="d-flex align-items-center justify-content-between py-1 border-bottom" style="border-color:var(--tblr-border-color-translucent)!important"><span class="text-secondary small">' + r[0] + '</span>' + r[1] + '</div>';
+      }).join('') +
+        '<div class="btn-list mt-3">' +
+        '<button class="btn btn-outline-primary btn-sm" onclick="app.pushDingtalk()"><span class="me-1" data-ic="send"></span>测试推送</button>' +
+        '<button class="btn btn-outline-secondary btn-sm" onclick="app.editDingtalk()">编辑配置</button></div>';
+      paintIcons();
+    } catch (e) {
+      el.innerHTML = '<span class="empty-hint">加载失败: ' + esc(e.message) + '</span>';
+    }
+  }
+  async function pushDingtalk() {
+    try {
+      var d = await api('/api/dingtalk/push?platform=all&stat_type=natural_week');
+      toast('推送成功: ' + (d.message || JSON.stringify(d).slice(0, 80)), 'success');
+    } catch (e) { toast('推送失败: ' + e.message, 'danger'); }
+  }
+  function editDingtalk() {
+    var url = prompt('钉钉自定义机器人 Webhook 地址(留空取消):');
+    if (url === null) return;
+    if (!url) { toast('已取消'); return; }
+    api('/api/dingtalk/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ webhook_url: url }) })
+      .then(function () { toast('钉钉配置已保存', 'success'); renderDingtalk(); })
+      .catch(function (e) { toast('保存失败: ' + e.message, 'danger'); });
+  }
+  async function renderUsers() {
+    $('usersCard').style.display = isAdmin ? '' : 'none';
+    if (!isAdmin) return;
+    try {
+      var d = await api('/api/admin/users');
+      var users = d.users || [];
+      adminUsersCache = users;
+      $('usersBody').innerHTML = users.length ? users.map(function (u) {
+        var isSelf = currentUser && u.id === currentUser.id;
+        var role = u.role === 'admin' ? badge('管理员', 'bg-purple-lt text-purple') : badge('用户', 'bg-secondary-lt');
+        var st = u.status === 'banned' ? badge('封禁', 'bg-red') : badge('正常', 'bg-green-lt text-success');
+        var noteTxt = u.note
+          ? '<span class="text-truncate d-inline-block" style="max-width:180px" title="' + esc(u.note) + '">' + esc(u.note) + '</span>'
+          : '<span class="text-secondary">—</span>';
+        var legacySw = u.role === 'admin'
+          ? '<span class="badge bg-blue-lt text-blue">恒可访问</span>'
+          : '<div class="form-check form-switch"><input class="form-check-input" type="checkbox" data-uid="' + u.id + '"' + (u.allow_legacy ? ' checked' : '') + ' onchange="app.toggleUserLegacy(' + u.id + ', this.checked)"></div>';
+        var acts = '<button class="btn btn-sm btn-ghost" onclick="app.editUserNote(' + u.id + ')">备注</button>';
+        acts += '<button class="btn btn-sm btn-ghost" onclick="app.resetPwd(' + u.id + ')">改密码</button>';
+        if (!isSelf) {
+          acts += u.status === 'banned'
+            ? '<button class="btn btn-sm btn-ghost" onclick="app.setUserStatus(' + u.id + ',\'active\')">解封</button>'
+            : '<button class="btn btn-sm btn-ghost" onclick="app.setUserStatus(' + u.id + ',\'banned\')">封禁</button>';
+          acts += '<button class="btn btn-sm btn-ghost" onclick="app.setUserExpire(' + u.id + ')">到期</button>';
+        } else { acts += '<span class="badge bg-secondary-lt">自己</span>'; }
+        return '<tr><td class="text-secondary font-monospace">' + u.id + '</td>' +
+          '<td class="small font-monospace">' + esc(u.username) + '</td><td>' + role + '</td><td>' + st + '</td>' +
+          '<td class="small text-secondary">' + esc(u.created_at || '') + '</td>' +
+          '<td class="small text-secondary">' + esc(u.last_login_at || '—') + '</td>' +
+          '<td class="small">' + (u.expire_date ? esc(u.expire_date) : '<span class="text-secondary">永久</span>') + '</td>' +
+          '<td class="small">' + noteTxt + '</td>' +
+          '<td class="text-end">' + legacySw + '</td>' +
+          '<td class="text-end"><div class="btn-list justify-content-end">' + acts + '</div></td></tr>';
+      }).join('') : '<tr><td colspan="10" class="text-center empty-hint py-3">暂无用户</td></tr>';
+      var cfg = await api('/api/auth/config').catch(function () { return {}; });
+      $('regSwitch').checked = !cfg || cfg.registerEnabled !== false;
+    } catch (e) {
+      $('usersBody').innerHTML = '<tr><td colspan="10" class="text-center empty-hint py-3">加载失败: ' + esc(e.message) + '</td></tr>';
+    }
+  }
+  async function editUserNote(uid) {
+    var u = adminUsersCache.find(function (x) { return x.id === uid; }) || { username: String(uid), note: '' };
+    var v = prompt('用户「' + u.username + '」备注(留空=清除):', u.note || '');
+    if (v === null) return;
+    try {
+      await api('/api/admin/users/' + uid + '/note', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note: v.trim() }) });
+      toast('备注已更新', 'success');
+      renderUsers();
+    } catch (e) { toast('更新失败: ' + e.message, 'danger'); }
+  }
+
+  /* ---------- 更多板块(预留 + 用户管理, 含旧版看板开关) ---------- */
+  async function renderMore() {
+    renderUsers();  // 用户管理卡片: 行内含"旧版看板"访问开关(仅管理员可见表格)
+  }
+  async function toggleUserLegacy(uid, allow) {
+    try {
+      var d = await api('/api/admin/users/' + uid + '/legacy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ allow: allow }) });
+      toast((allow ? '已开放' : '已关闭') + '该用户的旧版看板访问', 'success');
+    } catch (e) {
+      toast('操作失败: ' + e.message, 'danger');
+      renderUsers();
+    }
+  }
+  async function toggleRegister() {
+    var on = $('regSwitch').checked;
+    try {
+      var d = await api('/api/admin/settings/register', { method: 'POST', body: String(on) });
+      toast(d.registerEnabled ? '已开放注册' : '已关闭注册', 'success');
+    } catch (e) { $('regSwitch').checked = !on; toast('切换失败: ' + e.message, 'danger'); }
+  }
+  async function resetPwd(uid) {
+    var name = prompt('重置密码的用户 ID: ' + uid + '\n请输入新密码(至少 6 位):');
+    if (!name) return;
+    try { await api('/api/admin/users/' + uid + '/password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ new_password: name }) }); toast('密码已重置', 'success'); renderUsers(); }
+    catch (e) { toast('重置失败: ' + e.message, 'danger'); }
+  }
+  async function setUserStatus(uid, status) {
+    if (!confirm('确认' + (status === 'banned' ? '封禁' : '解封') + '该用户?')) return;
+    try { await api('/api/admin/users/' + uid + '/status', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: status }) }); toast('操作成功', 'success'); renderUsers(); }
+    catch (e) { toast('操作失败: ' + e.message, 'danger'); }
+  }
+  async function setUserExpire(uid) {
+    var v = prompt('设置到期时间(YYYY-MM-DD, 留空=永久):');
+    if (v === null) return;
+    var expire_date = v.trim();
+    if (expire_date && !/^\d{4}-\d{2}-\d{2}$/.test(expire_date)) { toast('格式应为 YYYY-MM-DD'); return; }
+    try { await api('/api/admin/users/' + uid + '/expire', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expire_date: expire_date || null }) }); toast('到期时间已更新', 'success'); renderUsers(); }
+    catch (e) { toast('更新失败: ' + e.message, 'danger'); }
+  }
+  function createUser() { showModal('mCreateUser'); }
+  async function doCreateUser() {
+    var username = $('cuName').value.trim();
+    var password = $('cuPwd').value;
+    var role = $('cuRole').value;
+    var expire_date = $('cuExpire').value || null;
+    if (!/^[A-Za-z0-9_.@-]{3,64}$/.test(username)) { toast('用户名格式非法'); return; }
+    if (password.length < 6) { toast('密码至少 6 位'); return; }
+    try {
+      await api('/api/admin/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: username, password: password, role: role, expire_date: expire_date }) });
+      toast('用户已创建', 'success');
+      hideModal('mCreateUser');
+      renderUsers();
+    } catch (e) { toast('创建失败: ' + e.message, 'danger'); }
+  }
+  async function renderSettings() {
+    renderGroups();
+    // 普通用户: 不展示 Cookie 管理 / 微信扫码登录 / 钉钉机器人(管理员专属运维配置)
+    var show = $('cookieCard'), ding = $('dingtalkCard'), wxq = $('wxQrCard');
+    if (show) show.style.display = isAdmin ? '' : 'none';
+    if (ding) ding.style.display = isAdmin ? '' : 'none';
+    if (wxq) wxq.style.display = isAdmin ? '' : 'none';
+    var jobs = [loadTraceConfig()];
+    if (isAdmin) { jobs.push(loadCookieExpiry()); jobs.push(renderDingtalk()); }
+    await Promise.all(jobs);
+    paintIcons();
+    var y = new Date(Date.now() - 86400000);
+    var ystr = y.getFullYear() + '-' + String(y.getMonth() + 1).padStart(2, '0') + '-' + String(y.getDate()).padStart(2, '0');
+    if (!$('pfStart').value) $('pfStart').value = ystr;
+    if (!$('pfEnd').value) $('pfEnd').value = ystr;
+  }
+
+  /* 数据校准 + 抓取账号(管理员) */
+  async function loadTraceConfig() {
+    var calib = $('calibCard'), acct = $('tanyuAcctCard');
+    if (calib) calib.style.display = isAdmin ? '' : 'none';
+    if (acct) acct.style.display = isAdmin ? '' : 'none';
+    if (!isAdmin) return;
+    try {
+      var d = await api('/api/config/trace');
+      $('cfgForceDays').value = d.prefetch_force_days != null ? d.prefetch_force_days : 1;
+      if (!$('calibDays').value || $('calibDays').value === '2') {
+        $('calibDays').value = (d.prefetch_force_days > 0 ? Math.min(2, d.prefetch_force_days) : 2);
+      }
+      var t = d.tanyu || {};
+      var ckNames = ['tanyu-account-id', 'tanyu-agent-account', 'tanyu-group-account', 'tanyu-group-id'];
+      var exp = t.cookie_expires || {};
+      var ckRows = ckNames.map(function (k) {
+        var ok = t.cookie_configured && t.cookie_configured[k];
+        var st = ok ? badge('已配置', 'bg-green-lt text-success') : badge('未配置', 'bg-yellow');
+        var expTxt = exp[k] ? (' · 到期 ' + esc(exp[k])) : '';
+        return '<div class="d-flex align-items-center justify-content-between py-1" style="border-bottom:1px solid var(--tblr-border-color-translucent)">' +
+          '<span class="text-secondary small font-monospace">' + k + '</span>' +
+          '<span>' + st + '<span class="text-secondary small ms-2">' + expTxt + '</span></span></div>';
+      }).join('');
+      var groupName = (d.current_group && d.current_group.name) || '—';
+      $('tanyuAcctBody').innerHTML =
+        '<div class="d-flex align-items-center justify-content-between mb-2">' +
+        '<span class="text-secondary small">登录账号 ID</span><b class="font-monospace">' + esc(t.account_id || '—') + '</b></div>' +
+        '<div class="d-flex align-items-center justify-content-between mb-2">' +
+        '<span class="text-secondary small">当前激活集团</span><b>' + esc(groupName) + '</b></div>' +
+        '<div class="mb-2">' + ckRows + '</div>' +
+        '<div class="btn-list mt-3">' +
+        '<button class="btn btn-outline-primary btn-sm" onclick="app.startBrowserLogin()"><span class="me-1" data-ic="key"></span>浏览器登录更新 Cookie</button></div>' +
+        '<div class="form-hint mt-2">点击后本机弹出浏览器, 登录探域后台后自动抓取 Cookie 写入 config.json</div>';
+    } catch (e) {
+      $('tanyuAcctBody').innerHTML = '<span class="empty-hint">加载失败: ' + esc(e.message) + '</span>';
+    }
+  }
+  async function saveTraceConfig() {
+    var v = parseInt($('cfgForceDays').value, 10);
+    if (isNaN(v) || v < 0 || v > 7) { toast('强制重写天数需为 0~7'); return; }
+    try {
+      var d = await api('/api/config/trace', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prefetch_force_days: v }) });
+      toast('已保存: 夜间强制重写 ' + d.prefetch_force_days + ' 天', 'success');
+    } catch (e) { toast('保存失败: ' + e.message, 'danger'); }
+  }
+  async function startCalibrate() {
+    var days = parseInt($('calibDays').value, 10);
+    if (isNaN(days) || days < 1 || days > 7) { toast('校准天数需为 1~7'); return; }
+    try {
+      var d = await api('/api/trace/calibrate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days: days }) });
+      toast((d.message || '数据校准已启动') + ', 正在跳转任务中心…', 'success');
+      location.hash = '#/tasks';
+    } catch (e) { toast('校准启动失败: ' + e.message, 'danger'); }
+  }
+  async function startBrowserLogin() {
+    try {
+      var d = await api('/api/login/start');
+      toast(d.message || (d.ok ? '浏览器已启动' : '登录流程已在运行'), d.ok ? 'success' : 'warning');
+    } catch (e) { toast('启动失败: ' + e.message, 'danger'); }
+  }
+
+  /* ---------- 快捷操作 / 风控 / 通知 / 主题 ---------- */
+  async function startAudit(selOnly) {
+    var params = [];
+    if (state.platform) params.push('platform=' + state.platform);
+    var sel = Object.keys(state.selShops).filter(function (k) { return state.selShops[k]; });
+    if (selOnly && sel.length) params.push('shop_ids=' + sel.join(','));
+    params.push('mode=audit');
+    var scopeTxt = (selOnly && sel.length) ? '所选 ' + sel.length + ' 家店铺' : '全量店铺';
+    try {
+      await api('/api/trace/today?' + params.join('&'), { method: 'POST' });
+      toast('已发起「' + scopeTxt + '」抓取核算任务, 正在跳转任务中心…', 'success');
+      location.hash = '#/tasks';
+    } catch (e) { toast('发起失败: ' + e.message, 'danger'); }
+  }
+  function gotoPrefetch() { location.hash = '#/settings'; setTimeout(function () { $('pfStart').focus(); }, 300); }
+  async function syncShops() {
+    try { var r = await api('/api/shops/sync', { method: 'POST' }); toast('店铺同步完成: ' + (r.shops ? r.shops.length + ' 家' : ''), 'success'); loadGroups(); }
+    catch (e) { toast('同步失败: ' + e.message, 'danger'); }
+  }
+  async function loadRisk() {
+    try {
+      var d = await api('/api/risk');
+      var b = $('riskBanner');
+      if (d.triggered) {
+        $('riskBannerText').innerHTML = '<b>风控已触发:</b> ' + esc(d.reason || '未知原因') + (d.at ? ' (' + fmtTime(d.at) + ')' : '') + ' — 抓取任务将自动停止, 请检查登录状态';
+        b.classList.add('show');
+      } else { b.classList.remove('show'); }
+    } catch (e) {}
+  }
+  async function loadRiskForBell() {
+    try {
+      var d = await api('/api/notifications?limit=20');
+      var items = d.items || [];
+      var bell = $('btnBell');
+      if (bell) {
+        var dot = bell.querySelector('.dot');
+        if (dot) dot.style.display = d.unread > 0 ? '' : 'none';
+        bell.title = d.unread > 0 ? ('通知 (' + d.unread + ' 条未读)') : '通知';
+      }
+      $('bellList').innerHTML = items.length ? items.map(function (n) {
+        var un = n.read ? '' : '<span class="badge bg-red ms-1">未读</span>';
+        var ic = n.level === 'danger' ? 'alert' : n.level === 'success' ? 'check' : 'bell';
+        var tc = n.level === 'danger' ? 'danger' : n.level === 'success' ? 'success' : 'secondary';
+        return '<div class="list-group-item' + (n.read ? '' : ' bg-blue-lt') + '" style="cursor:pointer" onclick="app.notifyRead(\'' + esc(n.id) + '\')">' +
+          '<div class="d-flex align-items-start gap-2">' +
+          '<span class="text-' + tc + '" style="flex:none">' + icon(ic, 16) + '</span>' +
+          '<div class="flex-fill"><div class="fw-semibold" style="font-size:.8rem">' + esc(n.title) + un + '</div>' +
+          '<div class="text-secondary" style="font-size:.72rem;white-space:pre-line">' + esc(n.body) + '</div>' +
+          '<div class="text-secondary" style="font-size:.68rem">' + fmtTime(n.at) + '</div></div></div></div>';
+      }).join('') : '<div class="list-group-item text-secondary small">暂无通知</div>';
+    } catch (e) {}
+  }
+  async function notifyRead(id) {
+    try {
+      await api('/api/notifications/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: [id] }) });
+    } catch (e) {}
+    loadRiskForBell();
+  }
+  async function notifyClearAll() {
+    if (!isAdmin) { toast('仅管理员可清空通知'); return; }
+    try { await api('/api/notifications/clear', { method: 'POST' }); toast('通知已清空', 'success'); } catch (e) { toast('清空失败: ' + e.message, 'danger'); }
+    loadRiskForBell();
+  }
+  function toggleTheme() {
+    state.theme = state.theme === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.bsTheme = state.theme;
+    try { localStorage.setItem('tanyu_app_theme', state.theme); } catch (e) {}
+    paintIcons();
+    if (rendered.dashboard) renderDashboard();
+  }
+  async function logout(ev) {
+    if (ev) ev.preventDefault();
+    try { await api('/api/auth/logout', { method: 'POST' }); } catch (e) {}
+    localStorage.removeItem('tanyu_token');
+    localStorage.removeItem('tanyu_user');
+    location.href = '/login';
+  }
+
+  /* ---------- 通用 ---------- */
+  function refresh() {
+    var b = $('btnRefresh');
+    b.style.transform = 'rotate(180deg)';
+    setTimeout(function () { b.style.transform = ''; }, 400);
+    var name = currentViewName();
+    rendered[name] = false;
+    renderPage(name);
+    loadRisk();
+    loadRiskForBell();
+    toast('已刷新');
+  }
+  function searchHint() { toast('全局搜索暂未开放, 请在各模块内筛选'); }
+  function downloadCSV(filename, rows) {
+    var csv = rows.map(function (r) { return r.map(function (c) { return '"' + String(c).replace(/"/g, '""') + '"'; }).join(','); }).join('\n');
+    var blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  /* ---------- 图标渲染 ---------- */
+  function paintIcons() {
+    var nodes = document.querySelectorAll('[data-ic]');
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      n.innerHTML = icon(n.dataset.ic, n.dataset.size || 18);
+    }
+    $('btnTheme').innerHTML = icon(state.theme === 'dark' ? 'sun' : 'moon', 18);
+    $('btnBell').innerHTML = icon('bell', 18) + '<span class="dot" style="display:none"></span>';
+    $('brandLogo').innerHTML = icon('chart', 18);
+  }
+
+  /* ---------- 初始化 ---------- */
+  async function boot() {
+    ensureClientIdentity();
+    if (!await checkAuth()) return;
+    isAdmin = currentUser && currentUser.role === 'admin';
+    try { state.theme = localStorage.getItem('tanyu_app_theme') || 'light'; } catch (e) {}
+    document.documentElement.dataset.bsTheme = state.theme;
+    paintIcons();
+    $('userName').textContent = currentUser.username;
+    $('userRole').textContent = isAdmin ? '管理员' : '普通用户';
+    $('userAvatar').textContent = (currentUser.username || '?').charAt(0).toUpperCase();
+    $('sideUserName').textContent = currentUser.username;
+    $('sideUserRole').textContent = isAdmin ? '管理员' : '普通用户';
+    $('sideAvatar').textContent = (currentUser.username || '?').charAt(0).toUpperCase();
+    // 旧版看板入口: 仅管理员可见(普通用户需在「更多」板块被开放, 前端入口仍隐藏)
+    var ml = $('menuLegacy');
+    if (ml) ml.style.display = isAdmin ? '' : 'none';
+    var fl = document.querySelector('.legacyLink');
+    if (fl) fl.style.display = isAdmin ? '' : 'none';
+    $('topPlatformSel').addEventListener('change', function (e) {
+      state.platform = e.target.value;
+      clearShopsSel();  // 切平台清空店铺勾选(核算范围随平台重置)
+      var ss = $('shopsPlatform'); if (ss) ss.value = state.platform;
+      var st = $('staffPlatform'); if (st) st.value = state.platform;
+      reloadCurrent();
+    });
+    $('topGroupSel').addEventListener('change', function (e) {
+      if (e.target.value && e.target.value !== state.groupId) switchGroup(e.target.value);
+    });
+    window.addEventListener('hashchange', route);
+    var baseJobs = [loadPlatforms(), loadGroups()];
+    if (isAdmin) baseJobs.push(loadCookieExpiry());  // Cookie 到期信息仅管理员可见
+    await Promise.all(baseJobs);
+    allShops = [];
+    if (!location.hash) location.hash = '#/dashboard';
+    route();
+    loadRisk();
+    loadRiskForBell();
+    setInterval(function () {
+      loadRisk();
+      loadRiskForBell();
+    }, 30000);
+    setInterval(function () {
+      if (currentViewName() === 'tasks') renderTasks();
+    }, 5000);
+  }
+
+  /* ---------- 暴露 ---------- */
+  window.app = {
+    refresh: refresh, toggleTheme: toggleTheme, logout: logout, searchHint: searchHint,
+    trendDays: trendDays, salesTrendDays: salesTrendDays,
+    renderShops: renderShops, renderShopsTable: renderShopsTable, sortShops: sortShops, shopsPage: shopsPage, exportShops: exportShops,
+    shopDetail: shopDetail, viewShopTraceFromModal: viewShopTraceFromModal,
+    toggleShopSel: toggleShopSel, toggleShopsSelAll: toggleShopsSelAll, clearShopsSel: clearShopsSel,
+    renderStaff: renderStaff, renderStaffGrid: renderStaffGrid, staffMode: staffMode, exportStaff: exportStaff,
+    startStaffToday: startStaffToday,
+    staffLoadMore: staffLoadMore, toggleStaffChip: toggleStaffChip,
+    renderTrace: renderTrace, viewMessages: viewMessages, viewShopTrace: viewShopTrace,
+    renderMsgList: renderMsgList, msgDayChange: msgDayChange, msgLoadMore: msgLoadMore,
+    tasksPage: tasksPage, toggleTaskSel: toggleTaskSel, toggleTasksSelAll: toggleTasksSelAll, delSelectedTasks: delSelectedTasks,
+    switchLogs: switchLogs, renderSysLogs: function () { renderLogs(); }, pruneLogs: pruneLogs,
+    saveCookies: saveCookies, switchGroup: switchGroup, startPrefetch: startPrefetch,
+    wxQrStart: wxQrStart, wxQrSelect: wxQrSelect,
+    notifyRead: notifyRead, notifyClearAll: notifyClearAll,
+    pushDingtalk: pushDingtalk, editDingtalk: editDingtalk,
+    toggleRegister: toggleRegister, createUser: createUser, doCreateUser: doCreateUser,
+    resetPwd: resetPwd, setUserStatus: setUserStatus, setUserExpire: setUserExpire,
+    saveTraceConfig: saveTraceConfig, startCalibrate: startCalibrate, startBrowserLogin: startBrowserLogin,
+    renderMore: renderMore, editUserNote: editUserNote, toggleUserLegacy: toggleUserLegacy,
+    startAudit: startAudit, gotoPrefetch: gotoPrefetch, syncShops: syncShops
+  };
+
+  document.addEventListener('DOMContentLoaded', boot);
+})();
+</script>
+</body>
+</html>

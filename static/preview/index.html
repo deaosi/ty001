@@ -1,0 +1,1648 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-bs-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>探域数据看板 · 新版预览</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../vendor/tabler/tabler.min.css">
+<style>
+  /* ═══════════════════ 预览版自定义样式(Tabler 之上) ═══════════════════ */
+  body { font-family: 'Inter', -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+
+  /* 品牌 logo */
+  .brand-logo {
+    width: 34px; height: 34px; border-radius: 9px; flex: 0 0 auto;
+    background: linear-gradient(135deg, #066fd1 0%, #4cc9f0 60%, #8b7cf6 120%);
+    display: flex; align-items: center; justify-content: center; color: #fff;
+    box-shadow: 0 4px 14px rgba(6, 111, 209, .35);
+  }
+  .navbar-vertical .navbar-brand { display: flex; align-items: center; gap: .6rem; padding: .9rem .85rem .5rem; }
+  .navbar-vertical .navbar-brand .brand-name { font-size: 1.02rem; font-weight: 700; line-height: 1.1; }
+  .navbar-vertical .navbar-brand .brand-sub { font-size: .68rem; opacity: .65; font-weight: 500; letter-spacing: .02em; }
+
+  /* 侧边栏菜单微调(该构建无 .nav-link-title, 自定义排版) */
+  .navbar-vertical .navbar-nav { gap: 2px; padding: 0 .5rem .5rem; }
+  .navbar-vertical .nav-link {
+    display: flex; align-items: center; gap: .7rem;
+    padding: .55rem .75rem; border-radius: .5rem; font-size: .92rem;
+    color: var(--tblr-body-color); position: relative;
+  }
+  .navbar-vertical .nav-link .nav-link-icon { margin: 0; width: 1.15rem; height: 1.15rem; display: inline-flex; align-items: center; justify-content: center; opacity: .85; }
+  .navbar-vertical .nav-link:hover { background: var(--tblr-bg-surface-secondary); color: var(--tblr-body-color); }
+  .navbar-vertical .nav-link.active { background: var(--tblr-primary-bg-subtle); color: var(--tblr-primary); font-weight: 600; }
+  .navbar-vertical .nav-link.active .nav-link-icon { opacity: 1; }
+  .nav-group-label {
+    font-size: .66rem; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--tblr-secondary); padding: .9rem .75rem .3rem; font-weight: 700;
+  }
+  .navbar-vertical .sidebar-foot { padding: .6rem .85rem 1rem; }
+  .sidebar-foot-card {
+    border: 1px dashed var(--tblr-border-color); border-radius: .6rem;
+    padding: .6rem .7rem; font-size: .78rem; color: var(--tblr-secondary);
+    background: var(--tblr-bg-surface-secondary);
+  }
+
+  /* 顶栏 */
+  .topbar { background: var(--tblr-bg-surface); }
+  .topbar .form-select, .topbar .form-control { background: var(--tblr-bg-forms); }
+  .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; border-radius: .5rem; color: var(--tblr-secondary); position: relative; border: 0; background: transparent; }
+  .icon-btn:hover { background: var(--tblr-bg-surface-secondary); color: var(--tblr-body-color); }
+  .icon-btn .dot { position: absolute; top: .35rem; right: .4rem; width: .45rem; height: .45rem; border-radius: 50%; background: var(--tblr-danger); border: 2px solid var(--tblr-bg-surface); }
+
+  /* 页面头部 */
+  .page-pretitle { text-transform: none; letter-spacing: .02em; }
+  .api-hint {
+    display: inline-flex; align-items: center; gap: .35rem;
+    font-family: ui-monospace, 'JetBrains Mono', Consolas, monospace; font-size: .72rem;
+    color: var(--tblr-secondary); background: var(--tblr-bg-surface-secondary);
+    border: 1px solid var(--tblr-border-color); border-radius: 999px; padding: .2rem .6rem;
+  }
+
+  /* 概览指标卡 */
+  .stat-card { position: relative; overflow: hidden; }
+  .stat-card .stat-icon { width: 2.6rem; height: 2.6rem; border-radius: .7rem; display: flex; align-items: center; justify-content: center; }
+  .stat-card .stat-value { font-size: 1.7rem; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+  .stat-card .stat-delta { font-size: .78rem; font-weight: 600; }
+  .stat-card .stat-delta.up { color: var(--tblr-success); }
+  .stat-card .stat-delta.down { color: var(--tblr-danger); }
+  .stat-card .stat-delta.flat { color: var(--tblr-secondary); }
+
+  /* 采纳率胶囊 */
+  .rate-pill { display: inline-block; padding: .15rem .55rem; border-radius: 999px; font-size: .74rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .rate-good { background: rgba(47, 179, 68, .14); color: var(--tblr-success); }
+  .rate-mid  { background: rgba(240, 180, 41, .14); color: var(--tblr-warning); }
+  .rate-bad  { background: rgba(214, 57, 57, .14); color: var(--tblr-danger); }
+
+  /* 平台徽标 */
+  .pf-badge { display: inline-flex; align-items: center; gap: .3rem; font-size: .74rem; font-weight: 600; padding: .15rem .5rem; border-radius: .35rem; }
+
+  /* 客服卡片 */
+  .staff-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(216px, 1fr)); gap: .7rem; }
+  .staff-card { border: 1px solid var(--tblr-border-color); border-radius: var(--tblr-border-radius); padding: .7rem .8rem; background: var(--tblr-bg-surface); transition: border-color .15s, box-shadow .15s; }
+  .staff-card:hover { border-color: var(--tblr-primary); box-shadow: 0 .25rem .75rem rgba(0,0,0,.08); }
+  .staff-card .s-name { font-weight: 600; font-size: .9rem; }
+  .staff-card .s-acct { font-size: .7rem; color: var(--tblr-secondary); font-family: ui-monospace, Consolas, monospace; }
+
+  /* 表格 */
+  .table thead th { font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; color: var(--tblr-secondary); }
+  .table tbody td { vertical-align: middle; }
+  .table-sortable { cursor: pointer; user-select: none; }
+  .table-sortable .sort-arrow { font-size: .6rem; opacity: .5; margin-left: .2rem; }
+  .table-sortable.sorted .sort-arrow { opacity: 1; color: var(--tblr-primary); }
+
+  /* 进度 */
+  .prog-sm { height: .4rem; }
+  .prog-label { font-size: .72rem; color: var(--tblr-secondary); font-variant-numeric: tabular-nums; }
+
+  /* 空态 */
+  .empty-hint { color: var(--tblr-secondary); font-size: .85rem; }
+
+  /* 预览模式固定徽标 */
+  .preview-fab {
+    position: fixed; left: 1rem; bottom: 1rem; z-index: 1050;
+    display: inline-flex; align-items: center; gap: .4rem;
+    background: linear-gradient(135deg, #8b7cf6, #066fd1); color: #fff;
+    font-size: .76rem; font-weight: 600; padding: .4rem .75rem; border-radius: 999px;
+    box-shadow: 0 .4rem 1.2rem rgba(6,111,209,.35); cursor: pointer; border: 0;
+  }
+  .preview-fab:hover { filter: brightness(1.1); color: #fff; }
+
+  /* 登录页 */
+  .login-wrap { max-width: 440px; margin: 3.5rem auto 0; }
+  .login-brand { display: flex; align-items: center; gap: .7rem; justify-content: center; margin-bottom: 1.2rem; }
+
+  /* 概览平台状态 */
+  .platform-row { display: flex; align-items: center; gap: .8rem; padding: .65rem .1rem; border-bottom: 1px solid var(--tblr-border-color-translucent); }
+  .platform-row:last-child { border-bottom: 0; }
+
+  /* 消息明细 */
+  .msg-item { border-left: 3px solid var(--tblr-border-color); padding: .45rem .7rem; margin-bottom: .5rem; border-radius: 0 .5rem .5rem 0; background: var(--tblr-bg-surface-secondary); }
+  .msg-item.adopted { border-left-color: var(--tblr-success); }
+  .msg-item.rejected { border-left-color: var(--tblr-danger); }
+
+  /* toast 微调 */
+  .toast-container { z-index: 2000; }
+
+  /* 卡片间距 */
+  .row-cards > [class*="col"] { padding-top: 1rem; padding-bottom: 1rem; }
+
+  /* 打印隐藏 */
+  @media print { .navbar-vertical, .topbar, .preview-fab, .d-print-none { display: none !important; } .page-wrapper { margin: 0 !important; } }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- ═══════════════════ 侧边栏(垂直导航) ═══════════════════ -->
+  <aside class="navbar navbar-vertical navbar-expand-lg" data-bs-theme="dark" id="sidebar">
+    <div class="container-fluid">
+      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-menu" aria-label="菜单">
+        <span class="navbar-toggler-icon"></span>
+      </button>
+      <h1 class="navbar-brand navbar-brand-autodark">
+        <span class="brand-logo" id="brandLogo"></span>
+        <span>
+          <span class="brand-name d-block">探域数据看板</span>
+          <span class="brand-sub">TANYU · 经营数据</span>
+        </span>
+      </h1>
+      <div class="collapse navbar-collapse" id="sidebar-menu">
+        <ul class="navbar-nav pt-lg-3">
+          <li class="nav-item"><a class="nav-link" href="#/dashboard" data-page="dashboard"><span class="nav-link-icon" data-ic="layout"></span>概览</a></li>
+
+          <li class="nav-group-label">经营数据</li>
+          <li class="nav-item"><a class="nav-link" href="#/shops" data-page="shops"><span class="nav-link-icon" data-ic="store"></span>店铺核算</a></li>
+          <li class="nav-item"><a class="nav-link" href="#/staff" data-page="staff"><span class="nav-link-icon" data-ic="users"></span>客服账号池</a></li>
+          <li class="nav-item"><a class="nav-link" href="#/trace" data-page="trace"><span class="nav-link-icon" data-ic="message"></span>消息轨迹</a></li>
+
+          <li class="nav-group-label">运营中心</li>
+          <li class="nav-item"><a class="nav-link" href="#/tasks" data-page="tasks"><span class="nav-link-icon" data-ic="tasks"></span>任务中心</a></li>
+          <li class="nav-item"><a class="nav-link" href="#/logs" data-page="logs"><span class="nav-link-icon" data-ic="logs"></span>日志中心</a></li>
+
+          <li class="nav-group-label">系统</li>
+          <li class="nav-item"><a class="nav-link" href="#/settings" data-page="settings"><span class="nav-link-icon" data-ic="sliders"></span>系统设置</a></li>
+          <li class="nav-item"><a class="nav-link" href="#/login" data-page="login"><span class="nav-link-icon" data-ic="key"></span>登录页</a></li>
+        </ul>
+        <div class="sidebar-foot">
+          <div class="sidebar-foot-card">
+            <div class="d-flex align-items-center gap-1 mb-1">
+              <span class="status status-green"></span><b class="text-success" style="font-size:.8rem">服务运行正常</b>
+            </div>
+            <div>v2.0 预览版 · 布局确认中<br>数据为示例数据, 未接入后端</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ═══════════════════ 主区域 ═══════════════════ -->
+  <div class="page-wrapper">
+
+    <!-- 顶栏 -->
+    <header class="navbar navbar-expand-md navbar-light d-print-none topbar">
+      <div class="container-xl">
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#topbar-menu" aria-label="工具">
+          <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="navbar-nav flex-row order-md-last align-items-center gap-1 gap-md-2 ms-auto ms-md-0">
+          <div class="nav-item d-none d-md-flex">
+            <select id="topGroupSel" class="form-select form-select-sm" style="width:auto" title="当前集团">
+              <option value="g1">星科数码专营-拼多多</option>
+              <option value="g2">星科数码专营-京东</option>
+              <option value="g3">星科数码专营-抖音</option>
+            </select>
+          </div>
+          <div class="nav-item d-none d-md-flex">
+            <select id="topPlatformSel" class="form-select form-select-sm" style="width:auto" title="平台筛选">
+              <option value="">全部平台</option>
+              <option value="1">拼多多</option>
+              <option value="5">抖音</option>
+              <option value="7">京东</option>
+              <option value="10">天猫1</option>
+              <option value="11">天猫2</option>
+            </select>
+          </div>
+          <div class="nav-item">
+            <button class="icon-btn" id="btnRefresh" title="刷新" onclick="app.refresh()"></button>
+          </div>
+          <div class="nav-item">
+            <button class="icon-btn" id="btnTheme" title="切换明暗主题" onclick="app.toggleTheme()"></button>
+          </div>
+          <div class="nav-item dropdown">
+            <button class="icon-btn" data-bs-toggle="dropdown" title="通知" id="btnBell"></button>
+            <div class="dropdown-menu dropdown-menu-end dropdown-menu-card" style="width:320px">
+              <div class="card">
+                <div class="card-header"><h3 class="card-title">通知</h3></div>
+                <div class="list-group list-group-flush list-group-hoverable">
+                  <div class="list-group-item">
+                    <div class="text-truncate"><b>拼多多核算完成</b></div>
+                    <div class="text-secondary text-truncate">近7天核算已生成, 采纳率 79.4%</div>
+                  </div>
+                  <div class="list-group-item">
+                    <div class="text-truncate"><b>Cookie 即将到期</b></div>
+                    <div class="text-danger text-truncate">tanyu-agent-account 将于 2026-09-13 到期</div>
+                  </div>
+                  <div class="list-group-item">
+                    <div class="text-truncate"><b>夜间预抓完成</b></div>
+                    <div class="text-secondary text-truncate">126 家店铺数据已更新</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="nav-item dropdown">
+            <a href="#" class="nav-link d-flex lh-1 text-reset p-0" data-bs-toggle="dropdown">
+              <span class="avatar avatar-sm bg-primary-lt text-primary fw-bold" style="font-size:.8rem">管</span>
+              <span class="d-none d-xl-block ps-2"><b class="d-block" style="font-size:.82rem">管理员</b><span class="text-secondary" style="font-size:.72rem">admin@tydiamond.local</span></span>
+            </a>
+            <div class="dropdown-menu dropdown-menu-end">
+              <a class="dropdown-item" href="#/settings"><span class="dropdown-item-icon" data-ic="sliders"></span>系统设置</a>
+              <a class="dropdown-item" href="#" onclick="app.openApiMap(event)"><span class="dropdown-item-icon" data-ic="code"></span>接口映射</a>
+              <div class="dropdown-divider"></div>
+              <a class="dropdown-item text-danger" href="#/login"><span class="dropdown-item-icon" data-ic="logout"></span>退出登录(演示)</a>
+            </div>
+          </div>
+        </div>
+        <div class="collapse navbar-collapse" id="topbar-menu">
+          <div class="d-flex mt-3 mt-md-0 flex-fill align-items-center gap-2">
+            <div class="input-icon flex-fill" style="max-width:340px">
+              <span class="input-icon-addon" data-ic="search"></span>
+              <input type="search" class="form-control" placeholder="搜索店铺 / 客服 / 任务…" onkeydown="if(event.key==='Enter')app.searchHint()">
+            </div>
+            <span class="badge bg-purple-lt d-none d-sm-inline-flex align-items-center gap-1">🧪 预览版</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- 页面内容 -->
+    <div class="page-body">
+      <div class="container-xl">
+
+        <!-- 预览提示条 -->
+        <div class="alert alert-warning alert-dismissible fade show mt-3 mb-0" role="alert" id="previewBanner">
+          <div class="d-flex align-items-start gap-2">
+            <span style="font-size:1.1rem">🧪</span>
+            <div>
+              <b>这是新版前端布局预览(示例数据, 未接入后端)。</b>
+              已按 Tabler 框架重构为「侧边栏 + 多模块」结构。请先确认布局与信息架构, 确认后我再开始把现有功能迁移进来。
+              <a href="#" class="alert-link" onclick="app.openApiMap(event)">查看接口映射表 →</a>
+            </div>
+          </div>
+          <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="关闭"></button>
+        </div>
+
+        <div id="page-views" class="pb-4">
+
+          <!-- ──────────── 概览 ──────────── -->
+          <section data-view="dashboard">
+            <div class="page-header d-print-none">
+              <div class="row align-items-center">
+                <div class="col-auto">
+                  <h2 class="page-title">概览</h2>
+                  <div class="page-pretitle text-secondary">探域数据看板 · 首页</div>
+                </div>
+                <div class="col-auto ms-auto">
+                  <div class="btn-list">
+                    <span class="api-hint d-none d-lg-inline-flex" id="dashApiHint"></span>
+                    <button class="btn btn-primary" onclick="app.mockAction('开始核算')"><span class="me-1" data-ic="play"></span>开始核算</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="row row-deck row-cards" id="overviewCards"></div>
+
+            <div class="row row-cards mt-1">
+              <div class="col-lg-8">
+                <div class="card">
+                  <div class="card-header">
+                    <h3 class="card-title">近 7 日消息趋势</h3>
+                    <div class="card-actions">
+                      <div class="btn-group btn-group-sm">
+                        <button class="btn btn-outline-primary active" id="trendBtn7" onclick="app.trendRange(7)">近7天</button>
+                        <button class="btn btn-outline-primary" id="trendBtn30" onclick="app.trendRange(30)">近30天</button>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="card-body" style="height:300px"><canvas id="chartTrend"></canvas></div>
+                </div>
+              </div>
+              <div class="col-lg-4">
+                <div class="card">
+                  <div class="card-header"><h3 class="card-title">平台消息占比</h3></div>
+                  <div class="card-body" style="height:300px"><canvas id="chartPlatform"></canvas></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="row row-cards mt-1">
+              <div class="col-lg-5">
+                <div class="card">
+                  <div class="card-header">
+                    <h3 class="card-title">平台抓取状态</h3>
+                    <span class="text-secondary small">35 天滚动窗口</span>
+                  </div>
+                  <div class="card-body py-2" id="platformStatus"></div>
+                </div>
+              </div>
+              <div class="col-lg-7">
+                <div class="card">
+                  <div class="card-header">
+                    <h3 class="card-title">最近任务</h3>
+                    <a class="card-link small" href="#/tasks">全部任务 →</a>
+                  </div>
+                  <div class="table-responsive">
+                    <table class="table table-vcenter card-table">
+                      <thead><tr><th>状态</th><th>任务</th><th>进度</th><th>时间</th></tr></thead>
+                      <tbody id="dashRecentTasks"><tr><td colspan="4" class="text-center empty-hint py-3">加载中…</td></tr></tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="row row-cards mt-1">
+              <div class="col-12">
+                <div class="card">
+                  <div class="card-header"><h3 class="card-title">快捷操作</h3></div>
+                  <div class="card-body">
+                    <div class="row g-3" id="quickActions"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ──────────── 店铺核算 ──────────── -->
+          <section data-view="shops" class="d-none">
+            <div class="page-header d-print-none">
+              <div class="row align-items-center">
+                <div class="col-auto">
+                  <h2 class="page-title">店铺核算</h2>
+                  <div class="page-pretitle text-secondary">按店铺统计消息量与采纳率</div>
+                </div>
+                <div class="col-auto ms-auto">
+                  <div class="btn-list">
+                    <span class="api-hint d-none d-lg-inline-flex" id="shopsApiHint"></span>
+                    <button class="btn btn-outline-primary" onclick="app.mockAction('导出 CSV')"><span class="me-1" data-ic="download"></span>导出</button>
+                    <button class="btn btn-primary" onclick="app.mockAction('开始核算')"><span class="me-1" data-ic="play"></span>开始核算</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <div class="row g-2 align-items-center w-100">
+                  <div class="col-12 col-md-auto">
+                    <select id="shopsPlatform" class="form-select form-select-sm" onchange="app.renderShops()">
+                      <option value="">全部平台</option><option value="1">拼多多</option><option value="5">抖音</option><option value="7">京东</option><option value="10">天猫1</option><option value="11">天猫2</option>
+                    </select>
+                  </div>
+                  <div class="col-12 col-md-auto">
+                    <select id="shopsRange" class="form-select form-select-sm" onchange="app.renderShops()">
+                      <option value="7">近 7 天</option><option value="14">近 14 天</option><option value="30">近 30 天</option>
+                    </select>
+                  </div>
+                  <div class="col-12 col-md">
+                    <div class="input-icon">
+                      <span class="input-icon-addon" data-ic="search"></span>
+                      <input type="search" class="form-control form-control-sm" id="shopsSearch" placeholder="搜索店铺名…" oninput="app.renderShops()">
+                    </div>
+                  </div>
+                  <div class="col-12 col-md-auto text-md-end">
+                    <span class="text-secondary small" id="shopsSummary"></span>
+                  </div>
+                </div>
+              </div>
+              <div class="table-responsive">
+                <table class="table table-vcenter card-table">
+                  <thead>
+                    <tr>
+                      <th class="table-sortable" data-key="name" onclick="app.sortShops('name')">店铺<span class="sort-arrow">↕</span></th>
+                      <th>平台</th>
+                      <th class="table-sortable text-end" data-key="total" onclick="app.sortShops('total')">消息总条数<span class="sort-arrow">↕</span></th>
+                      <th class="table-sortable text-end" data-key="adopted" onclick="app.sortShops('adopted')">采纳条数<span class="sort-arrow">↕</span></th>
+                      <th class="table-sortable text-end" data-key="rate" onclick="app.sortShops('rate')">采纳率<span class="sort-arrow">↕</span></th>
+                      <th class="text-end">生成率</th>
+                      <th>最近抓取</th>
+                      <th class="text-end">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="shopsBody"></tbody>
+                </table>
+              </div>
+              <div class="card-footer d-flex align-items-center">
+                <p class="m-0 text-secondary small" id="shopsFooter"></p>
+                <div class="ms-auto btn-list">
+                  <button class="btn btn-sm btn-outline-secondary" onclick="app.shopsPage(-1)">上一页</button>
+                  <button class="btn btn-sm btn-outline-secondary" onclick="app.shopsPage(1)">下一页</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ──────────── 客服账号池 ──────────── -->
+          <section data-view="staff" class="d-none">
+            <div class="page-header d-print-none">
+              <div class="row align-items-center">
+                <div class="col-auto">
+                  <h2 class="page-title">客服账号池</h2>
+                  <div class="page-pretitle text-secondary">按客服/店铺统计消息采纳情况</div>
+                </div>
+                <div class="col-auto ms-auto">
+                  <div class="btn-list">
+                    <span class="api-hint d-none d-lg-inline-flex" id="staffApiHint"></span>
+                    <button class="btn btn-outline-primary" onclick="app.mockAction('导出 CSV')"><span class="me-1" data-ic="download"></span>导出</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <div class="row g-2 align-items-center w-100">
+                  <div class="col-12 col-md-auto">
+                    <select id="staffPlatform" class="form-select form-select-sm" onchange="app.renderStaff()">
+                      <option value="">全部平台</option><option value="1">拼多多</option><option value="5">抖音</option><option value="7">京东</option><option value="10">天猫1</option><option value="11">天猫2</option>
+                    </select>
+                  </div>
+                  <div class="col-12 col-md">
+                    <div class="input-icon">
+                      <span class="input-icon-addon" data-ic="search"></span>
+                      <input type="search" class="form-control form-control-sm" id="staffSearch" placeholder="搜索客服昵称 / 账号 / 店铺…" oninput="app.renderStaff()">
+                    </div>
+                  </div>
+                  <div class="col-12 col-md-auto">
+                    <div class="btn-group btn-group-sm">
+                      <button class="btn btn-outline-primary active" id="staffModeShop" onclick="app.staffMode(false)">按店铺</button>
+                      <button class="btn btn-outline-primary" id="staffModeAgg" onclick="app.staffMode(true)">按客服汇总</button>
+                    </div>
+                  </div>
+                  <div class="col-12 col-md-auto text-md-end">
+                    <span class="text-secondary small" id="staffSummary"></span>
+                  </div>
+                </div>
+              </div>
+              <div class="card-body">
+                <div class="staff-grid" id="staffGrid"><span class="empty-hint">加载中…</span></div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ──────────── 消息轨迹 ──────────── -->
+          <section data-view="trace" class="d-none">
+            <div class="page-header d-print-none">
+              <div class="row align-items-center">
+                <div class="col-auto">
+                  <h2 class="page-title">消息轨迹</h2>
+                  <div class="page-pretitle text-secondary">按店铺查看每日消息与原始明细</div>
+                </div>
+                <div class="col-auto ms-auto">
+                  <div class="btn-list">
+                    <span class="api-hint d-none d-lg-inline-flex" id="traceApiHint"></span>
+                    <button class="btn btn-primary" onclick="app.mockAction('抓取今日消息')"><span class="me-1" data-ic="zap"></span>抓取今日消息</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <div class="row g-2 align-items-center w-100">
+                  <div class="col-12 col-md-4">
+                    <select id="traceShop" class="form-select form-select-sm" onchange="app.renderTrace()"></select>
+                  </div>
+                  <div class="col-12 col-md-auto">
+                    <select id="traceRange" class="form-select form-select-sm" onchange="app.renderTrace()">
+                      <option value="7">近 7 天</option><option value="14">近 14 天</option><option value="30">近 30 天</option>
+                    </select>
+                  </div>
+                  <div class="col-12 col-md-auto ms-auto">
+                    <span class="text-secondary small" id="traceSummary"></span>
+                  </div>
+                </div>
+              </div>
+              <div class="table-responsive">
+                <table class="table table-vcenter card-table">
+                  <thead><tr><th>日期</th><th class="text-end">消息数</th><th class="text-end">采纳数</th><th class="text-end">采纳率</th><th class="text-end">生成率</th><th class="text-end">操作</th></tr></thead>
+                  <tbody id="traceBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <!-- ──────────── 任务中心 ──────────── -->
+          <section data-view="tasks" class="d-none">
+            <div class="page-header d-print-none">
+              <div class="row align-items-center">
+                <div class="col-auto">
+                  <h2 class="page-title">任务中心</h2>
+                  <div class="page-pretitle text-secondary">抓取 / 核算 / 预抓任务队列</div>
+                </div>
+                <div class="col-auto ms-auto">
+                  <div class="btn-list">
+                    <span class="api-hint d-none d-lg-inline-flex" id="tasksApiHint"></span>
+                    <button class="btn btn-outline-primary" onclick="app.mockAction('新建任务')"><span class="me-1" data-ic="plus"></span>新建任务</button>
+                    <button class="btn btn-ghost" onclick="app.refresh()"><span class="me-1" data-ic="refresh"></span>刷新</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="row row-deck row-cards" id="taskStatCards"></div>
+
+            <div class="card mt-3">
+              <div class="table-responsive">
+                <table class="table table-vcenter card-table">
+                  <thead><tr><th>#</th><th>任务</th><th>类型</th><th>发起人</th><th>状态</th><th style="min-width:160px">进度</th><th>开始时间</th><th>耗时</th><th class="text-end">操作</th></tr></thead>
+                  <tbody id="tasksBody"></tbody>
+                </table>
+              </div>
+              <div class="card-footer">
+                <span class="text-secondary small">预览模式: 任务队列每 5 秒模拟刷新 · 真实数据来自 <code>GET /api/tasks/list</code></span>
+              </div>
+            </div>
+          </section>
+
+          <!-- ──────────── 日志中心 ──────────── -->
+          <section data-view="logs" class="d-none">
+            <div class="page-header d-print-none">
+              <div class="row align-items-center">
+                <div class="col-auto">
+                  <h2 class="page-title">日志中心</h2>
+                  <div class="page-pretitle text-secondary">操作日志 / 任务记录 / 系统日志</div>
+                </div>
+                <div class="col-auto ms-auto">
+                  <div class="btn-list">
+                    <span class="api-hint d-none d-lg-inline-flex" id="logsApiHint"></span>
+                    <button class="btn btn-outline-danger btn-ghost" onclick="app.pruneLogs()"><span class="me-1" data-ic="trash"></span>清理</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <ul class="nav nav-pills card-header-pills" id="logTabs">
+                  <li class="nav-item"><a class="nav-link active" data-logtab="op" href="#" onclick="app.switchLogs(event,'op')">操作日志</a></li>
+                  <li class="nav-item"><a class="nav-link" data-logtab="task" href="#" onclick="app.switchLogs(event,'task')">任务记录</a></li>
+                  <li class="nav-item"><a class="nav-link" data-logtab="sys" href="#" onclick="app.switchLogs(event,'sys')">系统日志</a></li>
+                </ul>
+                <div class="card-actions ms-auto" id="logFilterBox"></div>
+              </div>
+
+              <div id="logPaneOp" class="table-responsive">
+                <table class="table table-vcenter card-table">
+                  <thead><tr><th>时间</th><th>用户</th><th>操作者</th><th>IP</th><th>动作</th><th>方法</th><th>状态</th></tr></thead>
+                  <tbody id="oplogBody"></tbody>
+                </table>
+              </div>
+
+              <div id="logPaneTask" class="table-responsive d-none">
+                <table class="table table-vcenter card-table">
+                  <thead><tr><th>#</th><th>状态</th><th>请求人</th><th>任务</th><th style="min-width:140px">进度</th><th>时间</th><th class="text-end">操作</th></tr></thead>
+                  <tbody id="tasklogBody"></tbody>
+                </table>
+              </div>
+
+              <div id="logPaneSys" class="table-responsive d-none">
+                <table class="table table-vcenter card-table">
+                  <thead><tr><th>时间</th><th>标签</th><th>内容</th></tr></thead>
+                  <tbody id="syslogBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <!-- ──────────── 系统设置 ──────────── -->
+          <section data-view="settings" class="d-none">
+            <div class="page-header d-print-none">
+              <div class="row align-items-center">
+                <div class="col-auto">
+                  <h2 class="page-title">系统设置</h2>
+                  <div class="page-pretitle text-secondary">Cookie / 集团 / 抓取 / 钉钉 / 用户 / 接口映射</div>
+                </div>
+                <div class="col-auto ms-auto">
+                  <span class="api-hint d-none d-lg-inline-flex" id="settingsApiHint"></span>
+                </div>
+              </div>
+            </div>
+
+            <div class="alert alert-danger d-flex align-items-center" role="alert" id="cookieExpireAlert">
+              <span class="me-2" data-ic="alert"></span>
+              <div><b>Cookie 即将到期:</b> <code>tanyu-agent-account</code> 将于 <b>2026-09-13</b> 过期(剩余 30 天), 请提前在下方更新, 避免抓取失败。</div>
+            </div>
+
+            <div class="row row-cards">
+              <div class="col-lg-7">
+                <div class="card">
+                  <div class="card-header">
+                    <h3 class="card-title">Cookie 管理</h3>
+                    <div class="card-actions">
+                      <button class="btn btn-sm btn-primary" onclick="app.cookieModal()"><span class="me-1" data-ic="plus"></span>新增 Cookie</button>
+                    </div>
+                  </div>
+                  <div class="table-responsive">
+                    <table class="table table-vcenter card-table">
+                      <thead><tr><th>键</th><th>域名</th><th>过期时间</th><th>状态</th><th class="text-end">操作</th></tr></thead>
+                      <tbody id="cookiesBody"></tbody>
+                    </table>
+                  </div>
+                  <div class="card-footer text-secondary small">真实值仅存于本地配置文件 <code>config.json</code>, 页面不显示明文。</div>
+                </div>
+
+                <div class="card">
+                  <div class="card-header">
+                    <h3 class="card-title">用户管理</h3>
+                    <div class="card-actions">
+                      <div class="form-check form-switch me-2">
+                        <input class="form-check-input" type="checkbox" id="regSwitch" checked>
+                        <label class="form-check-label small" for="regSwitch">开放注册</label>
+                      </div>
+                      <button class="btn btn-sm btn-primary" onclick="app.mockAction('新建用户')"><span class="me-1" data-ic="plus"></span>新建用户</button>
+                    </div>
+                  </div>
+                  <div class="table-responsive">
+                    <table class="table table-vcenter card-table">
+                      <thead><tr><th>用户名</th><th>角色</th><th>状态</th><th>注册时间</th><th>最后登录</th><th>到期时间</th><th class="text-end">操作</th></tr></thead>
+                      <tbody id="usersBody"></tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div class="card">
+                  <div class="card-header">
+                    <h3 class="card-title">接口映射(迁移契约)</h3>
+                    <span class="text-secondary small ms-auto">预览版 → 迁移后各模块对应的真实后端接口</span>
+                  </div>
+                  <div class="table-responsive">
+                    <table class="table table-vcenter card-table">
+                      <thead><tr><th>模块</th><th>方法</th><th>接口</th></tr></thead>
+                      <tbody id="apiMapBody"></tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+
+              <div class="col-lg-5">
+                <div class="card">
+                  <div class="card-header"><h3 class="card-title">集团配置</h3></div>
+                  <div class="list-group list-group-flush" id="groupsBody"></div>
+                </div>
+
+                <div class="card">
+                  <div class="card-header"><h3 class="card-title">抓取配置</h3></div>
+                  <div class="card-body">
+                    <div class="row g-3">
+                      <div class="col-6">
+                        <label class="form-label">预抓天数</label>
+                        <input type="number" class="form-control" id="cfgPrefetchDays" value="35" min="1" max="90">
+                      </div>
+                      <div class="col-6">
+                        <label class="form-label">强制刷新天数</label>
+                        <input type="number" class="form-control" id="cfgForceDays" value="7" min="1" max="30">
+                      </div>
+                      <div class="col-12">
+                        <label class="form-label">平台抓取窗口(天)</label>
+                        <div class="row g-2">
+                          <div class="col-4"><div class="input-group input-group-sm"><span class="input-group-text">拼多多</span><input type="number" class="form-control" value="35"></div></div>
+                          <div class="col-4"><div class="input-group input-group-sm"><span class="input-group-text">抖音</span><input type="number" class="form-control" value="35"></div></div>
+                          <div class="col-4"><div class="input-group input-group-sm"><span class="input-group-text">京东</span><input type="number" class="form-control" value="35"></div></div>
+                        </div>
+                      </div>
+                      <div class="col-12">
+                        <button class="btn btn-primary w-100" onclick="app.mockAction('保存抓取配置')">保存配置</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="card">
+                  <div class="card-header"><h3 class="card-title">钉钉机器人</h3></div>
+                  <div class="card-body">
+                    <div class="d-flex align-items-center mb-3">
+                      <span class="status status-green me-2"></span>
+                      <b class="text-success me-2">已连接</b>
+                      <span class="text-secondary small">每日 09:00 推送经营日报</span>
+                      <div class="form-check form-switch ms-auto">
+                        <input class="form-check-input" type="checkbox" id="dingSwitch" checked>
+                        <label class="form-check-label small" for="dingSwitch">启用</label>
+                      </div>
+                    </div>
+                    <div class="btn-list">
+                      <button class="btn btn-outline-primary btn-sm" onclick="app.mockAction('发送测试推送')"><span class="me-1" data-ic="send"></span>测试推送</button>
+                      <button class="btn btn-outline-secondary btn-sm" onclick="app.mockAction('编辑钉钉配置')">编辑配置</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ──────────── 登录页 ──────────── -->
+          <section data-view="login" class="d-none">
+            <div class="login-wrap">
+              <div class="login-brand">
+                <span class="brand-logo" id="loginLogo"></span>
+                <div>
+                  <div class="fw-bold" style="font-size:1.1rem">探域数据看板</div>
+                  <div class="text-secondary" style="font-size:.8rem">TANYU · 经营数据控制台</div>
+                </div>
+              </div>
+              <div class="card">
+                <div class="card-body p-4">
+                  <ul class="nav nav-pills nav-fill mb-3">
+                    <li class="nav-item"><a class="nav-link active" id="loginTab" href="#" onclick="app.authTab(event,'login')">登录</a></li>
+                    <li class="nav-item"><a class="nav-link" id="regTab" href="#" onclick="app.authTab(event,'reg')">注册</a></li>
+                  </ul>
+                  <div class="mb-3">
+                    <label class="form-label">邮箱</label>
+                    <input type="email" class="form-control" id="authEmail" placeholder="you@example.com" value="admin@tydiamond.local">
+                  </div>
+                  <div class="mb-3">
+                    <label class="form-label">密码</label>
+                    <input type="password" class="form-control" id="authPwd" placeholder="••••••••">
+                  </div>
+                  <div class="form-check mb-3">
+                    <input class="form-check-input" type="checkbox" id="authRemember" checked>
+                    <label class="form-check-label" for="authRemember">保持登录</label>
+                  </div>
+                  <button class="btn btn-primary w-100" onclick="app.login()">进入控制台</button>
+                  <div class="text-center mt-3">
+                    <span class="text-secondary small">演示预览: 任意密码即可进入 · 真实登录接入 <code>POST /api/auth/login</code></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- 页脚 -->
+    <footer class="footer footer-transparent d-print-none">
+      <div class="container-xl">
+        <div class="row text-center align-items-center flex-row-reverse">
+          <div class="col-lg-auto ms-lg-auto">
+            <ul class="list-inline list-inline-dots mb-0">
+              <li class="list-inline-item"><a href="#" onclick="app.openApiMap(event)">接口映射</a></li>
+              <li class="list-inline-item"><a href="../tabler_preview.html">旧版预览</a></li>
+              <li class="list-inline-item"><a href="/legacy">原版看板</a></li>
+            </ul>
+          </div>
+          <div class="col-12 col-lg-auto mt-3 mt-lg-0">
+            <span class="text-secondary">探域数据看板 · 新版前端预览 v0.1 · Tabler v1.3 · 示例数据未接入后端</span>
+          </div>
+        </div>
+      </div>
+    </footer>
+  </div>
+</div>
+
+<!-- ═══════════════════ 模态框 ═══════════════════ -->
+<div class="modal fade" id="mShopDetail" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="mShopTitle">店铺明细</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" id="mShopBody"></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="mMessageDetail" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="mMsgTitle">原始消息明细</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" id="mMsgBody"></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="mCookie" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="mCookieTitle">新增 Cookie</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3"><label class="form-label">键(Key)</label><input class="form-control" id="ckKey" placeholder="tanyu-account-id"></div>
+        <div class="mb-3"><label class="form-label">值(Value)</label><input class="form-control" id="ckValue" placeholder="…"></div>
+        <div class="mb-3"><label class="form-label">域名</label><input class="form-control" id="ckDomain" value=".tanyuai.com"></div>
+        <div class="row g-3">
+          <div class="col-6"><label class="form-label">过期时间</label><input class="form-control" id="ckExpire" type="date" value="2026-09-13"></div>
+          <div class="col-6"><label class="form-label">会话 Cookie</label>
+            <div class="form-check form-switch mt-2"><input class="form-check-input" type="checkbox" id="ckSession"><label class="form-check-label small" for="ckSession">Session</label></div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-link link-secondary" data-bs-dismiss="modal">取消</button>
+        <button class="btn btn-primary" onclick="app.saveCookie()">保存(演示)</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="mApiMap" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">接口映射表(迁移契约)</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-secondary small">预览版每个模块均标注了迁移后要接入的真实接口。确认布局后, 迁移阶段按此表逐模块接入即可。</p>
+        <div class="table-responsive"><table class="table table-vcenter card-table" id="apiMapModalBody"></table></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast 容器 -->
+<div class="toast-container position-fixed bottom-0 end-0 p-3" id="toasts"></div>
+
+<!-- 预览模式固定徽标 -->
+<button class="preview-fab" onclick="app.openApiMap(event)">
+  <span data-ic="flask" style="width:14px;height:14px"></span> 预览版 · 布局待确认
+</button>
+
+<script src="../vendor/tabler/tabler.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script>
+/* ══════════════════════════════════════════════════════════════
+   探域数据看板 · 新版前端预览(纯静态, 示例数据)
+   结构: 侧边栏导航 + 8 个模块(概览/店铺核算/客服池/消息轨迹/任务/日志/设置/登录)
+   说明: 全部为模拟数据, 模块头部标注了迁移后对应的真实接口。
+   ══════════════════════════════════════════════════════════════ */
+(function () {
+  'use strict';
+
+  /* ---------- 图标集(内联 SVG, 24x24, stroke 风格) ---------- */
+  var I = {
+    layout: '<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>',
+    store: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M9 21v-6h6v6"/>',
+    users: '<circle cx="9" cy="8" r="3.5"/><path d="M3.5 20a5.5 5.5 0 0 1 11 0"/><circle cx="17" cy="9" r="2.5"/><path d="M16.5 14.6a5 5 0 0 1 4.5 5"/>',
+    message: '<path d="M21 12a8 8 0 0 1-8 8H4l2.2-2.6A8 8 0 1 1 21 12Z"/><path d="M8.5 9.5h7M8.5 13h4"/>',
+    tasks: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="m8.5 12 2.5 2.5 4.5-5"/>',
+    logs: '<path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1" fill="currentColor" stroke="none"/><circle cx="3.5" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="3.5" cy="18" r="1" fill="currentColor" stroke="none"/>',
+    sliders: '<path d="M4 7h16M4 12h16M4 17h16"/><circle cx="9" cy="7" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="7" cy="17" r="2"/>',
+    key: '<circle cx="7.5" cy="16.5" r="4.5"/><path d="m11 13 9-9M16 8l3 3M14 10l2 2"/>',
+    search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+    refresh: '<path d="M20 11a8 8 0 0 0-14.9-3M4 13a8 8 0 0 0 14.9 3"/><path d="M20 4v4h-4M4 20v-4h4"/>',
+    sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+    moon: '<path d="M20 14.5A8.5 8.5 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5Z"/>',
+    bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/>',
+    chevron: '<path d="m6 9 6 6 6-6"/>',
+    up: '<path d="M7 17 17 7M8 7h9v9"/>',
+    down: '<path d="M7 7l10 10M17 8v9H8"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    download: '<path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 21h16"/>',
+    filter: '<path d="M4 5h16l-6 7v6l-4 2v-8Z"/>',
+    play: '<path d="M7 4v16l13-8Z"/>',
+    trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6"/>',
+    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    database: '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',
+    cookie: '<circle cx="12" cy="12" r="9"/><circle cx="9" cy="9" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="11" r="1.2" fill="currentColor" stroke="none"/><circle cx="11" cy="16" r="1.2" fill="currentColor" stroke="none"/><path d="M14.5 15.5h.01M8.5 13h.01"/>',
+    shield: '<path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6Z"/><path d="m9 12 2 2 4-4"/>',
+    logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/>',
+    external: '<path d="M14 4h6v6M20 4l-9 9"/><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"/>',
+    code: '<path d="m8 8-4 4 4 4M16 8l4 4-4 4M13 5l-2 14"/>',
+    alert: '<path d="M12 3 2.5 20h19Z"/><path d="M12 10v4M12 17.5h.01"/>',
+    info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
+    calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 10h18"/>',
+    zap: '<path d="M13 2 4 14h6l-1 8 9-12h-6Z"/>',
+    target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none"/>',
+    chart: '<path d="M3 21h18M6 21v-7M11 21V8M16 21v-4M21 21V5"/>',
+    activity: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
+    robot: '<rect x="5" y="8" width="14" height="12" rx="2"/><circle cx="9.5" cy="13" r="1" fill="currentColor" stroke="none"/><circle cx="14.5" cy="13" r="1" fill="currentColor" stroke="none"/><path d="M9 17h6M12 8V5M9 5h6"/>',
+    send: '<path d="m3 11 18-8-8 18-2.5-7.5Z"/>',
+    eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+    lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+    user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+    folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
+    box: '<path d="m12 3 8 4v10l-8 4-8-4V7Z"/><path d="m4 7 8 4 8-4M12 11v10"/>',
+    flask: '<path d="M10 3v6L4.5 18a2 2 0 0 0 1.8 3h11.4a2 2 0 0 0 1.8-3L14 9V3"/><path d="M8 3h8M7.5 14h9"/>'
+  };
+  function icon(name, size) {
+    size = size || 24;
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="' + size + '" height="' + size + '">' + (I[name] || '') + '</svg>';
+  }
+
+  /* ---------- 工具 ---------- */
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
+  function fmt(n) { return (n == null ? 0 : n).toLocaleString('zh-CN'); }
+  function pct(n) { return (Number(n) || 0).toFixed(1) + '%'; }
+  function rateCls(r) { r = Number(r) || 0; return r >= 70 ? 'rate-good' : r >= 40 ? 'rate-mid' : 'rate-bad'; }
+  function ratePill(r) { return '<span class="rate-pill ' + rateCls(r) + '">' + pct(r) + '</span>'; }
+  function pfBadge(p) {
+    var m = { 1: ['拼多多', 'bg-green-lt text-success'], 5: ['抖音', 'bg-cyan-lt text-cyan'], 7: ['京东', 'bg-red-lt text-danger'], 10: ['天猫1', 'bg-purple-lt text-purple'], 11: ['天猫2', 'bg-purple-lt text-purple'] };
+    var x = m[p] || [String(p), 'bg-secondary-lt'];
+    return '<span class="pf-badge ' + x[1] + '">' + x[0] + '</span>';
+  }
+  function badge(text, kind) { return '<span class="badge ' + kind + '">' + text + '</span>'; }
+  function toast(msg, kind) {
+    kind = kind || 'primary';
+    var el = document.createElement('div');
+    el.className = 'toast show align-items-center border-0';
+    el.setAttribute('role', 'alert');
+    el.innerHTML = '<div class="d-flex"><div class="toast-body"><span class="badge bg-' + kind + ' me-2" style="font-size:.6rem">预览</span>' + esc(msg) + '</div><button type="button" class="btn-close me-2 m-auto" data-bs-dismiss="toast"></button></div>';
+    $('toasts').appendChild(el);
+    setTimeout(function () { el.remove(); }, 2800);
+  }
+
+  /* ---------- 页面元信息(含迁移接口映射) ---------- */
+  var PAGES = {
+    dashboard: { title: '概览', parent: '首页', icon: 'layout', api: 'GET /api/overview · GET /api/tasks/list' },
+    shops:     { title: '店铺核算', parent: '经营数据', icon: 'store', api: 'GET /api/trace/overview?days=7&platform=&from_cache=1 · POST /api/trace/today' },
+    staff:     { title: '客服账号池', parent: '经营数据', icon: 'users', api: 'GET /api/trace/staff?days=7&platform=' },
+    trace:     { title: '消息轨迹', parent: '经营数据', icon: 'message', api: 'GET /api/trace/shop/{shop_id} · GET /api/trace/messages/{shop_id}' },
+    tasks:     { title: '任务中心', parent: '运营中心', icon: 'tasks', api: 'GET /api/tasks/list · GET /api/tasks/refresh' },
+    logs:      { title: '日志中心', parent: '运营中心', icon: 'logs', api: 'GET /api/logs/center · GET /api/oplog' },
+    settings:  { title: '系统设置', parent: '系统', icon: 'sliders', api: '/api/cookies · /api/groups · /api/admin/* · /api/dingtalk/*' },
+    login:     { title: '登录', parent: '账号', icon: 'key', api: 'POST /api/auth/login · POST /api/auth/logout' }
+  };
+  var API_MAP = [
+    ['概览', 'GET', '/api/overview?platform=', '平台维度汇总指标(含环比)'],
+    ['店铺核算', 'GET', '/api/trace/overview?days=7&platform=&from_cache=1', '按店铺核算(只读缓存, 不触发抓取)'],
+    ['店铺核算', 'POST', '/api/trace/today', '抓取今日消息(异步任务)'],
+    ['客服池', 'GET', '/api/trace/staff?days=7&platform=', '客服维度消息统计'],
+    ['消息轨迹', 'GET', '/api/trace/shop/{shop_id}', '店铺按日消息缓存'],
+    ['消息轨迹', 'GET', '/api/trace/messages/{shop_id}', '原始消息明细'],
+    ['任务中心', 'GET', '/api/tasks/list · /api/tasks/refresh', '任务队列与状态'],
+    ['日志中心', 'GET', '/api/logs/center · /api/oplog', '操作/任务/系统日志'],
+    ['日志清理', 'DELETE', '/api/logs/tasks · /api/logs/system · /api/oplog/records', '按需清理'],
+    ['Cookie', 'GET/POST', '/api/cookies · /api/auth/cookie-expiry', 'Cookie 管理与到期提示'],
+    ['集团', 'GET/POST', '/api/groups · /api/groups/switch', '集团列表与切换'],
+    ['店铺同步', 'POST', '/api/shops/sync', '同步店铺列表(切换集团后)'],
+    ['用户管理', 'GET/POST', '/api/admin/users · /api/admin/settings/register', '用户/注册开关'],
+    ['钉钉', 'GET/POST', '/api/dingtalk/status · /api/dingtalk/config · /api/dingtalk/push', '推送配置与测试'],
+    ['鉴权', 'POST', '/api/auth/login · /api/auth/logout · /api/auth/me', '登录/登出/当前用户']
+  ];
+
+  /* ---------- 示例数据 ---------- */
+  var PLATFORM_STATUS = [
+    { p: 1, name: '拼多多', state: 'running', last: '08-14 09:12', shops: 96, days: 35 },
+    { p: 5, name: '抖音', state: 'ok', last: '08-14 09:03', shops: 12, days: 35 },
+    { p: 7, name: '京东', state: 'ok', last: '08-14 08:57', shops: 6, days: 35 }
+  ];
+  var SHOPS = [
+    { id: 's1', name: '星科数码专营', p: 1, total: 12864, adopted: 10210, gen: 78.2, last: '08-14 09:12', st: 'running' },
+    { id: 's2', name: '星科数码专营-京东', p: 7, total: 8731, adopted: 6812, gen: 74.1, last: '08-14 08:57', st: 'ok' },
+    { id: 's3', name: '星科数码专营-抖音', p: 5, total: 15408, adopted: 12690, gen: 82.4, last: '08-14 09:03', st: 'ok' },
+    { id: 's4', name: '联想华荣专卖店', p: 1, total: 9542, adopted: 7260, gen: 71.3, last: '08-14 08:41', st: 'ok' },
+    { id: 's5', name: '联想博睿兴专卖店', p: 1, total: 8210, adopted: 6115, gen: 69.8, last: '08-14 08:44', st: 'ok' },
+    { id: 's6', name: '联想聚源专卖店', p: 1, total: 7633, adopted: 5902, gen: 72.5, last: '08-14 08:46', st: 'ok' },
+    { id: 's7', name: '联想康诺专营店', p: 1, total: 6890, adopted: 5012, gen: 68.4, last: '08-13 23:10', st: 'ok' },
+    { id: 's8', name: '联想音频专营店', p: 1, total: 7205, adopted: 5418, gen: 70.2, last: '08-13 23:12', st: 'ok' },
+    { id: 's9', name: '联想3C配件专营店', p: 1, total: 9904, adopted: 7621, gen: 73.6, last: '08-13 23:14', st: 'ok' },
+    { id: 's10', name: '魔鬼猫青橙专卖店', p: 10, total: 3115, adopted: 2498, gen: 75.1, last: '08-13 22:58', st: 'ok' },
+    { id: 's11', name: '果时代数码旗舰店', p: 10, total: 4289, adopted: 3310, gen: 72.8, last: '08-13 22:59', st: 'ok' },
+    { id: 's12', name: 'MONSTER魔声安诺专卖店', p: 10, total: 2044, adopted: 1621, gen: 71.4, last: '08-13 23:01', st: 'ok' },
+    { id: 's13', name: '飞利浦昕屿专卖店', p: 10, total: 3502, adopted: 2755, gen: 74.9, last: '08-13 23:02', st: 'ok' },
+    { id: 's14', name: '星诚影音专营店', p: 10, total: 1877, adopted: 1422, gen: 69.2, last: '08-13 23:03', st: 'ok' },
+    { id: 's15', name: '华硕逸聆专卖店', p: 11, total: 1204, adopted: 902, gen: 68.7, last: '08-13 22:40', st: 'ok' },
+    { id: 's16', name: '联想博升专卖店', p: 11, total: 1509, adopted: 1165, gen: 72.2, last: '08-13 22:41', st: 'ok' },
+    { id: 's17', name: '飞利浦聚源专卖店', p: 11, total: 986, adopted: 731, gen: 70.8, last: '08-13 22:42', st: 'ok' },
+    { id: 's18', name: '魔声佳越专卖店', p: 11, total: 1155, adopted: 866, gen: 71.6, last: '08-13 22:43', st: 'ok' }
+  ];
+  var STAFF = [
+    { id: 'k1', name: '张伟', acct: 'zw_8801', shop: '星科数码专营', p: 1, total: 2210, adopted: 1820 },
+    { id: 'k2', name: '李娜', acct: 'ln_2204', shop: '星科数码专营', p: 1, total: 1984, adopted: 1612 },
+    { id: 'k3', name: '王芳', acct: 'wf_3317', shop: '联想华荣专卖店', p: 1, total: 1750, adopted: 1298 },
+    { id: 'k4', name: '刘洋', acct: 'ly_0912', shop: '联想博睿兴专卖店', p: 1, total: 1632, adopted: 1210 },
+    { id: 'k5', name: '陈静', acct: 'cj_5520', shop: '联想聚源专卖店', p: 1, total: 1418, adopted: 1089 },
+    { id: 'k6', name: '杨帆', acct: 'yf_7711', shop: '联想3C配件专营店', p: 1, total: 1875, adopted: 1443 },
+    { id: 'k7', name: '赵敏', acct: 'zm_4409', shop: '星科数码专营-京东', p: 7, total: 1550, adopted: 1188 },
+    { id: 'k8', name: '黄磊', acct: 'hl_6602', shop: '星科数码专营-京东', p: 7, total: 1294, adopted: 1009 },
+    { id: 'k9', name: '周婷', acct: 'zt_1188', shop: '星科数码专营-抖音', p: 5, total: 2680, adopted: 2241 },
+    { id: 'k10', name: '吴昊', acct: 'wh_9907', shop: '星科数码专营-抖音', p: 5, total: 2445, adopted: 1998 },
+    { id: 'k11', name: '徐倩', acct: 'xq_3345', shop: '星科数码专营-抖音', p: 5, total: 2310, adopted: 1876 },
+    { id: 'k12', name: '孙悦', acct: 'sy_2208', shop: '星科数码专营-抖音', p: 5, total: 2058, adopted: 1702 },
+    { id: 'k13', name: '马超', acct: 'mc_8812', shop: '魔鬼猫青橙专卖店', p: 10, total: 980, adopted: 762 },
+    { id: 'k14', name: '朱琳', acct: 'zl_1122', shop: '果时代数码旗舰店', p: 10, total: 1145, adopted: 890 },
+    { id: 'k15', name: '胡军', acct: 'hj_6608', shop: '联想博升专卖店', p: 11, total: 720, adopted: 554 },
+    { id: 'k16', name: '郭雪', acct: 'gx_3301', shop: '魔声佳越专卖店', p: 11, total: 640, adopted: 480 }
+  ];
+  var TASKS = [
+    { id: 4821, label: '抓取今日消息 · 拼多多(96店)', type: 'fetch-today', who: '管理员', st: 'running', done: 340, total: 512, start: '09:02', cost: '12 分钟' },
+    { id: 4820, label: '核算近 7 天 · 全平台', type: 'overview', who: '系统', st: 'queued', done: 0, total: 18, start: '—', cost: '—' },
+    { id: 4819, label: '预抓 35 天窗口 · 抖音(12店)', type: 'prefetch', who: '管理员', st: 'done', done: 618, total: 618, start: '08:12', cost: '41 分钟' },
+    { id: 4818, label: '导入 Excel · 天猫2(4店)', type: 'import', who: '管理员', st: 'done', done: 4, total: 4, start: '07:55', cost: '8 秒' },
+    { id: 4817, label: '夜间预抓 natural_day · 全平台', type: 'prefetch', who: '系统', st: 'done', done: 126, total: 126, start: '00:05', cost: '1 小时 12 分' },
+    { id: 4816, label: '抓取今日消息 · 京东(6店)', type: 'fetch-today', who: '管理员', st: 'done', done: 233, total: 233, start: '08:50', cost: '15 分钟' },
+    { id: 4815, label: '同步客服昵称', type: 'staff-sync', who: '系统', st: 'done', done: 1, total: 1, start: '08:10', cost: '2 秒' },
+    { id: 4814, label: '推送经营日报 · 拼多多', type: 'dingtalk', who: '系统', st: 'error', done: 0, total: 1, start: '08:00', cost: '3 秒' }
+  ];
+  var TASK_STATUS = { running: ['运行中', 'bg-blue'], queued: ['排队中', 'bg-yellow'], done: ['完成', 'bg-green'], error: ['失败', 'bg-red'] };
+  var OPLOGS = [
+    { ts: '08-14 09:02', user: '管理员', client: 'Chrome · 本机', ip: '127.0.0.1', act: '抓取今日消息', method: 'POST', st: 200 },
+    { ts: '08-14 08:57', user: '管理员', client: 'Chrome · 本机', ip: '127.0.0.1', act: '切换集团', method: 'POST', st: 200 },
+    { ts: '08-14 08:50', user: '管理员', client: 'Chrome · 本机', ip: '127.0.0.1', act: '同步店铺列表', method: 'POST', st: 200 },
+    { ts: '08-14 08:41', user: '管理员', client: 'Chrome · 本机', ip: '127.0.0.1', act: '更新 Cookie', method: 'POST', st: 200 },
+    { ts: '08-14 08:10', user: '系统', client: 'nightly-fetch', ip: '127.0.0.1', act: '同步客服昵称', method: 'POST', st: 200 },
+    { ts: '08-14 08:00', user: '系统', client: 'dingtalk-push', ip: '127.0.0.1', act: '钉钉推送', method: 'POST', st: 502 },
+    { ts: '08-13 23:58', user: '管理员', client: 'Chrome · 本机', ip: '127.0.0.1', act: '导入 Excel', method: 'POST', st: 200 },
+    { ts: '08-13 23:10', user: '管理员', client: 'Chrome · 本机', ip: '127.0.0.1', act: '发起登录', method: 'POST', st: 200 }
+  ];
+  var SYSLOGS = [
+    { ts: '08-14 09:02:11', tag: 'fetch', msg: '[fetch-today] 拼多多 开始抓取今日消息, 共 96 家店铺' },
+    { ts: '08-14 09:02:40', tag: 'fetch', msg: '[fetch-today] 拼多多 进度 12/96 家(星科数码专营 完成)' },
+    { ts: '08-14 08:12:05', tag: 'prefetch', msg: '[prefetch] 抖音 35 天窗口预抓完成, 618 个日档全部写入 SQLite' },
+    { ts: '08-14 08:00:01', tag: 'dingtalk', msg: '[dingtalk] 推送经营日报失败: 机器人 Webhook 返回 502' },
+    { ts: '08-14 00:05:00', tag: 'prefetch', msg: '[prefetch] 夜间任务启动: natural_day 全平台 126 家' },
+    { ts: '08-14 00:05:00', tag: 'auth', msg: '[auth] 夜间任务使用 service_token 鉴权通过' },
+    { ts: '08-13 23:59:00', tag: 'db', msg: '[db] 回填 trace_days JSON 至 SQLite: 126 家 / 2,483,210 条' }
+  ];
+  var TRACE_DAYS = [
+    { d: '08-08', total: 11230, adopted: 8520, gen: 75.9 },
+    { d: '08-09', total: 11840, adopted: 9030, gen: 76.3 },
+    { d: '08-10', total: 10670, adopted: 8150, gen: 76.4 },
+    { d: '08-11', total: 12980, adopted: 10140, gen: 78.1 },
+    { d: '08-12', total: 12410, adopted: 9720, gen: 78.3 },
+    { d: '08-13', total: 13720, adopted: 10980, gen: 80.0 },
+    { d: '08-14', total: 12864, adopted: 10210, gen: 79.4 }
+  ];
+  var MESSAGES = [
+    { t: '09:12:44', type: '买家消息', content: '老板, 联想蓝牙耳机 L12 还有货吗? 京东自营和你们比哪个便宜?', ok: true },
+    { t: '09:13:02', type: '客服消息', content: '亲, 您好~ L12 现货的, 今天下单今天发货; 我们比自营便宜 15 元还送收纳盒哦', ok: true },
+    { t: '09:15:37', type: '买家消息', content: '那我要两个, 一个白色一个黑色, 能开发票吗?', ok: true },
+    { t: '09:16:10', type: '客服消息', content: '可以的亲, 发票抬头发我一下, 随包裹一起寄出~', ok: true },
+    { t: '09:18:55', type: '买家消息', content: '客服在吗? 昨天买的外壳有点划痕, 怎么办?', ok: true },
+    { t: '09:20:31', type: '客服消息', content: '非常抱歉给您带来不便, 您拍张照片发我, 我们给您补发一个新的', ok: true },
+    { t: '09:22:08', type: '买家消息', content: '已经拍好了, 你看看, 就这个角上', ok: false },
+    { t: '09:24:47', type: '系统消息', content: '订单已签收, 触发售后流程自动创建工单 #A-88012', ok: false }
+  ];
+  var USERS = [
+    { name: 'admin@tydiamond.local', role: 'admin', st: 'ok', reg: '2026-07-20 10:02', last: '08-14 09:01', expire: '永久' },
+    { name: 'ops@tydiamond.local', role: 'user', st: 'ok', reg: '2026-07-28 15:40', last: '08-13 18:22', expire: '永久' },
+    { name: 'liulei@tydiamond.local', role: 'user', st: 'ok', reg: '2026-08-02 09:11', last: '08-12 14:05', expire: '2026-12-31' },
+    { name: 'wangfang@tydiamond.local', role: 'user', st: 'banned', reg: '2026-08-05 20:33', last: '08-06 11:20', expire: '—' }
+  ];
+  var COOKIES = [
+    { key: 'tanyu-account-id', domain: '.tanyuai.com', expire: 'Session', st: 'ok' },
+    { key: 'tanyu-agent-account', domain: '.tanyuai.com', expire: '2026-09-13', st: 'warn' },
+    { key: 'tanyu-group-account', domain: '.tanyuai.com', expire: '2026-09-13', st: 'warn' },
+    { key: 'tanyu-group-id', domain: '.tanyuai.com', expire: 'Session', st: 'ok' }
+  ];
+  var GROUPS = [
+    { name: '星科数码专营-拼多多', p: 1, on: true, note: 'groupId 2605315603630915729' },
+    { name: '星科数码专营-京东', p: 7, on: true, note: 'groupId 1901419852011174006' },
+    { name: '星科数码专营-抖音', p: 5, on: true, note: 'groupId 2605315603630915722' }
+  ];
+  var QUICK_ACTIONS = [
+    { ic: 'zap', t: '抓取今日消息', d: '按平台抓取当天客服消息, 异步任务实时进度', color: 'bg-blue-lt text-blue' },
+    { ic: 'database', t: '预抓 35 天窗口', d: '夜间任务同款, 手动补齐 SQLite 滚动窗口', color: 'bg-cyan-lt text-cyan' },
+    { ic: 'box', t: '导入 Excel', d: '天猫1/天猫2 店铺数据通过文档导入入库', color: 'bg-purple-lt text-purple' },
+    { ic: 'send', t: '推送经营日报', d: '钉钉机器人推送当前核算结果到群', color: 'bg-green-lt text-green' }
+  ];
+
+  /* ---------- 状态 ---------- */
+  var state = {
+    platform: '', group: 'g1', theme: 'dark',
+    shopsSort: { key: 'total', dir: -1 }, shopsPage: 1, shopsPageSize: 8,
+    staffAgg: false, trendDays: 7, logTab: 'op'
+  };
+  var rendered = {};
+
+  /* ---------- 路由 ---------- */
+  function route() {
+    var h = (location.hash || '#/dashboard').replace(/^#\/?/, '');
+    var name = PAGES[h] ? h : 'dashboard';
+    var views = document.querySelectorAll('[data-view]');
+    for (var i = 0; i < views.length; i++) views[i].classList.toggle('d-none', views[i].dataset.view !== name);
+    var links = document.querySelectorAll('#sidebar .nav-link[data-page]');
+    for (var j = 0; j < links.length; j++) links[j].classList.toggle('active', links[j].dataset.page === name);
+    document.title = PAGES[name].title + ' · 探域数据看板';
+    // 模块头部接口提示(迁移契约)
+    var hintMap = { dashboard: 'dashApiHint', shops: 'shopsApiHint', staff: 'staffApiHint', trace: 'traceApiHint', tasks: 'tasksApiHint', logs: 'logsApiHint', settings: 'settingsApiHint' };
+    Object.keys(hintMap).forEach(function (k) {
+      var el = $(hintMap[k]);
+      if (el) el.innerHTML = icon('code', 12) + '<span>' + PAGES[k].api + '</span>';
+    });
+    if (name !== 'login' && !rendered[name]) {
+      rendered[name] = true;
+      renderPage(name);
+    }
+    if (name === 'dashboard') renderDashboard(); // 保持图表随主题刷新
+    window.scrollTo(0, 0);
+    var sb = document.getElementById('sidebar-menu');
+    if (sb && sb.classList.contains('show')) sb.classList.remove('show');
+  }
+  function renderPage(name) {
+    var map = {
+      dashboard: renderDashboard, shops: renderShops, staff: renderStaff,
+      trace: renderTrace, tasks: renderTasks, logs: renderLogs, settings: renderSettings
+    };
+    if (map[name]) map[name]();
+  }
+
+  /* ---------- 概览 ---------- */
+  function renderDashboard() {
+    var stats = [
+      { ic: 'message', color: 'bg-blue-lt text-blue', label: '今日消息量', val: fmt(12864), delta: '+8.2%', dir: 'up', sub: 'vs 昨日 11,890' },
+      { ic: 'target', color: 'bg-green-lt text-green', label: '今日采纳数', val: fmt(10210), delta: '+5.4%', dir: 'up', sub: 'vs 昨日 9,690' },
+      { ic: 'activity', color: 'bg-purple-lt text-purple', label: '采纳率', val: pct(79.4), delta: '+1.1pp', dir: 'up', sub: '近 7 天均值 77.8%' },
+      { ic: 'chart', color: 'bg-amber-lt text-amber', label: '生成率', val: pct(76.8), delta: '-0.8pp', dir: 'down', sub: '近 7 天均值 77.6%' }
+    ];
+    $('overviewCards').innerHTML = stats.map(function (s) {
+      var dCls = s.dir === 'up' ? 'up' : s.dir === 'down' ? 'down' : 'flat';
+      var arrow = s.dir === 'up' ? '▲' : s.dir === 'down' ? '▼' : '—';
+      return '<div class="col-sm-6 col-xl-3"><div class="card stat-card">' +
+        '<div class="card-body">' +
+          '<div class="d-flex align-items-start justify-content-between">' +
+            '<div><div class="text-secondary" style="font-size:.8rem">' + s.label + '</div>' +
+            '<div class="stat-value mt-1">' + s.val + '</div></div>' +
+            '<span class="stat-icon ' + s.color + '">' + icon(s.ic, 20) + '</span>' +
+          '</div>' +
+          '<div class="d-flex align-items-center gap-2 mt-2">' +
+            '<span class="stat-delta ' + dCls + '">' + arrow + ' ' + s.delta + '</span>' +
+            '<span class="text-secondary" style="font-size:.74rem">' + s.sub + '</span>' +
+          '</div>' +
+        '</div></div></div>';
+    }).join('');
+
+    // 平台状态
+    $('platformStatus').innerHTML = PLATFORM_STATUS.map(function (x) {
+      var dot = x.state === 'running' ? 'status status-blue status-animated' : 'status status-green';
+      var stTxt = x.state === 'running' ? '抓取中' : '空闲';
+      var stCls = x.state === 'running' ? 'text-blue' : 'text-success';
+      return '<div class="platform-row">' +
+        '<span class="' + dot + '"></span>' +
+        '<div class="flex-fill"><div class="fw-semibold" style="font-size:.9rem">' + x.name + '</div>' +
+        '<div class="text-secondary" style="font-size:.72rem">' + x.shops + ' 家店铺 · 窗口 ' + x.days + ' 天</div></div>' +
+        '<div class="text-end"><div class="' + stCls + '" style="font-size:.78rem;font-weight:600">' + stTxt + '</div>' +
+        '<div class="text-secondary" style="font-size:.7rem">最近 ' + x.last + '</div></div></div>';
+    }).join('');
+
+    // 最近任务
+    var recent = TASKS.slice(0, 5);
+    $('dashRecentTasks').innerHTML = recent.map(function (t) {
+      var s = TASK_STATUS[t.st] || ['未知', 'bg-secondary'];
+      var pctv = t.total ? Math.round(t.done / t.total * 100) : 0;
+      return '<tr><td>' + badge(s[0], s[1]) + '</td>' +
+        '<td class="small">' + esc(t.label) + '</td>' +
+        '<td style="min-width:110px"><div class="progress prog-sm"><div class="progress-bar" style="width:' + pctv + '%"></div></div>' +
+        '<div class="prog-label mt-1">' + t.done + '/' + t.total + '</div></td>' +
+        '<td class="small text-secondary">' + t.start + '</td></tr>';
+    }).join('');
+
+    // 快捷操作
+    $('quickActions').innerHTML = QUICK_ACTIONS.map(function (q) {
+      return '<div class="col-md-6 col-xl-3">' +
+        '<div class="card h-100"><div class="card-body">' +
+          '<div class="d-flex align-items-center gap-3">' +
+            '<span class="stat-icon ' + q.color + '">' + icon(q.ic, 20) + '</span>' +
+            '<div><div class="fw-semibold" style="font-size:.95rem">' + q.t + '</div>' +
+            '<div class="text-secondary" style="font-size:.78rem">' + q.d + '</div></div>' +
+          '</div>' +
+          '<button class="btn btn-sm btn-outline-primary w-100 mt-3" onclick="app.mockAction(\'' + q.t + '\')">执行(演示)</button>' +
+        '</div></div></div>';
+    }).join('');
+
+    drawCharts();
+  }
+
+  function drawCharts() {
+    var dark = state.theme === 'dark';
+    var grid = dark ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.06)';
+    var tick = dark ? '#9aa3b2' : '#6b7480';
+    var C = window.Chart;
+    var c1 = $('chartTrend'), c2 = $('chartPlatform');
+    if (!c1 || !c2) return;
+    if (!C) {
+      c1.parentElement.innerHTML = '<div class="h-100 d-flex align-items-center justify-content-center text-secondary small">图表库未加载(离线), 迁移后将使用 Chart.js</div>';
+      c2.parentElement.innerHTML = '<div class="h-100 d-flex align-items-center justify-content-center text-secondary small">图表库未加载(离线)</div>';
+      return;
+    }
+    var days = state.trendDays === 30 ? 30 : 7;
+    var labels = [], msgs = [], adopts = [];
+    for (var i = days - 1; i >= 0; i--) {
+      var d = new Date(Date.now() - i * 86400000);
+      labels.push((d.getMonth() + 1) + '/' + d.getDate());
+      var base = TRACE_DAYS[(days - i) % TRACE_DAYS.length];
+      msgs.push(Math.round(base.total * (0.92 + Math.random() * 0.16)));
+      adopts.push(Math.round(base.adopted * (0.92 + Math.random() * 0.16)));
+    }
+    if (window._chartTrend) window._chartTrend.destroy();
+    if (window._chartPlatform) window._chartPlatform.destroy();
+    window._chartTrend = new C(c1, {
+      data: {
+        labels: labels,
+        datasets: [
+          { type: 'bar', label: '采纳数', data: adopts, backgroundColor: 'rgba(47,179,68,.55)', borderRadius: 4, barPercentage: .5, categoryPercentage: .6, yAxisID: 'y' },
+          { type: 'line', label: '消息量', data: msgs, borderColor: '#066fd1', backgroundColor: 'rgba(6,111,209,.08)', fill: true, tension: .35, pointRadius: 3, pointBackgroundColor: '#066fd1', borderWidth: 2, yAxisID: 'y' }
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { labels: { color: tick, boxWidth: 10, boxHeight: 10 } } },
+        scales: {
+          x: { grid: { color: grid }, ticks: { color: tick, font: { size: 10 } } },
+          y: { grid: { color: grid }, ticks: { color: tick, font: { size: 10 } }, beginAtZero: true }
+        }
+      }
+    });
+    var share = [
+      { label: '拼多多', v: 41, color: '#066fd1' },
+      { label: '抖音', v: 36, color: '#4cc9f0' },
+      { label: '京东', v: 19, color: '#8b7cf6' },
+      { label: '天猫', v: 4, color: '#f0b429' }
+    ];
+    window._chartPlatform = new C(c2, {
+      type: 'doughnut',
+      data: { labels: share.map(function (x) { return x.label; }), datasets: [{ data: share.map(function (x) { return x.v; }), backgroundColor: share.map(function (x) { return x.color; }), borderWidth: 2, borderColor: dark ? '#1f2937' : '#fff' }] },
+      options: {
+        responsive: true, maintainAspectRatio: false, cutout: '62%',
+        plugins: {
+          legend: { position: 'bottom', labels: { color: tick, boxWidth: 10, boxHeight: 10, font: { size: 10 } } },
+          tooltip: { callbacks: { label: function (ctx) { return ' ' + ctx.label + ': ' + ctx.parsed + '%'; } } }
+        }
+      }
+    });
+  }
+  function trendRange(days) {
+    state.trendDays = days;
+    $('trendBtn7').classList.toggle('active', days === 7);
+    $('trendBtn30').classList.toggle('active', days === 30);
+    drawCharts();
+  }
+
+  /* ---------- 店铺核算 ---------- */
+  function renderShops() {
+    var pf = $('shopsPlatform').value, kw = ($('shopsSearch').value || '').trim().toLowerCase(), rng = $('shopsRange').value;
+    var list = SHOPS.filter(function (s) { return (!pf || String(s.p) === pf) && (!kw || s.name.toLowerCase().includes(kw)); });
+    var key = state.shopsSort.key, dir = state.shopsSort.dir;
+    list.sort(function (a, b) {
+      var va = key === 'name' ? a.name : a[key], vb = key === 'name' ? b.name : b[key];
+      if (va < vb) return -1 * dir; if (va > vb) return 1 * dir; return 0;
+    });
+    var totalT = list.reduce(function (s, x) { return s + x.total; }, 0);
+    var totalA = list.reduce(function (s, x) { return s + x.adopted; }, 0);
+    var pages = Math.max(1, Math.ceil(list.length / state.shopsPageSize));
+    state.shopsPage = Math.min(state.shopsPage, pages);
+    var start = (state.shopsPage - 1) * state.shopsPageSize;
+    var page = list.slice(start, start + state.shopsPageSize);
+    $('shopsSummary').textContent = '共 ' + list.length + ' 家 · 消息 ' + fmt(totalT) + ' 条 · 采纳率 ' + (totalT ? (totalA / totalT * 100).toFixed(1) : '0') + '% · 区间 ' + rng + ' 天';
+    $('shopsFooter').textContent = '第 ' + state.shopsPage + ' / ' + pages + ' 页 · 共 ' + list.length + ' 家店铺';
+    if (!page.length) {
+      $('shopsBody').innerHTML = '<tr><td colspan="8" class="text-center empty-hint py-4">没有符合条件的店铺</td></tr>';
+      return;
+    }
+    $('shopsBody').innerHTML = page.map(function (s) {
+      var rate = s.total ? s.adopted / s.total * 100 : 0;
+      var stBadge = s.st === 'running' ? badge('抓取中', 'bg-blue') : badge('正常', 'bg-green-lt text-success');
+      return '<tr>' +
+        '<td class="fw-semibold"><a href="#" onclick="app.shopDetail(event,\'' + s.id + '\')" class="link-primary">' + esc(s.name) + '</a></td>' +
+        '<td>' + pfBadge(s.p) + '</td>' +
+        '<td class="text-end fw-semibold">' + fmt(s.total) + '</td>' +
+        '<td class="text-end">' + fmt(s.adopted) + '</td>' +
+        '<td class="text-end">' + ratePill(rate) + '</td>' +
+        '<td class="text-end">' + pct(s.gen) + '</td>' +
+        '<td class="small text-secondary">' + s.last + '</td>' +
+        '<td class="text-end"><div class="btn-list justify-content-end">' + stBadge +
+        '<button class="btn btn-sm btn-ghost" onclick="app.shopDetail(event,\'' + s.id + '\')">明细</button></div></td></tr>';
+    }).join('');
+  }
+  function sortShops(key) {
+    if (state.shopsSort.key === key) state.shopsSort.dir *= -1; else state.shopsSort = { key: key, dir: -1 };
+    renderShops();
+  }
+  function shopsPage(d) { state.shopsPage += d; renderShops(); }
+  function shopDetail(ev, id) {
+    if (ev) ev.preventDefault();
+    var s = SHOPS.filter(function (x) { return x.id === id; })[0] || SHOPS[0];
+    $('mShopTitle').textContent = s.name + ' · 近 7 天明细';
+    var rows = TRACE_DAYS.map(function (d) {
+      var rate = d.total ? d.adopted / d.total * 100 : 0;
+      return '<tr><td>' + d.d + '</td><td class="text-end">' + fmt(d.total) + '</td><td class="text-end">' + fmt(d.adopted) + '</td><td class="text-end">' + ratePill(rate) + '</td><td class="text-end">' + pct(d.gen) + '</td></tr>';
+    }).join('');
+    $('mShopBody').innerHTML =
+      '<div class="d-flex align-items-center gap-3 mb-3 flex-wrap">' + pfBadge(s.p) +
+      '<span class="text-secondary small">消息总条数 <b class="text-body">' + fmt(s.total) + '</b></span>' +
+      '<span class="text-secondary small">采纳率 <b class="text-body">' + pct(s.total ? s.adopted / s.total * 100 : 0) + '</b></span>' +
+      '<span class="text-secondary small">最近抓取 <b class="text-body">' + s.last + '</b></span></div>' +
+      '<div class="table-responsive"><table class="table table-vcenter"><thead><tr><th>日期</th><th class="text-end">消息数</th><th class="text-end">采纳数</th><th class="text-end">采纳率</th><th class="text-end">生成率</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+    new bootstrap.Modal($('mShopDetail')).show();
+  }
+
+  /* ---------- 客服账号池 ---------- */
+  function renderStaff() {
+    var pf = $('staffPlatform').value, kw = ($('staffSearch').value || '').trim().toLowerCase();
+    var list = STAFF.filter(function (x) {
+      return (!pf || String(x.p) === pf) &&
+        (!kw || x.name.toLowerCase().includes(kw) || x.acct.toLowerCase().includes(kw) || x.shop.toLowerCase().includes(kw));
+    });
+    var totalT = list.reduce(function (s, x) { return s + x.total; }, 0);
+    var totalA = list.reduce(function (s, x) { return s + x.adopted; }, 0);
+    $('staffSummary').textContent = '共 ' + list.length + ' 人 · 消息 ' + fmt(totalT) + ' · 平均采纳率 ' + (totalT ? (totalA / totalT * 100).toFixed(1) : '0') + '%';
+    var grid = $('staffGrid');
+    if (!list.length) { grid.innerHTML = '<span class="empty-hint">没有符合条件的客服</span>'; return; }
+    var html;
+    if (state.staffAgg) {
+      var map = {};
+      list.forEach(function (x) {
+        var k = x.name;
+        if (!map[k]) map[k] = { name: x.name, acct: x.acct, shops: [], total: 0, adopted: 0 };
+        map[k].shops.push(x.shop); map[k].total += x.total; map[k].adopted += x.adopted;
+      });
+      var arr = Object.keys(map).map(function (k) { return map[k]; }).sort(function (a, b) { return b.total - a.total; });
+      html = arr.map(function (x) {
+        var rate = x.total ? x.adopted / x.total * 100 : 0;
+        return staffCard(x.name, x.acct, x.shops.join('、'), x.total, rate, x.shops.length + ' 店');
+      }).join('');
+    } else {
+      html = list.slice().sort(function (a, b) { return b.total - a.total; }).map(function (x) {
+        var rate = x.total ? x.adopted / x.total * 100 : 0;
+        return staffCard(x.name, x.acct, x.shop, x.total, rate, pfBadge(x.p));
+      }).join('');
+    }
+    grid.innerHTML = html;
+  }
+  function staffCard(name, acct, shop, total, rate, meta) {
+    return '<div class="staff-card"><div class="d-flex justify-content-between align-items-start">' +
+      '<div><div class="s-name">' + esc(name) + '</div><div class="s-acct">' + esc(acct) + '</div></div>' + ratePill(rate) + '</div>' +
+      '<div class="d-flex justify-content-between align-items-center mt-2">' +
+      '<span class="text-secondary small text-truncate me-2" title="' + esc(shop) + '">' + esc(shop) + '</span>' +
+      '<span class="text-secondary small text-nowrap">' + fmt(total) + ' 条</span></div>' +
+      '<div class="mt-1">' + meta + '</div></div>';
+  }
+  function staffMode(agg) {
+    state.staffAgg = agg;
+    $('staffModeShop').classList.toggle('active', !agg);
+    $('staffModeAgg').classList.toggle('active', agg);
+    renderStaff();
+  }
+
+  /* ---------- 消息轨迹 ---------- */
+  function renderTrace() {
+    var sel = $('traceShop');
+    if (!sel.options.length) {
+      sel.innerHTML = '<option value="">全部店铺</option>' + SHOPS.map(function (s) { return '<option value="' + s.id + '">' + esc(s.name) + '</option>'; }).join('');
+    }
+    var rng = +$('traceRange').value;
+    var days = TRACE_DAYS.slice(0, Math.min(rng, TRACE_DAYS.length));
+    var t = days.reduce(function (s, d) { return s + d.total; }, 0);
+    var a = days.reduce(function (s, d) { return s + d.adopted; }, 0);
+    $('traceSummary').textContent = '区间 ' + days[days.length - 1].d + ' ~ ' + days[0].d + ' · 消息 ' + fmt(t) + ' · 采纳率 ' + (t ? (a / t * 100).toFixed(1) : '0') + '%';
+    $('traceBody').innerHTML = days.map(function (d) {
+      var rate = d.total ? d.adopted / d.total * 100 : 0;
+      return '<tr><td class="fw-semibold">' + d.d + '</td>' +
+        '<td class="text-end">' + fmt(d.total) + '</td>' +
+        '<td class="text-end">' + fmt(d.adopted) + '</td>' +
+        '<td class="text-end">' + ratePill(rate) + '</td>' +
+        '<td class="text-end">' + pct(d.gen) + '</td>' +
+        '<td class="text-end"><button class="btn btn-sm btn-ghost" onclick="app.msgDetail()">查看明细</button></td></tr>';
+    }).join('');
+  }
+  function msgDetail() {
+    $('mMsgTitle').textContent = '原始消息 · 星科数码专营 · 08-14 (示例 8 条)';
+    var html = MESSAGES.map(function (m) {
+      var cls = m.ok ? 'adopted' : 'rejected';
+      var st = m.ok ? badge('采纳', 'bg-green-lt text-success') : badge('未采纳', 'bg-secondary-lt');
+      return '<div class="msg-item ' + cls + '">' +
+        '<div class="d-flex align-items-center gap-2 mb-1">' +
+        '<span class="text-secondary small font-monospace">' + m.t + '</span>' +
+        '<span class="badge bg-blue-lt text-blue" style="font-size:.66rem">' + m.type + '</span>' + st + '</div>' +
+        '<div class="small">' + esc(m.content) + '</div></div>';
+    }).join('');
+    $('mMsgBody').innerHTML = html + '<div class="text-center text-secondary small mt-2">迁移后: GET /api/trace/messages/{shop_id} 返回全部原始消息</div>';
+    new bootstrap.Modal($('mMessageDetail')).show();
+  }
+
+  /* ---------- 任务中心 ---------- */
+  function renderTasks() {
+    var stats = [
+      { label: '运行中', val: TASKS.filter(function (t) { return t.st === 'running'; }).length, color: 'blue', ic: 'activity' },
+      { label: '排队中', val: TASKS.filter(function (t) { return t.st === 'queued'; }).length, color: 'yellow', ic: 'clock' },
+      { label: '今日完成', val: TASKS.filter(function (t) { return t.st === 'done'; }).length, color: 'green', ic: 'check' },
+      { label: '今日失败', val: TASKS.filter(function (t) { return t.st === 'error'; }).length, color: 'red', ic: 'alert' }
+    ];
+    $('taskStatCards').innerHTML = stats.map(function (s) {
+      return '<div class="col-sm-6 col-xl-3"><div class="card"><div class="card-body d-flex align-items-center gap-3">' +
+        '<span class="stat-icon" style="width:2.3rem;height:2.3rem;border-radius:.6rem;display:flex;align-items:center;justify-content:center;background:var(--tblr-' + s.color + '-bg-subtle);color:var(--tblr-' + s.color + ')">' +
+        icon(s.ic, 18) + '</span>' +
+        '<div><div class="text-secondary" style="font-size:.76rem">' + s.label + '</div>' +
+        '<div class="fw-bold" style="font-size:1.3rem">' + s.val + '</div></div></div></div></div>';
+    }).join('');
+    $('tasksBody').innerHTML = TASKS.map(function (t) {
+      var s = TASK_STATUS[t.st] || ['未知', 'bg-secondary'];
+      var pctv = t.total ? Math.round(t.done / t.total * 100) : 0;
+      var act = t.st === 'running'
+        ? '<button class="btn btn-sm btn-ghost text-danger" onclick="app.mockAction(\'取消任务 #' + t.id + '\')">取消</button>'
+        : t.st === 'error'
+        ? '<button class="btn btn-sm btn-ghost" onclick="app.mockAction(\'重试任务 #' + t.id + '\')">重试</button>'
+        : '<span class="text-secondary small">—</span>';
+      return '<tr><td class="text-secondary font-monospace">#' + t.id + '</td>' +
+        '<td class="small fw-semibold">' + esc(t.label) + '</td>' +
+        '<td><span class="badge bg-secondary-lt">' + esc(t.type) + '</span></td>' +
+        '<td class="small text-secondary">' + esc(t.who) + '</td>' +
+        '<td>' + badge(s[0], s[1]) + '</td>' +
+        '<td><div class="d-flex align-items-center gap-2"><div class="progress prog-sm flex-fill"><div class="progress-bar" style="width:' + pctv + '%"></div></div>' +
+        '<span class="prog-label">' + t.done + '/' + t.total + '</span></div></td>' +
+        '<td class="small text-secondary">' + t.start + '</td>' +
+        '<td class="small text-secondary">' + t.cost + '</td>' +
+        '<td class="text-end">' + act + '</td></tr>';
+    }).join('');
+  }
+
+  /* ---------- 日志中心 ---------- */
+  function renderLogs() { renderOpLogs(); renderTaskLogs(); renderSysLogs(); }
+  function renderOpLogs() {
+    $('oplogBody').innerHTML = OPLOGS.map(function (l) {
+      return '<tr><td class="small text-secondary font-monospace">' + l.ts + '</td>' +
+        '<td class="small">' + esc(l.user) + '</td>' +
+        '<td class="small text-secondary">' + esc(l.client) + '</td>' +
+        '<td class="small text-secondary font-monospace">' + l.ip + '</td>' +
+        '<td class="small fw-semibold">' + esc(l.act) + '</td>' +
+        '<td><span class="badge bg-secondary-lt">' + l.method + '</span></td>' +
+        '<td>' + (l.st >= 400 ? badge(String(l.st), 'bg-red') : badge(String(l.st), 'bg-green-lt text-success')) + '</td></tr>';
+    }).join('');
+  }
+  function renderTaskLogs() {
+    $('tasklogBody').innerHTML = TASKS.map(function (t) {
+      var s = TASK_STATUS[t.st] || ['未知', 'bg-secondary'];
+      var pctv = t.total ? Math.round(t.done / t.total * 100) : 0;
+      return '<tr><td class="text-secondary font-monospace">' + t.id + '</td>' +
+        '<td>' + badge(s[0], s[1]) + '</td>' +
+        '<td class="small text-secondary">' + esc(t.who) + '</td>' +
+        '<td class="small">' + esc(t.label) + '</td>' +
+        '<td><div class="progress prog-sm"><div class="progress-bar" style="width:' + pctv + '%"></div></div></td>' +
+        '<td class="small text-secondary">' + t.start + '</td>' +
+        '<td class="text-end"><button class="btn btn-sm btn-ghost text-danger" onclick="app.mockAction(\'删除任务记录 #' + t.id + '\')">删</button></td></tr>';
+    }).join('');
+  }
+  function renderSysLogs() {
+    var tag = ($('sysTagSel') || {}).value || '';
+    var list = tag ? SYSLOGS.filter(function (l) { return l.tag === tag; }) : SYSLOGS;
+    var tags = {};
+    SYSLOGS.forEach(function (l) { tags[l.tag] = (tags[l.tag] || 0) + 1; });
+    $('logFilterBox').innerHTML = '<select class="form-select form-select-sm" id="sysTagSel" style="width:auto" onchange="app.renderSysLogs()">' +
+      '<option value="">全部标签</option>' +
+      Object.keys(tags).map(function (k) { return '<option value="' + k + '"' + (tag === k ? ' selected' : '') + '>' + k + '(' + tags[k] + ')</option>'; }).join('') + '</select>';
+    $('syslogBody').innerHTML = list.map(function (l) {
+      var colors = { fetch: 'bg-blue-lt text-blue', prefetch: 'bg-cyan-lt text-cyan', dingtalk: 'bg-purple-lt text-purple', auth: 'bg-green-lt text-green', db: 'bg-amber-lt text-amber' };
+      return '<tr><td class="small text-secondary font-monospace" style="white-space:nowrap">' + l.ts + '</td>' +
+        '<td><span class="badge ' + (colors[l.tag] || 'bg-secondary-lt') + '">' + esc(l.tag) + '</span></td>' +
+        '<td class="small" style="max-width:560px">' + esc(l.msg) + '</td></tr>';
+    }).join('');
+  }
+  function switchLogs(ev, tab) {
+    if (ev) ev.preventDefault();
+    state.logTab = tab;
+    var tabs = $('logTabs').querySelectorAll('.nav-link');
+    for (var i = 0; i < tabs.length; i++) tabs[i].classList.toggle('active', tabs[i].dataset.logtab === tab);
+    $('logPaneOp').classList.toggle('d-none', tab !== 'op');
+    $('logPaneTask').classList.toggle('d-none', tab !== 'task');
+    $('logPaneSys').classList.toggle('d-none', tab !== 'sys');
+  }
+  function pruneLogs() {
+    if (confirm('清理全部日志记录?(演示操作)')) toast('已清理: 任务记录 214 条, 系统日志 1,880 条', 'success');
+  }
+
+  /* ---------- 系统设置 ---------- */
+  function renderSettings() {
+    $('cookiesBody').innerHTML = COOKIES.map(function (c) {
+      var st = c.st === 'warn' ? badge('即将到期', 'bg-yellow') : badge('正常', 'bg-green-lt text-success');
+      return '<tr><td class="font-monospace small">' + esc(c.key) + '</td>' +
+        '<td class="small text-secondary font-monospace">' + esc(c.domain) + '</td>' +
+        '<td class="small">' + esc(c.expire) + '</td><td>' + st + '</td>' +
+        '<td class="text-end"><button class="btn btn-sm btn-ghost" onclick="app.cookieModal(\'' + esc(c.key) + '\')">编辑</button>' +
+        '<button class="btn btn-sm btn-ghost text-danger" onclick="app.mockAction(\'删除 Cookie ' + esc(c.key) + '\')">删除</button></td></tr>';
+    }).join('');
+    $('groupsBody').innerHTML = GROUPS.map(function (g) {
+      return '<div class="list-group-item"><div class="row align-items-center">' +
+        '<div class="col-auto">' + pfBadge(g.p) + '</div>' +
+        '<div class="col"><div class="fw-semibold" style="font-size:.9rem">' + g.name + '</div>' +
+        '<div class="text-secondary small font-monospace">' + g.note + '</div></div>' +
+        '<div class="col-auto"><div class="form-check form-switch"><input class="form-check-input" type="checkbox" ' + (g.on ? 'checked' : '') + ' onchange="app.mockAction(\'' + (g.on ? '停用' : '启用') + ' ' + g.name + '\')"></div></div></div></div>';
+    }).join('');
+    $('usersBody').innerHTML = USERS.map(function (u) {
+      var role = u.role === 'admin' ? badge('管理员', 'bg-purple-lt text-purple') : badge('用户', 'bg-secondary-lt');
+      var st = u.st === 'banned' ? badge('封禁', 'bg-red') : badge('正常', 'bg-green-lt text-success');
+      var act = u.st === 'banned'
+        ? '<button class="btn btn-sm btn-ghost" onclick="app.mockAction(\'解封 ' + u.name + '\')">解封</button>'
+        : '<button class="btn btn-sm btn-ghost" onclick="app.mockAction(\'封禁 ' + u.name + '\')">封禁</button>';
+      return '<tr><td class="small font-monospace">' + esc(u.name) + '</td><td>' + role + '</td><td>' + st + '</td>' +
+        '<td class="small text-secondary">' + u.reg + '</td><td class="small text-secondary">' + u.last + '</td>' +
+        '<td class="small">' + esc(u.expire) + '</td><td class="text-end"><div class="btn-list justify-content-end">' + act +
+        '<button class="btn btn-sm btn-ghost" onclick="app.mockAction(\'重置密码 ' + u.name + '\')">改密码</button></div></td></tr>';
+    }).join('');
+    renderApiMap($('apiMapBody'));
+  }
+  function renderApiMap(target) {
+    target.innerHTML = API_MAP.map(function (r) {
+      var mCls = r[1] === 'GET' ? 'bg-green-lt text-green' : r[1] === 'POST' ? 'bg-blue-lt text-blue' : r[1] === 'DELETE' ? 'bg-red-lt text-red' : 'bg-secondary-lt';
+      return '<tr><td class="small fw-semibold" style="white-space:nowrap">' + r[0] + '</td>' +
+        '<td><span class="badge ' + mCls + '">' + r[1] + '</span></td>' +
+        '<td class="small font-monospace">' + esc(r[2]) + '</td>' +
+        '<td class="small text-secondary d-none d-lg-table-cell">' + esc(r[3]) + '</td></tr>';
+    }).join('');
+  }
+  function openApiMap(ev) {
+    if (ev) ev.preventDefault();
+    renderApiMap($('apiMapModalBody'));
+    new bootstrap.Modal($('mApiMap')).show();
+  }
+  function cookieModal(key) {
+    var c = COOKIES.filter(function (x) { return x.key === key; })[0];
+    $('mCookieTitle').textContent = c ? '编辑 Cookie · ' + c.key : '新增 Cookie';
+    $('ckKey').value = c ? c.key : '';
+    $('ckValue').value = c ? '••••••••••(已隐藏)' : '';
+    $('ckDomain').value = c ? c.domain : '.tanyuai.com';
+    $('ckExpire').value = c && c.expire !== 'Session' ? c.expire : '2026-09-13';
+    $('ckSession').checked = !c || c.expire === 'Session';
+    new bootstrap.Modal($('mCookie')).show();
+  }
+  function saveCookie() {
+    toast('Cookie 已保存(演示) · 迁移后写入 config.json', 'success');
+    bootstrap.Modal.getInstance($('mCookie')).hide();
+  }
+
+  /* ---------- 登录 ---------- */
+  function authTab(ev, tab) {
+    if (ev) ev.preventDefault();
+    $('loginTab').classList.toggle('active', tab === 'login');
+    $('regTab').classList.toggle('active', tab === 'reg');
+  }
+  function login() {
+    toast('登录成功(演示) · 迁移后接入 POST /api/auth/login', 'success');
+    location.hash = '#/dashboard';
+  }
+
+  /* ---------- 通用交互 ---------- */
+  function refresh() {
+    var b = $('btnRefresh');
+    b.style.transform = 'rotate(180deg)';
+    setTimeout(function () { b.style.transform = ''; }, 400);
+    if (!rendered.dashboard) return;
+    var cur = (location.hash || '#/dashboard').replace(/^#\/?/, '');
+    if (PAGES[cur] && cur !== 'login') renderPage(cur);
+    toast('数据已刷新(示例)');
+  }
+  function mockAction(name) {
+    toast('「' + name + '」为演示操作 · 迁移后调用真实接口');
+  }
+  function searchHint() {
+    toast('搜索框演示 · 迁移后支持全局搜索店铺/客服/任务');
+  }
+  function toggleTheme() {
+    state.theme = state.theme === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.bsTheme = state.theme;
+    try { localStorage.setItem('tanyu_preview_theme', state.theme); } catch (e) {}
+    paintIcons();
+    if (rendered.dashboard) drawCharts();
+  }
+
+  /* ---------- 图标渲染 ---------- */
+  function paintIcons() {
+    var nodes = document.querySelectorAll('[data-ic]');
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i], name = n.dataset.ic;
+      n.innerHTML = icon(name, n.dataset.size || 18);
+    }
+    $('btnTheme').innerHTML = icon(state.theme === 'dark' ? 'sun' : 'moon', 18);
+    $('btnBell').innerHTML = icon('bell', 18) + '<span class="dot"></span>';
+    var logo = icon('chart', 18);
+    $('brandLogo').innerHTML = logo;
+    if ($('loginLogo')) $('loginLogo').innerHTML = logo;
+  }
+
+  /* ---------- 初始化 ---------- */
+  function init() {
+    try {
+      var saved = localStorage.getItem('tanyu_preview_theme');
+      if (saved === 'light' || saved === 'dark') state.theme = saved;
+    } catch (e) {}
+    document.documentElement.dataset.bsTheme = state.theme;
+    paintIcons();
+    $('topPlatformSel').addEventListener('change', function (e) {
+      state.platform = e.target.value;
+      toast(state.platform ? '已筛选平台: ' + e.target.options[e.target.selectedIndex].text : '已显示全部平台');
+      var cur = (location.hash || '#/dashboard').replace(/^#\/?/, '');
+      if (cur !== 'login' && PAGES[cur]) renderPage(cur);
+    });
+    $('topGroupSel').addEventListener('change', function (e) {
+      state.group = e.target.value;
+      toast('已切换集团(演示): ' + e.target.options[e.target.selectedIndex].text);
+    });
+    window.addEventListener('hashchange', route);
+    if (!location.hash) location.hash = '#/dashboard';
+    route();
+    // 模拟任务刷新
+    setInterval(function () {
+      if (!document.querySelector('[data-view="tasks"]').classList.contains('d-none')) renderTasks();
+    }, 5000);
+  }
+
+  /* ---------- 暴露给内联 onclick ---------- */
+  window.app = {
+    refresh: refresh, mockAction: mockAction, searchHint: searchHint, toggleTheme: toggleTheme,
+    renderShops: renderShops, sortShops: sortShops, shopsPage: shopsPage, shopDetail: shopDetail,
+    renderStaff: renderStaff, staffMode: staffMode,
+    renderTrace: renderTrace, msgDetail: msgDetail,
+    trendRange: trendRange,
+    switchLogs: switchLogs, renderSysLogs: renderSysLogs, pruneLogs: pruneLogs,
+    openApiMap: openApiMap, cookieModal: cookieModal, saveCookie: saveCookie,
+    authTab: authTab, login: login
+  };
+
+  document.addEventListener('DOMContentLoaded', init);
+})();
+</script>
+</body>
+</html>

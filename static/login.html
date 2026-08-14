@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-bs-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登录 · 探域数据看板</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/vendor/tabler/tabler.min.css">
+<style>
+  body {
+    font-family: 'Inter', -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    min-height: 100vh;
+  }
+  /* ═══════ 全屏粒子背景(底层) + 方格线/鼠标光线(顶层) ═══════ */
+  #bgCanvas { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
+  #fxCanvas { position: fixed; inset: 0; z-index: 2; pointer-events: none; }
+  body {
+    background:
+      radial-gradient(900px 480px at 78% -10%, rgba(6,111,209,.18), transparent 60%),
+      radial-gradient(700px 420px at 8% 110%, rgba(139,124,246,.14), transparent 60%),
+      #070b14;
+    background-attachment: fixed;
+  }
+  /* ═══════ 分栏布局 ═══════ */
+  .auth-layout { display: flex; min-height: 100vh; position: relative; z-index: 1; }
+  /* 左: 品牌宣传区(半透明深色, 粒子透出; 不用 backdrop-filter 保帧率) */
+  .brand-panel {
+    flex: 1 1 55%; display: flex; flex-direction: column; justify-content: space-between;
+    padding: 3rem 3.5rem; position: relative; overflow: hidden;
+    background:
+      radial-gradient(900px 500px at 85% -10%, rgba(6,111,209,.2), transparent 60%),
+      radial-gradient(700px 420px at -10% 110%, rgba(139,124,246,.16), transparent 60%),
+      rgba(9, 14, 26, .58);
+  }
+  .brand-panel > * { position: relative; z-index: 1; }
+  .bp-head { display: flex; align-items: center; gap: .8rem; }
+  .brand-logo {
+    width: 44px; height: 44px; border-radius: 12px; flex: 0 0 auto;
+    background: linear-gradient(135deg, #066fd1 0%, #4cc9f0 60%, #8b7cf6 120%);
+    display: inline-flex; align-items: center; justify-content: center; color: #fff;
+    box-shadow: 0 8px 24px rgba(6,111,209,.45);
+  }
+  .bp-head .t1 { font-size: 1.15rem; font-weight: 800; letter-spacing: -.01em; color: #fff; }
+  .bp-head .t2 { font-size: .74rem; color: rgba(255,255,255,.55); letter-spacing: .06em; }
+  .bp-hero { max-width: 460px; }
+  .bp-hero h2 { font-size: 1.9rem; font-weight: 800; line-height: 1.25; color: #fff; letter-spacing: -.02em; margin-bottom: .9rem; }
+  .bp-hero h2 .hl { background: linear-gradient(90deg, #4cc9f0, #8b7cf6); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .bp-hero p { color: rgba(255,255,255,.62); font-size: .95rem; line-height: 1.7; }
+  .bp-feats { margin-top: 2.2rem; display: grid; gap: 1rem; }
+  .bp-feat { display: flex; gap: .9rem; align-items: flex-start; }
+  .bp-feat .fi {
+    width: 40px; height: 40px; border-radius: 10px; flex: 0 0 auto;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.1); color: #4cc9f0;
+  }
+  .bp-feat .ft { font-weight: 600; color: #fff; font-size: .92rem; margin-bottom: .2rem; }
+  .bp-feat .fd { font-size: .8rem; color: rgba(255,255,255,.5); line-height: 1.55; }
+  .bp-stats { display: flex; gap: 2.2rem; margin-top: 2.4rem; }
+  .bp-stat .v { font-size: 1.5rem; font-weight: 800; color: #fff; font-variant-numeric: tabular-nums; }
+  .bp-stat .k { font-size: .74rem; color: rgba(255,255,255,.5); margin-top: .15rem; }
+  .bp-foot { font-size: .74rem; color: rgba(255,255,255,.4); }
+  /* 右: 登录表单区(半透明深色 + 高光描边, 不用 backdrop-filter 保帧率) */
+  .form-panel {
+    flex: 0 0 480px; display: flex; flex-direction: column; justify-content: center;
+    padding: 2.5rem 3rem;
+    background: linear-gradient(180deg, rgba(255,255,255,.035), transparent 12%), rgba(13, 18, 30, .9);
+    border-left: 1px solid rgba(255,255,255,.08);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+  }
+  .form-panel .mobile-brand { display: none; }
+  .login-card { width: 100%; }
+  .login-card .card { border: 0; box-shadow: none; background: transparent; }
+  .login-card .card-body { padding: 0; }
+  .login-card h3 { color: #fff; }
+  .nav-pills .nav-link { color: rgba(255,255,255,.6); font-weight: 600; }
+  .nav-pills .nav-link.active { background: rgba(6,111,209,.25); color: #6aa9e3; }
+  .field-icon { position: absolute; left: .75rem; top: 50%; transform: translateY(-50%); color: var(--tblr-secondary); pointer-events: none; }
+  .field-wrap { position: relative; }
+  .field-wrap .form-control { padding-left: 2.4rem; }
+  .auth-err { display: none; font-size: .82rem; border: 1px solid rgba(214,57,57,.35); background: rgba(214,57,57,.15); color: #f4a6a6; border-radius: var(--tblr-border-radius); padding: .55rem .75rem; }
+  .auth-err.show { display: block; }
+  .btn-submit .spinner { display: none; width: 1rem; height: 1rem; margin-right: .45rem; border: 2px solid rgba(255,255,255,.35); border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -2px; }
+  .btn-submit.loading .spinner { display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .form-foot { text-align: center; font-size: .78rem; color: var(--tblr-secondary); margin-top: 1.3rem; }
+  @media (max-width: 991.98px) {
+    .brand-panel { display: none; }
+    .form-panel { flex: 1 1 100%; border-left: 0; }
+    .form-panel .mobile-brand { display: flex; align-items: center; gap: .75rem; justify-content: center; margin-bottom: 1.6rem; }
+    .form-panel .mobile-brand .brand-logo { width: 40px; height: 40px; }
+  }
+</style>
+</head>
+<body>
+
+<canvas id="bgCanvas"></canvas>
+<canvas id="fxCanvas"></canvas>
+
+<div class="auth-layout">
+
+  <!-- ═══════ 左: 品牌宣传区 ═══════ -->
+  <div class="brand-panel d-none d-lg-flex">
+    <div class="bp-head">
+      <span class="brand-logo" id="brandLogo"></span>
+      <div>
+        <div class="t1">探域数据</div>
+        <div class="t2">TANYU DATA INTELLIGENCE</div>
+      </div>
+    </div>
+
+    <div class="bp-hero">
+      <h2>一个<span class="hl">统一标准化</span><br>的数据看板</h2>
+      <p>覆盖拼多多 / 抖音 / 京东 / 天猫，自动沉淀客服消息轨迹，AI 核算采纳率与生成率，为每一家店铺的经营决策提供实时、可信的数据支撑。</p>
+      <div class="bp-feats">
+        <div class="bp-feat">
+          <span class="fi" data-ic="store"></span>
+          <div><div class="ft">全平台数据资产沉淀</div><div class="fd">多平台客服消息全量留存，35 天滚动窗口，随时回溯分析</div></div>
+        </div>
+        <div class="bp-feat">
+          <span class="fi" data-ic="target"></span>
+          <div><div class="ft">AI 经营核算引擎</div><div class="fd">采纳率 · 生成率自动核算，按店铺 / 按客服双向归因</div></div>
+        </div>
+        <div class="bp-feat">
+          <span class="fi" data-ic="send"></span>
+          <div><div class="ft">自动化经营日报</div><div class="fd">经营数据每日自动推送至钉钉群，决策不延迟</div></div>
+        </div>
+        <div class="bp-feat">
+          <span class="fi" data-ic="shield"></span>
+          <div><div class="ft">私有化数据安全</div><div class="fd">本地私有化部署，数据不出内网，全程加密可控</div></div>
+        </div>
+      </div>
+      <div class="bp-stats">
+        <div class="bp-stat"><div class="v" id="statShops">126+</div><div class="k">在管店铺</div></div>
+        <div class="bp-stat"><div class="v" id="statMsgs">240万+</div><div class="k">消息轨迹留存</div></div>
+        <div class="bp-stat"><div class="v" id="statPlatforms">3</div><div class="k">在线抓取平台</div></div>
+      </div>
+    </div>
+
+    <div class="bp-foot">
+      <span>私有化部署 · 数据安全可控 · 7×24 持续抓取</span>
+    </div>
+  </div>
+
+  <!-- ═══════ 右: 登录表单区 ═══════ -->
+  <div class="form-panel">
+    <div class="mobile-brand">
+      <span class="brand-logo" id="mobileLogo"></span>
+      <div>
+        <div class="fw-bold" style="font-size:1.05rem">探域数据</div>
+        <div class="text-secondary" style="font-size:.74rem">TANYU DATA INTELLIGENCE</div>
+      </div>
+    </div>
+
+    <div class="login-card">
+      <h3 class="mb-1 fw-bold" style="font-size:1.35rem">欢迎登录</h3>
+      <p class="text-secondary mb-4" style="font-size:.86rem">登录以访问您的经营数据平台</p>
+
+      <ul class="nav nav-pills nav-fill mb-3">
+        <li class="nav-item"><a class="nav-link active" id="tabLogin" href="#" onclick="authTab(event,'login')">登 录</a></li>
+        <li class="nav-item"><a class="nav-link" id="tabReg" href="#" onclick="authTab(event,'reg')">注 册</a></li>
+      </ul>
+
+      <form id="formLogin" onsubmit="return doLogin(event)">
+        <div class="mb-3">
+          <label class="form-label">用户名 / 邮箱</label>
+          <div class="field-wrap">
+            <span class="field-icon" data-ic="user"></span>
+            <input type="text" class="form-control" id="loginUser" placeholder="请输入用户名或邮箱" autocomplete="username" autofocus>
+          </div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">密码</label>
+          <div class="field-wrap">
+            <span class="field-icon" data-ic="lock"></span>
+            <input type="password" class="form-control" id="loginPwd" placeholder="••••••••" autocomplete="current-password">
+          </div>
+        </div>
+        <div class="form-check mb-3">
+          <input class="form-check-input" type="checkbox" id="loginRemember" checked>
+          <label class="form-check-label" for="loginRemember">保持登录</label>
+        </div>
+        <div class="auth-err mb-3" id="loginErr"></div>
+        <button class="btn btn-primary w-100 btn-submit" type="submit" id="loginBtn">
+          <span class="spinner"></span>进入控制台
+        </button>
+      </form>
+
+      <form id="formReg" style="display:none" onsubmit="return doRegister(event)">
+        <div class="mb-3">
+          <label class="form-label">用户名</label>
+          <div class="field-wrap">
+            <span class="field-icon" data-ic="user"></span>
+            <input type="text" class="form-control" id="regUser" placeholder="3~64 位字母/数字/下划线/@/." autocomplete="username">
+          </div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">密码</label>
+          <div class="field-wrap">
+            <span class="field-icon" data-ic="lock"></span>
+            <input type="password" class="form-control" id="regPwd" placeholder="至少 6 位" autocomplete="new-password">
+          </div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">确认密码</label>
+          <div class="field-wrap">
+            <span class="field-icon" data-ic="lock"></span>
+            <input type="password" class="form-control" id="regPwd2" placeholder="再次输入密码" autocomplete="new-password">
+          </div>
+        </div>
+        <div class="auth-err mb-3" id="regErr"></div>
+        <button class="btn btn-primary w-100 btn-submit" type="submit" id="regBtn">
+          <span class="spinner"></span>注册并登录
+        </button>
+      </form>
+
+      <div class="form-foot">
+        <span>会话凭据仅存于本机浏览器 · © 2026 探域数据</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/vendor/tabler/tabler.min.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var I = {
+    chart: '<path d="M3 21h18M6 21v-7M11 21V8M16 21v-4M21 21V5"/>',
+    store: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M9 21v-6h6v6"/>',
+    database: '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',
+    target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none"/>',
+    send: '<path d="m3 11 18-8-8 18-2.5-7.5Z"/>',
+    shield: '<path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6Z"/><path d="m9 12 2 2 4-4"/>',
+    activity: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
+    user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+    lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>'
+  };
+  /* 品牌 Logo: 数据柱 + 上升折线(白色图形, 容器渐变负责品牌色) */
+  function logoMark(size) {
+    return '<svg viewBox="0 0 48 48" fill="none" width="' + size + '" height="' + size + '">' +
+      '<path d="M12 35v-8" stroke="#fff" stroke-width="3.2" stroke-linecap="round"/>' +
+      '<path d="M19.5 35v-15" stroke="#fff" stroke-width="3.2" stroke-linecap="round"/>' +
+      '<path d="M27 35v-11" stroke="#fff" stroke-width="3.2" stroke-linecap="round"/>' +
+      '<path d="M34.5 35v-19" stroke="#fff" stroke-width="3.2" stroke-linecap="round"/>' +
+      '<path d="M12 27 19.5 20 27 24 34.5 16" stroke="#fff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<circle cx="34.5" cy="16" r="3" fill="#fff"/>' +
+      '<circle cx="34.5" cy="16" r="6" stroke="#fff" stroke-opacity=".35" stroke-width="1.6"/>' +
+      '</svg>';
+  }
+  function icon(name, size) {
+    size = size || 20;
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="' + size + '" height="' + size + '">' + (I[name] || '') + '</svg>';
+  }
+  function $(id) { return document.getElementById(id); }
+
+  function ensureClientIdentity() {
+    if (!localStorage.getItem('tanyu_client_id')) {
+      var id;
+      try { id = crypto.randomUUID(); } catch (e) {}
+      id = id || ('c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
+      localStorage.setItem('tanyu_client_id', id);
+    }
+  }
+  function clientHeaders() {
+    return {
+      'X-Client-Id': localStorage.getItem('tanyu_client_id') || '',
+      'X-Client-Name': encodeURIComponent(localStorage.getItem('tanyu_client_name') || ''),
+    };
+  }
+  function showErr(id, msg) { var el = $(id); el.textContent = msg; el.classList.add('show'); }
+  function hideErr(id) { $(id).classList.remove('show'); }
+  function setLoading(btn, on) { btn.classList.toggle('loading', on); btn.disabled = on; }
+
+  function authTab(ev, tab) {
+    if (ev) ev.preventDefault();
+    $('tabLogin').classList.toggle('active', tab === 'login');
+    $('tabReg').classList.toggle('active', tab === 'reg');
+    $('formLogin').style.display = tab === 'login' ? '' : 'none';
+    $('formReg').style.display = tab === 'reg' ? '' : 'none';
+    hideErr('loginErr'); hideErr('regErr');
+  }
+
+  function enterApp(user) {
+    localStorage.setItem('tanyu_token', user.token);
+    localStorage.setItem('tanyu_user', JSON.stringify(user.user));
+    localStorage.setItem('tanyu_client_name', user.user.username);
+    location.href = '/app';
+  }
+
+  async function doLogin(ev) {
+    if (ev) ev.preventDefault();
+    hideErr('loginErr');
+    var username = $('loginUser').value.trim();
+    var password = $('loginPwd').value;
+    if (!username || !password) { showErr('loginErr', '请输入用户名和密码'); return false; }
+    var btn = $('loginBtn');
+    setLoading(btn, true);
+    try {
+      var resp = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, clientHeaders()),
+        body: JSON.stringify({ username: username, password: password }),
+      });
+      var data = await resp.json().catch(function () { return {}; });
+      if (!resp.ok) { showErr('loginErr', data.detail || ('登录失败 (HTTP ' + resp.status + ')')); return false; }
+      enterApp(data);
+    } catch (e) {
+      showErr('loginErr', '网络错误: ' + e.message);
+    } finally {
+      setLoading(btn, false);
+    }
+    return false;
+  }
+
+  async function doRegister(ev) {
+    if (ev) ev.preventDefault();
+    hideErr('regErr');
+    var username = $('regUser').value.trim();
+    var password = $('regPwd').value;
+    var password2 = $('regPwd2').value;
+    if (!/^[A-Za-z0-9_.@-]{3,64}$/.test(username)) { showErr('regErr', '用户名需为 3~64 位字母/数字/下划线/@/.'); return false; }
+    if (password.length < 6) { showErr('regErr', '密码至少 6 位'); return false; }
+    if (password !== password2) { showErr('regErr', '两次输入的密码不一致'); return false; }
+    var btn = $('regBtn');
+    setLoading(btn, true);
+    try {
+      var resp = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, clientHeaders()),
+        body: JSON.stringify({ username: username, password: password }),
+      });
+      var data = await resp.json().catch(function () { return {}; });
+      if (!resp.ok) { showErr('regErr', data.detail || ('注册失败 (HTTP ' + resp.status + ')')); return false; }
+      var resp2 = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, clientHeaders()),
+        body: JSON.stringify({ username: username, password: password }),
+      });
+      var data2 = await resp2.json().catch(function () { return {}; });
+      if (!resp2.ok) { authTab(null, 'login'); $('loginUser').value = username; showErr('loginErr', '注册成功, 请登录'); return false; }
+      enterApp(data2);
+    } catch (e) {
+      showErr('regErr', '网络错误: ' + e.message);
+    } finally {
+      setLoading(btn, false);
+    }
+    return false;
+  }
+
+  async function checkToken() {
+    var token = localStorage.getItem('tanyu_token');
+    if (!token) return;
+    try {
+      var resp = await fetch('/api/auth/me', { headers: Object.assign({ Authorization: 'Bearer ' + token }, clientHeaders()) });
+      if (resp.ok) { location.replace('/app'); }
+    } catch (e) {}
+  }
+
+  async function loadRegConfig() {
+    try {
+      var resp = await fetch('/api/auth/config');
+      var d = await resp.json().catch(function () { return {}; });
+      if (d && d.registerEnabled === false) { $('tabReg').style.display = 'none'; $('formReg').style.display = 'none'; }
+    } catch (e) {}
+  }
+
+  // 品牌区数据亮点: 已登录才尝试读真实数据(否则跳过, 保留静态文案)
+  async function loadBrandStats() {
+    if (!localStorage.getItem('tanyu_token')) return;
+    try {
+      var r = await fetch('/api/db/status');
+      var d = await r.json().catch(function () { return {}; });
+      if (d && d.shops != null) $('statShops').textContent = (d.shops || 0) + '+';
+      if (d && d.messages != null) $('statMsgs').textContent = (d.messages >= 10000 ? (d.messages / 10000).toFixed(1) + '万+' : d.messages + '+');
+      if (d && d.prefetch_platforms && d.prefetch_platforms.length) $('statPlatforms').textContent = d.prefetch_platforms.length;
+    } catch (e) {}
+  }
+
+  /* ═══════ 像素颗粒背景 v3: 加粗颗粒(恒定亮度) + 方格线 + 鼠标十字橙光发散 ═══════ */
+  function initParticleBg() {
+    var canvas = document.getElementById('bgCanvas');
+    var fx = document.getElementById('fxCanvas');
+    if (!canvas || !fx) return;
+    var ctx = canvas.getContext('2d');
+    var fctx = fx.getContext('2d');
+    var W = 0, H = 0, DPR = 1;
+    var parts = [], glows = [], mouse = { x: -9999, y: -9999 }, raf = 0, running = true;
+    var M_R = 170;       // 鼠标推开半径
+    var GRID = 44;       // 方格线间距(px)
+    // 三层颗粒: 远景(暗) / 中景 / 近景(亮), 恒定亮度(不闪烁)
+    var P_FAR = ['#3a4150', '#424a5c', '#4c5568'];
+    var P_MID = ['#5a6478', '#67728a', '#75809a'];
+    var P_NEAR = ['#8894ae', '#9aa6c0', '#adb9d2'];
+    var LAYER_A = [0.28, 0.42, 0.58];   // 各层固定透明度(加重)
+
+    function resize() {
+      W = window.innerWidth; H = window.innerHeight;
+      canvas.width = W * DPR; canvas.height = H * DPR;
+      canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      fx.width = W * DPR; fx.height = H * DPR;
+      fx.style.width = W + 'px'; fx.style.height = H + 'px';
+      fctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      var n = Math.min(13000, Math.max(3000, Math.floor(W * H / 100)));
+      var nFar = Math.floor(n * 0.5), nMid = Math.floor(n * 0.32);
+      parts = [];
+      for (var i = 0; i < n; i++) {
+        var layer = i < nFar ? 0 : i < nFar + nMid ? 1 : 2;
+        // 加粗: 远景 1~2px, 中景 2~3px, 近景 3~4px
+        var s = layer === 0 ? 1 + Math.floor(Math.random() * 1.6)
+              : layer === 1 ? 2 + Math.floor(Math.random() * 1.6)
+              : 3 + Math.floor(Math.random() * 1.6);
+        var sp = layer === 0 ? 0.08 : layer === 1 ? 0.13 : 0.22;
+        var pal = layer === 0 ? P_FAR : layer === 1 ? P_MID : P_NEAR;
+        parts.push({
+          x: Math.random() * W, y: Math.random() * H,
+          ix: 0, iy: 0,
+          vx: (Math.random() - 0.5) * sp, vy: (Math.random() - 0.5) * sp,
+          s: s,
+          c: pal[Math.floor(Math.random() * pal.length)],
+          a: LAYER_A[layer] * (0.9 + Math.random() * 0.3)
+        });
+      }
+      glows = [];
+      var gn = Math.max(6, Math.floor(W * H / 220000));
+      var GC = ['rgba(76,201,240,', 'rgba(139,124,246,', 'rgba(6,111,209,'];
+      for (var j = 0; j < gn; j++) {
+        glows.push({
+          x: Math.random() * W, y: Math.random() * H, ix: 0, iy: 0,
+          r: 8 + Math.random() * 14,
+          c: GC[j % GC.length] + (0.05 + Math.random() * 0.05).toFixed(3) + ')',
+          vx: (Math.random() - 0.5) * 0.06, vy: (Math.random() - 0.5) * 0.06
+        });
+      }
+      paintAll();
+    }
+
+    // 顶层画布: 方格线(每帧重画)
+    function drawGrid() {
+      fctx.clearRect(0, 0, W, H);
+      fctx.lineWidth = 1;
+      fctx.strokeStyle = 'rgba(180, 195, 220, 0.06)';
+      fctx.beginPath();
+      for (var x = 0; x <= W; x += GRID) { fctx.moveTo(x + 0.5, 0); fctx.lineTo(x + 0.5, H); }
+      for (var y = 0; y <= H; y += GRID) { fctx.moveTo(0, y + 0.5); fctx.lineTo(W, y + 0.5); }
+      fctx.stroke();
+    }
+
+    // 鼠标范围光线 v5: 随机拐弯折线, 沿发射方向整体外移, 渐渐消失
+    var rays = [];
+    var lastRayGen = 0;
+    function spawnRays(mx, my) {
+      var tNow = performance.now();
+      if (tNow - lastRayGen < 450) return;   // 慢节奏: 450ms 才发射一道
+      lastRayGen = tNow;
+      if (rays.length > 10) return;          // 一次不发散太多
+      // 发射点: 鼠标附近随机偏移(±90px)
+      var x = Math.max(10, Math.min(W - 10, mx + (Math.random() - 0.5) * 180));
+      var y = Math.max(10, Math.min(H - 10, my + (Math.random() - 0.5) * 180));
+      // 随机拐弯折线: 2~3 段, 每段方向独立随机(水平/垂直 + 正负), 可连续同向
+      var segs = [];
+      var nSeg = 2 + Math.floor(Math.random() * 2);
+      for (var s = 0; s < nSeg; s++) {
+        segs.push({
+          dir: Math.random() < 0.5 ? 0 : 1,          // 随机: 水平 / 垂直
+          len: 60 + Math.random() * 100,             // 段长 60~160px
+          side: Math.random() < 0.5 ? -1 : 1         // 随机: 左/右, 上/下
+        });
+      }
+      rays.push({
+        x: x, y: y, segs: segs,
+        speed: 45 + Math.random() * 65,              // 外移速度 45~110 px/s(慢)
+        life: 0,
+        maxLife: 1.8 + Math.random() * 1.5,          // 寿命 1.8~3.3s
+        fadeIn: 0.35, fadeOut: 1.0                   // 淡入 / 尾段渐隐
+      });
+    }
+
+    // 绘制一道光线: 随机拐弯折线, 起点灰 → 末端橙头(流星感), 整体平移
+    function drawRay(r, alpha) {
+      if (alpha <= 0.02) return;
+      var cx = r.x, cy = r.y;
+      var pts = [{ x: cx, y: cy }];
+      fctx.beginPath();
+      fctx.moveTo(cx, cy);
+      for (var s = 0; s < r.segs.length; s++) {
+        var sg = r.segs[s];
+        cx += (sg.dir === 0 ? sg.side * sg.len : 0);
+        cy += (sg.dir === 0 ? 0 : sg.side * sg.len);
+        fctx.lineTo(cx, cy);
+        pts.push({ x: cx, y: cy });
+      }
+      var last = pts[pts.length - 1];
+      var g = fctx.createLinearGradient(pts[0].x, pts[0].y, last.x, last.y);
+      g.addColorStop(0, 'rgba(150,160,180,0)');
+      g.addColorStop(0.5, 'rgba(190,200,215,' + (0.3 * alpha).toFixed(3) + ')');
+      g.addColorStop(1, 'rgba(255,150,60,' + (0.7 * alpha).toFixed(3) + ')');
+      fctx.strokeStyle = g;
+      fctx.lineWidth = 2;
+      fctx.stroke();
+      // 末端橙色光点(飞行方向前端)
+      fctx.fillStyle = 'rgba(255,160,70,' + (0.8 * alpha).toFixed(3) + ')';
+      fctx.beginPath(); fctx.arc(last.x, last.y, 2.4, 0, Math.PI * 2); fctx.fill();
+    }
+
+    // 鼠标处柔和橙色范围光晕 + 光线池(沿发射方向外移 + 淡入淡出)
+    function drawRays() {
+      var mx = mouse.x, my = mouse.y;
+      if (mx >= 0 && my >= 0 && mx <= W && my <= H) {
+        var rg = fctx.createRadialGradient(mx, my, 0, mx, my, 110);
+        rg.addColorStop(0, 'rgba(255, 148, 52, 0.12)');
+        rg.addColorStop(0.5, 'rgba(255, 148, 52, 0.04)');
+        rg.addColorStop(1, 'rgba(255, 148, 52, 0)');
+        fctx.fillStyle = rg;
+        fctx.fillRect(mx - 110, my - 110, 220, 220);
+      }
+      var i, r, alpha, f, s;
+      for (i = rays.length - 1; i >= 0; i--) {
+        r = rays[i];
+        r.life += 0.016;
+        // 整体沿第一段方向匀速外移(折线形状跟着移动)
+        f = r.segs[0];
+        r.x += (f.dir === 0 ? f.side * r.speed * 0.016 : 0);
+        r.y += (f.dir === 0 ? 0 : f.side * r.speed * 0.016);
+        // 出屏移除(按折线包围盒粗判)
+        var minX = r.x, maxX = r.x, minY = r.y, maxY = r.y;
+        var px = r.x, py = r.y;
+        for (s = 0; s < r.segs.length; s++) {
+          px += (r.segs[s].dir === 0 ? r.segs[s].side * r.segs[s].len : 0);
+          py += (r.segs[s].dir === 0 ? 0 : r.segs[s].side * r.segs[s].len);
+          if (px < minX) minX = px; if (px > maxX) maxX = px;
+          if (py < minY) minY = py; if (py > maxY) maxY = py;
+        }
+        if (maxX < -30 || minX > W + 30 || maxY < -30 || minY > H + 30) { rays.splice(i, 1); continue; }
+        // 亮度: 淡入 → 保持 → 尾段渐渐消失
+        if (r.life < r.fadeIn) alpha = r.life / r.fadeIn;
+        else if (r.life < r.maxLife - r.fadeOut) alpha = 1;
+        else alpha = Math.max(0, (r.maxLife - r.life) / r.fadeOut);
+        if (r.life >= r.maxLife || alpha <= 0.02) { rays.splice(i, 1); continue; }
+        drawRay(r, alpha);
+      }
+    }
+
+    // 一次性全量绘制(初始/窗口变化时): 底层颗粒 + 光斑
+    function paintAll() {
+      ctx.clearRect(0, 0, W, H);
+      var i, p, lastStyle = '';
+      for (i = 0; i < parts.length; i++) {
+        p = parts[i];
+        p.ix = Math.round(p.x); p.iy = Math.round(p.y);
+        if (p.c !== lastStyle) { ctx.fillStyle = p.c; lastStyle = p.c; }
+        ctx.globalAlpha = p.a;
+        ctx.fillRect(p.ix, p.iy, p.s, p.s);
+      }
+      for (i = 0; i < glows.length; i++) {
+        var g = glows[i];
+        g.ix = Math.round(g.x); g.iy = Math.round(g.y);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = g.c;
+        ctx.beginPath(); ctx.arc(g.x, g.y, g.r, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    function step() {
+      if (!running) return;
+      drawGrid();       // 顶层: 方格线
+      drawRays();       // 顶层: 鼠标范围随机光线(池内渐隐)
+      var i, p, g, dx, dy, dd, dist, f;
+      var mr2 = M_R * M_R;
+      var lastStyle = '';
+      for (i = 0; i < parts.length; i++) {
+        p = parts[i];
+        // 鼠标推开(波纹)
+        dx = p.x - mouse.x; dy = p.y - mouse.y;
+        dd = dx * dx + dy * dy;
+        if (dd < mr2 && dd > 0.0001) {
+          dist = Math.sqrt(dd);
+          f = (M_R - dist) / M_R * 2.4;
+          p.x += (dx / dist) * f;
+          p.y += (dy / dist) * f;
+        }
+        // 持续流动(像素级整数坐标, 大多数帧无需重画)
+        p.x += p.vx; p.y += p.vy;
+        if (p.x < -4) p.x = W + 4; else if (p.x > W + 4) p.x = -4;
+        if (p.y < -4) p.y = H + 4; else if (p.y > H + 4) p.y = -4;
+        var ix = Math.round(p.x), iy = Math.round(p.y);
+        if (ix !== p.ix || iy !== p.iy) {
+          ctx.clearRect(p.ix, p.iy, p.s + 1, p.s + 1);
+          p.ix = ix; p.iy = iy;
+          if (p.c !== lastStyle) { ctx.fillStyle = p.c; lastStyle = p.c; }
+          ctx.globalAlpha = p.a;
+          ctx.fillRect(ix, iy, p.s, p.s);
+        }
+      }
+      // 光晕光斑漂移
+      for (i = 0; i < glows.length; i++) {
+        g = glows[i];
+        g.x += g.vx; g.y += g.vy;
+        if (g.x < -g.r) g.x = W + g.r; else if (g.x > W + g.r) g.x = -g.r;
+        if (g.y < -g.r) g.y = H + g.r; else if (g.y > H + g.r) g.y = -g.r;
+        var gx = Math.round(g.x), gy = Math.round(g.y);
+        if (gx !== g.ix || gy !== g.iy) {
+          ctx.clearRect(g.ix - g.r - 1, g.iy - g.r - 1, g.r * 2 + 2, g.r * 2 + 2);
+          g.ix = gx; g.iy = gy;
+        }
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = g.c;
+        ctx.beginPath(); ctx.arc(g.x, g.y, g.r, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      raf = requestAnimationFrame(step);
+    }
+
+    window.addEventListener('resize', resize);
+    window.addEventListener('mousemove', function (e) {
+      mouse.x = e.clientX; mouse.y = e.clientY;
+      spawnRays(e.clientX, e.clientY);   // 鼠标移动: 慢节奏向外发射一道光线
+    });
+    // 鼠标停留: 每 2s 补发一道(保持氛围, 不发散太多)
+    setInterval(function () {
+      if (running && mouse.x >= 0 && mouse.y >= 0 && mouse.x <= W && mouse.y <= H) {
+        spawnRays(mouse.x, mouse.y);
+      }
+    }, 2000);
+    window.addEventListener('touchstart', function (e) { if (e.touches[0]) { mouse.x = e.touches[0].clientX; mouse.y = e.touches[0].clientY; } }, { passive: true });
+    window.addEventListener('touchmove', function (e) { if (e.touches[0]) { mouse.x = e.touches[0].clientX; mouse.y = e.touches[0].clientY; } }, { passive: true });
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) { running = false; cancelAnimationFrame(raf); }
+      else { running = true; step(); }
+    });
+    resize();
+    step();
+  }
+
+  function paint() {
+    $('brandLogo').innerHTML = logoMark(26);
+    $('mobileLogo').innerHTML = logoMark(24);
+    var icons = document.querySelectorAll('[data-ic]');
+    for (var i = 0; i < icons.length; i++) icons[i].innerHTML = icon(icons[i].dataset.ic, 18);
+  }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    ensureClientIdentity();
+    paint();
+    initParticleBg();  // 像素粒子背景
+    loadRegConfig();
+    loadBrandStats();
+    checkToken();
+  });
+
+  window.authTab = authTab;
+  window.doLogin = doLogin;
+  window.doRegister = doRegister;
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="zh-CN" data-bs-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>探域数据看板 · Tabler 预览</title>
+  <link rel="stylesheet" href="/static/vendor/tabler/tabler.min.css">
+  <style>
+    body { font-family: 'Inter', 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', sans-serif; }
+    .navbar-brand-image { font-size: 1.2rem; margin-right: 6px; }
+    .stat-value { font-size: 1.65rem; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+    .stat-sub { font-size: .78rem; }
+    .stat-delta-up { color: var(--tblr-green); font-weight: 600; }
+    .stat-delta-down { color: var(--tblr-red); font-weight: 600; }
+    .stat-delta-flat { color: var(--tblr-muted); font-weight: 600; }
+
+    /* 客服账号池 */
+    .staff-pool { max-height: 520px; overflow-y: auto; }
+    .staff-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+    .staff-card { border: 1px solid var(--tblr-border-color); border-radius: var(--tblr-border-radius); padding: 10px 12px; }
+    .staff-card:hover { border-color: var(--tblr-primary); }
+    .staff-card .s-name { font-weight: 600; font-size: .9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .staff-card .s-acct { font-size: .72rem; color: var(--tblr-muted); font-family: var(--tblr-font-monospace); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .staff-card .s-meta { display: flex; justify-content: space-between; margin-top: 6px; font-size: .8rem; }
+    .rate-pill { display: inline-block; padding: 1px 7px; border-radius: 20px; font-size: .72rem; font-weight: 600; }
+    .rate-good { background: rgba(47,223,117,.15); color: var(--tblr-green); }
+    .rate-mid { background: rgba(253,186,140,.15); color: var(--tblr-yellow); }
+    .rate-bad { background: rgba(214,69,69,.15); color: var(--tblr-red); }
+
+    .task-status { font-size: .78rem; font-weight: 600; }
+    .task-prog { min-width: 120px; }
+    .card-table td { vertical-align: middle; }
+    .shop-name { font-weight: 600; }
+    .empty-hint { color: var(--tblr-muted); font-size: .85rem; }
+    .navbar .form-select-sm { font-size: .8rem; }
+  </style>
+</head>
+<body>
+  <!-- ══════════ Tabler 顶部导航 ══════════ -->
+  <header class="navbar navbar-expand-md navbar-dark d-print-none">
+    <div class="container-xl">
+      <h1 class="navbar-brand navbar-brand-autodark pe-0 pe-md-3">
+        <span class="navbar-brand-image">📊</span>探域数据看板
+        <span class="badge bg-blue-lt ms-2 d-none d-md-inline">Tabler 预览</span>
+      </h1>
+      <div class="navbar-nav flex-row order-md-last align-items-center gap-2">
+        <select id="platformSelect" class="form-select form-select-sm" style="width:auto" onchange="reloadData()">
+          <option value="">全部平台</option>
+          <option value="1" selected>拼多多</option>
+          <option value="5">抖音</option>
+          <option value="7">京东</option>
+        </select>
+        <a class="nav-link py-1 px-2" href="/legacy" title="返回原版看板">← 原版</a>
+      </div>
+    </div>
+  </header>
+
+  <div class="page">
+    <div class="page-wrapper">
+      <!-- ══════════ 概览指标卡 ══════════ -->
+      <div class="container-xl py-4">
+        <div class="row g-3" id="overviewCards">
+          <div class="col-12"><span class="empty-hint">加载概览…</span></div>
+        </div>
+      </div>
+
+      <!-- ══════════ 任务队列 ══════════ -->
+      <div class="container-xl pb-2">
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">🗂 任务队列</h3>
+            <span class="text-muted ms-auto small" id="taskHint"></span>
+          </div>
+          <div class="table-responsive">
+            <table class="table table-vcenter card-table" id="taskTable">
+              <thead><tr><th>状态</th><th>任务</th><th>发起人</th><th>进度</th><th>时间</th></tr></thead>
+              <tbody><tr><td colspan="5" class="text-center empty-hint py-3">加载中…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══════════ 核算: 店铺表 + 客服池 ══════════ -->
+      <div class="container-xl py-3">
+        <div class="row g-3">
+          <div class="col-lg-7">
+            <div class="card">
+              <div class="card-header">
+                <h3 class="card-title">📦 按店铺核算</h3>
+                <span class="text-muted ms-auto small" id="auditMeta"></span>
+              </div>
+              <div class="table-responsive">
+                <table class="table table-vcenter card-table" id="shopTable">
+                  <thead>
+                    <tr>
+                      <th>店铺</th><th>平台</th><th>消息总条数</th><th>采纳条数</th><th>核算采纳率</th>
+                    </tr>
+                  </thead>
+                  <tbody><tr><td colspan="5" class="text-center empty-hint py-3">加载中…</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div class="col-lg-5">
+            <div class="card">
+              <div class="card-header">
+                <h3 class="card-title">🧑‍💼 客服账号池</h3>
+                <div class="ms-auto d-flex gap-2">
+                  <input type="search" id="staffSearch" class="form-control form-control-sm" style="width:150px" placeholder="🔍 搜客服…" oninput="renderStaffPool()">
+                  <button class="btn btn-sm btn-outline-primary" id="btnAgg" onclick="toggleAgg()">🔀 按客服汇总</button>
+                </div>
+              </div>
+              <div class="card-body">
+                <div class="staff-pool"><div class="staff-grid" id="staffGrid"><span class="empty-hint">加载中…</span></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/vendor/tabler/tabler.min.js"></script>
+  <script>
+  // ══════════ 鉴权 + 请求(与原版同机制) ══════════
+  async function api(path, opts) {
+    opts = opts || {};
+    opts.headers = opts.headers || {};
+    opts.headers['X-Client-Id'] = localStorage.getItem('tanyu_client_id') || '';
+    opts.headers['X-Client-Name'] = encodeURIComponent(localStorage.getItem('tanyu_client_name') || '');
+    const token = localStorage.getItem('tanyu_token');
+    if (token) opts.headers['Authorization'] = 'Bearer ' + token;
+    const r = await fetch(path, opts);
+    if (r.status === 401) return { auth_fail: true };
+    return r.json();
+  }
+  function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+  function fmtNum(n) { return (n == null ? 0 : n).toLocaleString('zh-CN'); }
+  function ratePill(r) {
+    r = Number(r) || 0;
+    const cls = r >= 70 ? 'rate-good' : r >= 40 ? 'rate-mid' : 'rate-bad';
+    return `<span class="rate-pill ${cls}">${r.toFixed(2)}%</span>`;
+  }
+
+  let aggMode = false;
+  function toggleAgg() {
+    aggMode = !aggMode;
+    const b = document.getElementById('btnAgg');
+    b.classList.toggle('btn-outline-primary', !aggMode);
+    b.classList.toggle('btn-primary', aggMode);
+    renderStaffPool();
+  }
+
+  // ══════════ 概览卡 ══════════
+  async function loadOverview() {
+    const platform = document.getElementById('platformSelect').value;
+    const el = document.getElementById('overviewCards');
+    try {
+      const d = await api(`/api/overview${platform ? '?platform=' + platform : ''}`);
+      if (!d || d.auth_fail) { el.innerHTML = `<div class="col-12"><span class="empty-hint">未登录(请先登录原版看板)</span></div>`; return; }
+      const items = d.items || {};
+      const labels = { history_msg_total:'消息量', history_adopted_total:'采纳数', history_accept_rate:'采纳率', history_gen_rate:'生成率' };
+      const unitOf = k => (k.includes('rate') ? '%' : '');
+      el.innerHTML = Object.entries(labels).map(([k, label]) => {
+        const it = items[k] || {};
+        const cur = it.current;
+        const prev = it.previous;
+        const cp = it.comparePercent;
+        const deltaCls = cp > 0 ? 'stat-delta-up' : cp < 0 ? 'stat-delta-down' : 'stat-delta-flat';
+        const arrow = cp > 0 ? '▲' : cp < 0 ? '▼' : '—';
+        const shown = (k.includes('rate') && cur != null) ? cur.toFixed(2) + '%' : fmtNum(cur);
+        return `<div class="col-sm-6 col-lg-3">
+          <div class="card">
+            <div class="card-body">
+              <div class="subheader">${label}</div>
+              <div class="stat-value mt-1">${shown}</div>
+              <div class="d-flex align-items-baseline gap-2 mt-1">
+                <span class="stat-sub ${deltaCls}">${arrow} ${cp > 0 ? '+' : ''}${cp == null ? '—' : cp + '%'}</span>
+                <span class="text-muted stat-sub">vs ${prev == null ? '—' : unitOf(k) ? prev.toFixed(2) + unitOf(k) : fmtNum(prev)}</span>
+              </div>
+            </div>
+          </div>
+        </div>`;
+      }).join('');
+    } catch (e) {
+      el.innerHTML = `<div class="col-12"><span class="empty-hint">概览加载失败: ${esc(e.message)}</span></div>`;
+    }
+  }
+
+  // ══════════ 任务队列 ══════════
+  async function loadTasks() {
+    const tb = document.querySelector('#taskTable tbody');
+    try {
+      const d = await api('/api/tasks/list?limit=12');
+      if (d.auth_fail) return;
+      const st = { running:['运行中','bg-blue'], queued:['排队中','bg-yellow'], done:['完成','bg-green'], error:['失败','bg-red'] };
+      const hint = document.getElementById('taskHint');
+      const q = (d.tasks || []).filter(t => t.status === 'queued').length;
+      hint.textContent = (d.anyRunning ? '运行中' : '空闲') + (q ? ` · ${q} 排队` : '');
+      if (!d.tasks || !d.tasks.length) { tb.innerHTML = '<tr><td colspan="5" class="text-center empty-hint py-3">暂无任务</td></tr>'; return; }
+      tb.innerHTML = d.tasks.map(t => {
+        const [label, color] = st[t.status] || ['未知','bg-secondary'];
+        const p = t.progress || {};
+        const pct = p.total ? Math.round((p.done||0)/p.total*100) : (t.status==='running' ? 100 : 0);
+        return `<tr>
+          <td><span class="badge ${color}">${label}</span></td>
+          <td class="small">${esc(t.label || t.type || '')}</td>
+          <td class="small text-muted">👤 ${esc(t.requested_by || '')}</td>
+          <td class="task-prog">
+            <div class="progress" style="height:6px"><div class="progress-bar" style="width:${pct}%"></div></div>
+            <div class="small text-muted mt-1">${p.done||0}/${p.total||0}</div>
+          </td>
+          <td class="small text-muted">${t.started_at ? new Date(t.started_at*1000).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : ''}</td>
+        </tr>`;
+      }).join('');
+    } catch (e) { tb.innerHTML = '<tr><td colspan="5" class="text-center empty-hint">任务队列加载失败</td></tr>'; }
+  }
+
+  // ══════════ 店铺核算表 ══════════
+  async function loadShops() {
+    const platform = document.getElementById('platformSelect').value;
+    const tb = document.querySelector('#shopTable tbody');
+    const meta = document.getElementById('auditMeta');
+    try {
+      // from_cache=1: 不触发后台抓取, 只读缓存/DB
+      const d = await api(`/api/trace/overview?days=7&platform=${platform || ''}&from_cache=1`);
+      if (d.auth_fail) return;
+      if (!d.result || !d.result.shopList) {
+        meta.textContent = '区间未缓存';
+        tb.innerHTML = `<tr><td colspan="5" class="text-center empty-hint py-3">该平台/区间暂无缓存数据, 请到原版看板点"开始核算"生成</td></tr>`;
+        return;
+      }
+      const res = d.result;
+      meta.textContent = `${res.startDate || ''} ~ ${res.endDate || ''} · 共${res.total||0}条 · 采纳率${(res.rate||0).toFixed(2)}%`;
+      const rows = (res.shopList || []).slice().sort((a,b)=>(b.total||0)-(a.total||0));
+      tb.innerHTML = rows.map(s => {
+        const rate = s.total ? ((s.adopted||0)/s.total*100) : 0;
+        return `<tr>
+          <td class="shop-name">${esc(s.shop && s.shop.shopName || '')}</td>
+          <td class="small">${esc(s.shop && s.shop.platformName || '')}</td>
+          <td class="text-end">${fmtNum(s.total)}</td>
+          <td class="text-end">${fmtNum(s.adopted)}</td>
+          <td class="text-end">${ratePill(rate)}</td>
+        </tr>`;
+      }).join('');
+    } catch (e) {
+      tb.innerHTML = `<tr><td colspan="5" class="text-center empty-hint">店铺加载失败: ${esc(e.message)}</td></tr>`;
+    }
+  }
+
+  // ══════════ 客服账号池 ══════════
+  let staffData = [];
+  async function loadStaff() {
+    const platform = document.getElementById('platformSelect').value;
+    try {
+      const d = await api(`/api/trace/staff?days=7&platform=${platform || ''}`);
+      if (d.auth_fail) return;
+      staffData = d.byStaff || [];
+      renderStaffPool();
+    } catch (e) { /* ignore */ }
+  }
+  function staffKey(x) {
+    if (x.accountId) return 'id:' + x.accountId;
+    if (x.name) return 'nm:' + x.name;
+    return 'ac:' + (x.account || x.accountShort || '');
+  }
+  function renderStaffPool() {
+    const grid = document.getElementById('staffGrid');
+    const kw = (document.getElementById('staffSearch').value || '').trim().toLowerCase();
+    let list = staffData;
+    if (kw) list = list.filter(x => (x.nick||'').toLowerCase().includes(kw) || (x.name||'').toLowerCase().includes(kw) || (x.account||'').toLowerCase().includes(kw) || (x.shopName||'').toLowerCase().includes(kw));
+    if (!list.length) { grid.innerHTML = '<span class="empty-hint">无数据</span>'; return; }
+    if (aggMode) {
+      const map = new Map();
+      for (const x of list) {
+        const k = staffKey(x);
+        if (!map.has(k)) map.set(k, { name:(x.nick||x.name)||x.accountShort||x.account||'?', acct:x.accountShort||x.account||'', shops:new Set(), total:0, adopted:0 });
+        const e = map.get(k);
+        e.shops.add(x.shopName||''); e.total += x.total||0; e.adopted += x.adopted||0;
+      }
+      const arr = [...map.values()].sort((a,b)=>b.total-a.total);
+      grid.innerHTML = arr.slice(0, 200).map(e => {
+        const rate = e.total ? (e.adopted/e.total*100) : 0;
+        return `<div class="staff-card">
+          <div class="s-name">${esc(e.name)}</div>
+          <div class="s-acct">${esc(e.acct)} · ${e.shops.size}店</div>
+          <div class="s-meta"><span>${fmtNum(e.total)} 条</span>${ratePill(rate)}</div>
+        </div>`;
+      }).join('');
+    } else {
+      grid.innerHTML = list.slice(0, 200).map(x => {
+        const name = (x.nick||x.name)||x.accountShort||x.account||'?';
+        const sub = x.accountShort || x.account || '';
+        const shop = x.shopName || '';
+        return `<div class="staff-card">
+          <div class="s-name">${esc(name)}</div>
+          <div class="s-acct">${esc(sub)}</div>
+          <div class="s-meta"><span title="${esc(shop)}">${esc(shop)}</span>${ratePill(x.rate)}</div>
+        </div>`;
+      }).join('');
+    }
+  }
+
+  function reloadData() {
+    loadOverview();
+    loadShops();
+    loadStaff();
+    loadTasks();
+  }
+  reloadData();
+  setInterval(loadTasks, 5000);  // 任务队列轻量轮询
+  </script>
+</body>
+</html>

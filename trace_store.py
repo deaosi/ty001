@@ -127,16 +127,44 @@ def _init_schema(c):
             method      TEXT NOT NULL,
             path        TEXT NOT NULL,
             query       TEXT,
-            status      INTEGER
+            status      INTEGER,
+            user_id     INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_oplog_ts ON operation_log(id);
         CREATE INDEX IF NOT EXISTS idx_oplog_client ON operation_log(client_id);
+        CREATE TABLE IF NOT EXISTS users (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            username      TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            role          TEXT NOT NULL DEFAULT 'user',
+            status        TEXT NOT NULL DEFAULT 'active',
+            expire_date   TEXT,
+            created_at    TEXT NOT NULL,
+            last_login_at TEXT,
+            note          TEXT,
+            allow_legacy  INTEGER NOT NULL DEFAULT 0
+        );
         """
     )
+    # 旧库的 users 表没有 allow_legacy 列(旧版看板访问开关): 幂等补列
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN allow_legacy INTEGER NOT NULL DEFAULT 0")
+    except Exception:
+        pass
     # 旧库的 trace_daily 可能没有 generation_rate 列(导入平台概览生成率卡用):
     # 幂等补列(已存在则忽略)
     try:
         c.execute("ALTER TABLE trace_daily ADD COLUMN generation_rate REAL")
+    except Exception:
+        pass
+    # 旧库的 operation_log 可能没有 user_id 列(账号系统上线前建的库):
+    # 幂等补列 + 建索引(索引必须等补列完成后, 否则旧表会报"无此列")
+    try:
+        c.execute("ALTER TABLE operation_log ADD COLUMN user_id INTEGER")
+    except Exception:
+        pass
+    try:
+        c.execute("CREATE INDEX IF NOT EXISTS idx_oplog_user ON operation_log(user_id)")
     except Exception:
         pass
     c.execute(
@@ -207,23 +235,25 @@ def init_db():
         c.close()
 
 
-# ---------- 操作日志(会话可追溯, 无账号系统) ----------
-def log_operation(client_id, client_name, ip, method, path, query, status):
-    """写一条操作日志: 按浏览器身份(client_id/昵称)区分操作者。
+# ---------- 操作日志(会话可追溯, 登录后关联用户) ----------
+def log_operation(client_id, client_name, ip, method, path, query, status, user_id=None):
+    """写一条操作日志: 按浏览器身份(client_id/昵称)区分操作者, 登录后同时记 user_id。
 
     无账号系统下靠前端 localStorage 生成的唯一 client_id 标识"这台浏览器是谁",
-    配合可选昵称让日志可读。记录失败不抛异常(日志绝不能阻塞业务请求)。
+    配合可选昵称让日志可读; 登录后 user_id 关联真实账号(管理员查日志的主体身份)。
+    记录失败不抛异常(日志绝不能阻塞业务请求)。
     """
     try:
         _ensure()
         c = _conn(write=True)
         try:
             c.execute(
-                "INSERT INTO operation_log(ts, client_id, client_name, ip, method, path, query, status) "
-                "VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO operation_log(ts, client_id, client_name, ip, method, path, query, status, user_id) "
+                "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                  (client_id or "")[:64], (client_name or "")[:32], (ip or "")[:48],
-                 method, path, (query or "")[:256], int(status) if status else None),
+                 method, path, (query or "")[:256], int(status) if status else None,
+                 int(user_id) if user_id else None),
             )
             c.commit()
         finally:
@@ -232,23 +262,27 @@ def log_operation(client_id, client_name, ip, method, path, query, status):
         pass
 
 
-def query_operation_log(limit=100, client_id=None, client_name=None):
-    """最近操作日志(倒序); 可按客户端/昵称筛选"""
+def query_operation_log(limit=100, client_id=None, client_name=None, user_id=None):
+    """最近操作日志(倒序); 可按客户端/昵称/用户筛选, 带关联用户名"""
     _ensure()
     c = _conn(write=True)
     try:
-        sql = ("SELECT id, ts, client_id, client_name, ip, method, path, query, status "
-               "FROM operation_log")
+        sql = ("SELECT l.id, l.ts, l.client_id, l.client_name, l.ip, l.method, l.path, "
+               "l.query, l.status, l.user_id, u.username AS user_name "
+               "FROM operation_log l LEFT JOIN users u ON u.id = l.user_id")
         conds, args = [], []
         if client_id:
-            conds.append("client_id = ?")
+            conds.append("l.client_id = ?")
             args.append(client_id)
         if client_name:
-            conds.append("client_name = ?")
+            conds.append("l.client_name = ?")
             args.append(client_name)
+        if user_id:
+            conds.append("l.user_id = ?")
+            args.append(int(user_id))
         if conds:
             sql += " WHERE " + " AND ".join(conds)
-        sql += " ORDER BY id DESC LIMIT ?"
+        sql += " ORDER BY l.id DESC LIMIT ?"
         args.append(max(1, min(int(limit), 500)))
         rows = c.execute(sql, args).fetchall()
         return [dict(r) for r in rows]
@@ -267,6 +301,180 @@ def list_operation_clients():
             "GROUP BY client_id ORDER BY last_id DESC"
         ).fetchall()
         return [dict(r) for r in rows]
+    finally:
+        c.close()
+
+
+def count_operation_log(client_id=None, user_id=None):
+    """操作日志总条数(日志中心展示用), 可按客户端/用户过滤"""
+    _ensure()
+    c = _conn(write=True)
+    try:
+        conds, args = [], []
+        if client_id:
+            conds.append("client_id = ?"); args.append(client_id)
+        if user_id:
+            conds.append("user_id = ?"); args.append(int(user_id))
+        sql = "SELECT COUNT(*) n FROM operation_log"
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        return c.execute(sql, args).fetchone()["n"]
+    finally:
+        c.close()
+
+
+def delete_operation_log(ids=None, older_than=None, client_id=None):
+    """删除操作日志: 按 id 列表 / 按时间前 / 按客户端。返回删除条数。"""
+    _ensure()
+    c = _conn(write=True)
+    try:
+        conds, args = [], []
+        if ids:
+            ph = ",".join("?" * len(ids))
+            conds.append(f"id IN ({ph})"); args.extend(int(i) for i in ids)
+        if older_than:
+            conds.append("id < ?"); args.append(int(older_than))
+        if client_id:
+            conds.append("client_id = ?"); args.append(client_id)
+        if not conds:
+            return 0
+        cur = c.execute("DELETE FROM operation_log WHERE " + " AND ".join(conds), args)
+        c.commit()
+        return cur.rowcount
+    finally:
+        c.close()
+
+
+# ---------- 账号系统: 用户 ----------
+def create_user(username, password_hash, role="user", expire_date=None, note=None):
+    """创建用户; 用户名已存在抛 ValueError; 返回不含密码哈希的用户 dict"""
+    _ensure()
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    c = _conn(write=True)
+    try:
+        c.execute(
+            "INSERT INTO users(username, password_hash, role, status, expire_date, created_at, note) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (username, password_hash, role, "active", expire_date, now, note),
+        )
+        c.commit()
+        uid = c.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()["id"]
+        return {"id": uid, "username": username, "role": role, "status": "active",
+                "expire_date": expire_date, "created_at": now, "last_login_at": None, "note": note}
+    except sqlite3.IntegrityError:
+        raise ValueError(f"用户名「{username}」已存在")
+    finally:
+        c.close()
+
+
+def get_user_by_username(username):
+    """按用户名查用户(含密码哈希, 仅供登录校验用); 不存在返回 None"""
+    _ensure()
+    c = _conn(write=True)
+    try:
+        r = c.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        return dict(r) if r else None
+    finally:
+        c.close()
+
+
+def get_user_by_id(user_id):
+    """按 ID 查用户(含密码哈希, 仅供鉴权依赖内部校验用); 不存在返回 None"""
+    _ensure()
+    c = _conn(write=True)
+    try:
+        r = c.execute("SELECT * FROM users WHERE id = ?", (int(user_id),)).fetchone()
+        return dict(r) if r else None
+    finally:
+        c.close()
+
+
+def list_users():
+    """全部用户(最新注册在前); 不含密码哈希"""
+    _ensure()
+    c = _conn(write=True)
+    try:
+        rows = c.execute(
+            "SELECT id, username, role, status, expire_date, created_at, last_login_at, note, allow_legacy "
+            "FROM users ORDER BY id DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        c.close()
+
+
+def set_user_note(user_id, note):
+    """更新用户备注(管理员)"""
+    _ensure()
+    c = _conn(write=True)
+    try:
+        c.execute("UPDATE users SET note = ? WHERE id = ?", (note or None, int(user_id)))
+        c.commit()
+    finally:
+        c.close()
+
+
+def set_user_allow_legacy(user_id, allow):
+    """设置用户是否开放旧版看板(管理员; 管理员本身恒有权限)"""
+    _ensure()
+    c = _conn(write=True)
+    try:
+        c.execute("UPDATE users SET allow_legacy = ? WHERE id = ?", (1 if allow else 0, int(user_id)))
+        c.commit()
+    finally:
+        c.close()
+
+
+def user_allow_legacy(user_id) -> bool:
+    """用户是否开放旧版看板"""
+    _ensure()
+    c = _conn(write=True)
+    try:
+        r = c.execute("SELECT allow_legacy FROM users WHERE id = ?", (int(user_id),)).fetchone()
+        return bool(r and r["allow_legacy"])
+    finally:
+        c.close()
+
+
+def update_user_password(user_id, password_hash):
+    _ensure()
+    c = _conn(write=True)
+    try:
+        c.execute("UPDATE users SET password_hash = ? WHERE id = ?", (password_hash, int(user_id)))
+        c.commit()
+    finally:
+        c.close()
+
+
+def set_user_status(user_id, status):
+    """status: active / banned"""
+    _ensure()
+    c = _conn(write=True)
+    try:
+        c.execute("UPDATE users SET status = ? WHERE id = ?", (status, int(user_id)))
+        c.commit()
+    finally:
+        c.close()
+
+
+def set_user_expire(user_id, expire_date):
+    """expire_date: 'YYYY-MM-DD', None=永久"""
+    _ensure()
+    c = _conn(write=True)
+    try:
+        c.execute("UPDATE users SET expire_date = ? WHERE id = ?", (expire_date, int(user_id)))
+        c.commit()
+    finally:
+        c.close()
+
+
+def touch_last_login(user_id):
+    _ensure()
+    c = _conn(write=True)
+    try:
+        c.execute("UPDATE users SET last_login_at = ? WHERE id = ?",
+                  (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), int(user_id)))
+        c.commit()
     finally:
         c.close()
 
@@ -638,6 +846,74 @@ def db_window_overlaps(start, end, platform=None, shop_filter=None):
         return row["lo"] <= end and start <= row["hi"]
     except Exception:
         return False
+
+
+def db_window_range(start, end, platform=None, shop_filter=None):
+    """返回 DB 实际覆盖区间 [lo, hi](最早/最晚有数据的天), 无数据返回 None
+
+    与 db_window_covers(完整包含)互补: 完整覆盖失败但区间内部分天有数据时,
+    展示场景(如客服账号池)仍可聚合已有天并提示"部分覆盖", 避免单天缺失
+    (夜间抓取偶发失败)把整个客服池短路成空白。空店无行、空天无行的语义
+    与 covers/overlaps 一致——MIN/MAX 只反映真正有数据的天。
+    """
+    if not DB_FILE.exists():
+        return None
+    try:
+        c = _conn()
+        where = ""
+        args = []
+        if platform is not None:
+            where += " AND s.platform = ?"
+            args.append(platform)
+        if shop_filter:
+            placeholders = ",".join("?" * len(shop_filter))
+            where += f" AND d.third_shop_id IN ({placeholders})"
+            args.extend(shop_filter)
+        row = c.execute(
+            f"""SELECT MIN(d.day) AS lo, MAX(d.day) AS hi
+                FROM trace_daily d
+                JOIN shops s ON s.third_shop_id = d.third_shop_id
+                WHERE 1=1{where}""",
+            args,
+        ).fetchone()
+        if not row or not row["lo"] or not row["hi"]:
+            return None
+        return row["lo"], row["hi"]
+    except Exception:
+        return None
+
+
+def count_shops_per_day(start, end, platform=None, shop_filter=None):
+    """窗口内每天"有消息的店铺数": {day: count}; 用于客服池缺抓检测
+
+    trace_daily 每天每店至多一行(有消息才重建), 空店/空天无行。某天店铺数
+    骤降(<窗口最高的一半)即该天疑似未抓全(夜间抓取失败是整平台同时缺)。
+    单条 SQL, 不逐店读缓存文件, 与 staff_aggregate_per_shop 同数据源。
+    """
+    if not DB_FILE.exists():
+        return {}
+    try:
+        c = _conn()
+        where = "d.day BETWEEN ? AND ?"
+        args = [start, end]
+        if platform is not None:
+            where += " AND s.platform = ?"
+            args.append(platform)
+        if shop_filter:
+            placeholders = ",".join("?" * len(shop_filter))
+            where += f" AND d.third_shop_id IN ({placeholders})"
+            args.extend(shop_filter)
+        rows = c.execute(
+            f"""SELECT d.day AS day, COUNT(DISTINCT d.third_shop_id) AS n
+                FROM trace_daily d
+                JOIN shops s ON s.third_shop_id = d.third_shop_id
+                WHERE {where}
+                GROUP BY d.day""",
+            args,
+        ).fetchall()
+        return {r["day"]: r["n"] for r in rows}
+    except Exception:
+        return {}
 
 
 def week_coverage(platform=None):

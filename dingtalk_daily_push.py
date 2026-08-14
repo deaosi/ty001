@@ -23,6 +23,16 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 LOG = BASE_DIR / "dingtalk_push.log"
 BASE_URL = "http://127.0.0.1:8080"
+CONFIG_FILE = BASE_DIR / "config.json"
+
+
+def _service_token() -> str:
+    """读 config.json 的 auth.service_token(定时任务内部通道, 与看板鉴权中间件配合)"""
+    try:
+        cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        return (cfg.get("auth") or {}).get("service_token") or ""
+    except Exception:
+        return ""
 
 
 def log_line(msg: str):
@@ -31,7 +41,11 @@ def log_line(msg: str):
 
 
 def http_get(path: str, timeout: int = 60):
-    with urllib.request.urlopen(BASE_URL + path, timeout=timeout) as r:
+    req = urllib.request.Request(
+        BASE_URL + path,
+        headers={"X-Service-Token": _service_token()},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read().decode("utf-8", "replace")
 
 
