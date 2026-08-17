@@ -27,3 +27,8 @@ e2e_*.py
 
 # 截图
 *.png
+
+# 钉钉配置备份(含 webhook secret, 不提交)
+dingtalk_config.json.bak
+# 临时调试脚本(含本地测试账号)
+_wait_ov.py
