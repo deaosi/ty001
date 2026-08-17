@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>探域数据看板</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
+<title>统一数据看板</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='2' width='28' height='28' rx='7' fill='%23066fd1'/%3E%3Crect x='9' y='17' width='3.5' height='8' rx='1' fill='%23fff'/%3E%3Crect x='14.5' y='12' width='3.5' height='13' rx='1' fill='%23fff'/%3E%3Crect x='20' y='7' width='3.5' height='18' rx='1' fill='%23fff'/%3E%3C/svg%3E">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -688,12 +688,12 @@
 
 <header class="header">
   <div class="brand">
-    <div class="brand-logo">📊</div>
+    <div class="brand-logo"></div>
     <div>
-      <h1>探域数据看板</h1>
+      <h1>统一数据看板</h1>
       <div class="sub" id="dateSub">加载中…</div>
     </div>
-    <a href="/app" class="legacy-to-new" title="进入新版框架后台">✨ 进入新版</a>
+    <a href="/app" class="legacy-to-new" title="进入新版框架后台"> 进入新版</a>
   </div>
   <div class="header-actions">
     <span class="date-info" id="dateInfo">--</span>
@@ -706,16 +706,16 @@
     <select id="platformSelect" class="platform-select" onchange="switchPlatform(this.value)">
       <option value="">全部平台</option>
     </select>
-    <span class="op-chip" id="opChip" title="当前登录账号">👤 未登录</span>
-    <button class="btn btn-ghost" id="btnAdminUsers" style="display:none" onclick="openAdminUsers()">👥 用户管理</button>
-    <button class="btn btn-ghost" id="btnAdminOplog" style="display:none" onclick="openOplog()">📋 操作日志</button>
-    <button class="btn btn-ghost" id="btnLogout" style="display:none" onclick="logout()">🚪 退出</button>
-    <button class="btn btn-ghost" id="btnLogin" onclick="openLogin()">🔑 登录更新Cookie</button>
+    <span class="op-chip" id="opChip" title="当前登录账号"> 未登录</span>
+    <button class="btn btn-ghost" id="btnAdminUsers" style="display:none" onclick="openAdminUsers()"> 用户管理</button>
+    <button class="btn btn-ghost" id="btnAdminOplog" style="display:none" onclick="openOplog()"> 操作日志</button>
+    <button class="btn btn-ghost" id="btnLogout" style="display:none" onclick="logout()"> 退出</button>
+    <button class="btn btn-ghost" id="btnLogin" onclick="openLogin()"> 登录更新Cookie</button>
     <span class="cookie-expiry" id="cookieExpiry" title="登录 Cookie 到期时间"></span>
-    <button class="btn btn-ghost" id="btnImport" onclick="openImportPicker()">📤 导入Excel</button>
-    <button class="btn btn-primary" id="btnRefresh" onclick="startRefresh()">🔄 刷新数据</button>
-    <button class="btn btn-ghost" id="btnTaskList" onclick="toggleTaskPanel()">🗂 任务队列<span class="task-badge" id="btnTaskBadge" style="display:none"></span></button>
-    <button class="btn btn-ghost" id="btnPrefetch" onclick="openPrefetchDialog()">📅 补抓数据</button>
+    <button class="btn btn-ghost" id="btnImport" onclick="openImportPicker()"> 导入Excel</button>
+    <button class="btn btn-primary" id="btnRefresh" onclick="startRefresh()"> 刷新数据</button>
+    <button class="btn btn-ghost" id="btnTaskList" onclick="toggleTaskPanel()"> 任务队列<span class="task-badge" id="btnTaskBadge" style="display:none"></span></button>
+    <button class="btn btn-ghost" id="btnPrefetch" onclick="openPrefetchDialog()"> 补抓数据</button>
   </div>
   <input type="file" id="importFile" accept=".xlsx" style="display:none" onchange="doImportExcel()">
   <div class="group-sync-status" id="groupSyncStatus" style="display:none">
@@ -728,7 +728,7 @@
 <!-- 任务队列面板: 谁发起的抓取 / 排队状态 / 进度条(默认最近10条, 可查看全部池子) -->
 <div id="taskPanel" class="task-panel" style="display:none">
   <div class="task-panel-head">
-    <span>🗂 任务队列</span>
+    <span> 任务队列</span>
     <span class="task-panel-hint" id="taskPanelHint"></span>
     <span style="flex:1"></span>
     <button class="btn btn-ghost" id="btnTaskPool" onclick="toggleTaskPool()" style="display:none">▾ 查看全部</button>
@@ -739,7 +739,7 @@
 
 
 <div class="risk-banner" id="riskBanner" style="display:none">
-  <span>⚠️</span>
+  <span>⚠</span>
   <span id="riskBannerText">检测到风控/登录失效信号, 已自动停止所有抓取任务</span>
   <button class="btn btn-ghost" onclick="dismissRiskBanner()">知道了</button>
 </div>
@@ -770,12 +770,12 @@
   <div class="panel">
     <div class="panel-head">
       <div>
-        <h2>🏬 店铺表现</h2>
+        <h2> 店铺表现</h2>
         <div class="sub" id="shopPanelSub">点击店铺查看详情 · 数值为 tanyu 自然日口径: 主值=昨天, 下方环比=前天</div>
       </div>
       <div class="toolbar" style="margin-bottom:0">
         <div class="search-box" style="min-width:200px">
-          <span class="icon">🔍</span>
+          <span class="icon"></span>
           <input id="searchInput" placeholder="搜索店铺名称…" oninput="renderTable()">
         </div>
         <span class="count" id="shopCount">-- 家店铺</span>
@@ -805,7 +805,7 @@
   <div class="panel" id="auditSection">
     <div class="panel-head">
       <div>
-        <h2>🧮 核算板块</h2>
+        <h2> 核算板块</h2>
         <div class="sub">核算采纳率 = (自动发送 + 侧边栏点击发送 + 编辑后发送) ÷ 消息总条数 · 逐条遍历消息轨迹</div>
       </div>
       <div class="header-actions">
@@ -829,9 +829,9 @@
         <input type="time" id="todayStart" step="1" value="00:00" class="time-input" title="今日抓取开始时刻">
         <span class="sep">~</span>
         <input type="time" id="todayEnd" step="1" class="time-input" title="今日抓取结束时刻">
-        <button class="btn btn-primary" id="btnTodayAudit" onclick="startTodayAudit()">⚡ 抓取今日数据</button>
+        <button class="btn btn-primary" id="btnTodayAudit" onclick="startTodayAudit()"> 抓取今日数据</button>
         <span class="audit-sel-label" id="auditSelLabel" style="display:none"></span>
-        <button class="btn btn-ghost" id="btnAuditSel" onclick="auditSelected()" style="display:none">🧮 核算所选</button>
+        <button class="btn btn-ghost" id="btnAuditSel" onclick="auditSelected()" style="display:none"> 核算所选</button>
         <button class="btn btn-ghost" id="btnAuditClearSel" onclick="backToFullAudit()" style="display:none">✕ 清除</button>
         <button class="btn btn-ghost" id="btnAuditBack" onclick="backToFullAudit()" style="display:none">⬅ 返回全量</button>
         <button class="btn btn-primary" id="btnAudit" onclick="startAudit(true)">▶ 开始核算</button>
@@ -849,7 +849,7 @@
       </div>
       <div class="audit-cols">
         <div class="audit-col">
-          <h3>📦 按店铺核算</h3>
+          <h3> 按店铺核算</h3>
           <div class="table-wrap shop-pool-wrap" style="border:1px solid var(--border-soft);border-radius:10px">
             <table>
               <thead>
@@ -864,7 +864,7 @@
         </div>
         <div class="audit-col">
           <div class="audit-col-head" onclick="toggleStaffPanel()">
-            <h3>🧑‍💼 按人工核算 <span class="staff-count" id="staffCount"></span></h3>
+            <h3>‍ 按人工核算 <span class="staff-count" id="staffCount"></span></h3>
             <button class="btn btn-ghost staff-toggle" id="staffToggleBtn">收起 ▲</button>
           </div>
           <div id="staffPanel" style="display:grid;gap:10px">
@@ -886,14 +886,14 @@
               <input type="time" id="staffTodayStart" step="1" value="00:00" class="time-input" title="今日抓取开始时刻">
               <span class="sep">~</span>
               <input type="time" id="staffTodayEnd" step="1" class="time-input" title="今日抓取结束时刻">
-              <button class="btn btn-primary" id="btnStaffToday" onclick="startStaffToday()">⚡ 抓取今日数据</button>
+              <button class="btn btn-primary" id="btnStaffToday" onclick="startStaffToday()"> 抓取今日数据</button>
               <span class="today-sep">┊</span>
               <select id="staffShopFilter" class="staff-shop-select" onchange="onStaffShopFilterChange(this.value)" title="只显示该店铺的客服子账号">
                 <option value="">全部店铺</option>
               </select>
-              <input type="search" id="staffSearch" class="staff-shop-select" placeholder="🔍 搜客服昵称/账号/店铺…" title="按客服昵称、账号、店铺名检索" oninput="debounceStaffSearch()" style="width:190px">
-              <button class="btn btn-ghost staff-sync-btn" id="btnStaffAgg" onclick="toggleStaffAgg()" title="按客服身份汇总跨店消息量/采纳率(抖音客服常跨多店)">🔀 按客服汇总</button>
-              <button class="btn btn-ghost staff-sync-btn" id="btnStaffNamesSync" onclick="syncStaffNames()">👥 同步客服昵称</button>
+              <input type="search" id="staffSearch" class="staff-shop-select" placeholder=" 搜客服昵称/账号/店铺…" title="按客服昵称、账号、店铺名检索" oninput="debounceStaffSearch()" style="width:190px">
+              <button class="btn btn-ghost staff-sync-btn" id="btnStaffAgg" onclick="toggleStaffAgg()" title="按客服身份汇总跨店消息量/采纳率(抖音客服常跨多店)"> 按客服汇总</button>
+              <button class="btn btn-ghost staff-sync-btn" id="btnStaffNamesSync" onclick="syncStaffNames()"> 同步客服昵称</button>
               <span class="staff-filter-hint" id="staffFilterHint"></span>
             </div>
             <div class="staff-pool table-wrap" style="border:1px solid var(--border-soft);border-radius:10px;padding:10px">
@@ -921,13 +921,13 @@
   </div>
   <div class="drawer-body">
     <div class="drawer-tabs">
-      <button class="dtab active" id="tabMetrics" onclick="switchDrawerTab('metrics')">📈 指标趋势</button>
-      <button class="dtab" id="tabTrace" onclick="switchDrawerTab('trace')">📋 原始消息</button>
-      <button class="dtab" id="tabLogs" onclick="switchDrawerTab('logs')">🪵 日志</button>
+      <button class="dtab active" id="tabMetrics" onclick="switchDrawerTab('metrics')"> 指标趋势</button>
+      <button class="dtab" id="tabTrace" onclick="switchDrawerTab('trace')"> 原始消息</button>
+      <button class="dtab" id="tabLogs" onclick="switchDrawerTab('logs')"> 日志</button>
     </div>
     <div id="paneMetrics">
       <div class="detail-metrics" id="detailMetrics"><div class="loading"><div class="spinner"></div>加载详情…</div></div>
-      <div class="chart-card"><h3>📈 核算采纳率趋势(逐日)</h3><div class="chart-box"><canvas id="chartAi"></canvas></div></div>
+      <div class="chart-card"><h3> 核算采纳率趋势(逐日)</h3><div class="chart-box"><canvas id="chartAi"></canvas></div></div>
     </div>
     <div id="paneTrace" style="display:none">
       <div class="msg-toolbar">
@@ -948,8 +948,8 @@
           </select>
         </div>
         <span class="msg-count" id="traceCount"></span>
-        <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px" onclick="loadTodayLive()">⚡ 今天实时</button>
-        <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px" id="btnLoadTrace" onclick="loadTraceMessages(true)">🔄 重新抓取</button>
+        <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px" onclick="loadTodayLive()"> 今天实时</button>
+        <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px" id="btnLoadTrace" onclick="loadTraceMessages(true)"> 重新抓取</button>
       </div>
       <div class="msg-list" id="traceList"><div class="msg-empty">点击"原始消息"标签加载消息记录</div></div>
     </div>
@@ -970,7 +970,7 @@
         </div>
         <span class="msg-count" id="logCount"></span>
         <label class="log-autoscroll"><input type="checkbox" id="logAutoScroll" checked> 自动滚动</label>
-        <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px" onclick="loadDrawerLogs()">🔄 刷新</button>
+        <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px" onclick="loadDrawerLogs()"> 刷新</button>
       </div>
       <div class="msg-list log-list" id="logList"><div class="msg-empty">加载日志…</div></div>
     </div>
@@ -980,7 +980,7 @@
 <!-- 登录对话框 -->
 <div class="login-dialog" id="loginDialog">
   <div class="login-box">
-    <h3>🔑 登录更新 Cookie</h3>
+    <h3> 登录更新 Cookie</h3>
     <p>浏览器将自动弹出探域平台登录窗口, 登录完成后自动抓取 Cookie 并保存, 无需手动提供。</p>
     <ol class="login-steps">
       <li>点击下方按钮, 浏览器窗口自动打开探域平台</li>
@@ -991,7 +991,7 @@
     <div class="login-status" id="loginStatus">等待操作…</div>
     <div style="display:flex;gap:10px;justify-content:flex-end">
       <button class="btn btn-ghost" onclick="closeLogin()">关闭</button>
-      <button class="btn btn-primary" id="btnLoginStart" onclick="startBrowserLogin()">🚀 打开浏览器登录</button>
+      <button class="btn btn-primary" id="btnLoginStart" onclick="startBrowserLogin()"> 打开浏览器登录</button>
     </div>
   </div>
 </div>
@@ -999,7 +999,7 @@
 <!-- 手动补抓对话框 -->
 <div class="login-dialog" id="prefetchDialog">
   <div class="login-box">
-    <h3>📅 手动补抓数据</h3>
+    <h3> 手动补抓数据</h3>
     <p>选择要抓取的日期范围(默认只抓昨天)。<br>已抓取过的天会自动跳过, 只补缺格; 抓取期间请勿刷新或核算。</p>
     <div style="display:flex;gap:12px;margin-bottom:16px">
       <label style="flex:1;font-size:13px;color:var(--text-sub)">开始日期
@@ -1011,7 +1011,7 @@
     <div style="display:flex;gap:10px;justify-content:flex-end">
       <button class="btn btn-ghost" id="btnPrefetchCancel" onclick="cancelPrefetch()" style="display:none">⏹ 取消任务</button>
       <button class="btn btn-ghost" onclick="closePrefetchDialog()">关闭</button>
-      <button class="btn btn-primary" id="btnPrefetchStart" onclick="startPrefetch()">🚀 开始补抓</button>
+      <button class="btn btn-primary" id="btnPrefetchStart" onclick="startPrefetch()"> 开始补抓</button>
     </div>
   </div>
 </div>
@@ -1020,21 +1020,21 @@
 <div class="login-dialog" id="oplogDialog">
   <div class="login-box oplog-box">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
-      <h3 style="margin:0">📋 日志中心</h3>
+      <h3 style="margin:0"> 日志中心</h3>
       <span style="font-size:12px;color:var(--text-sub)">操作 / 任务 / 系统 统一查看 · 仅管理员</span>
     </div>
     <div class="drawer-tabs" style="margin-bottom:10px">
-      <button class="dtab active" data-tab="op" onclick="switchLogTab('op')">📌 操作日志</button>
-      <button class="dtab" data-tab="task" onclick="switchLogTab('task')">🗂 任务记录</button>
-      <button class="dtab" data-tab="sys" onclick="switchLogTab('sys')">⚙️ 系统日志</button>
+      <button class="dtab active" data-tab="op" onclick="switchLogTab('op')"> 操作日志</button>
+      <button class="dtab" data-tab="task" onclick="switchLogTab('task')"> 任务记录</button>
+      <button class="dtab" data-tab="sys" onclick="switchLogTab('sys')"> 系统日志</button>
     </div>
     <!-- 操作日志: 谁做了什么 -->
     <div id="logTabOp">
       <div class="oplog-toolbar">
         <select id="oplogClient" onchange="loadOplog()"><option value="">全部操作者</option></select>
         <span class="msg-count" id="oplogCount"></span>
-        <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px;margin-left:auto" onclick="loadOplog()">🔄 刷新</button>
-        <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px;color:var(--red)" onclick="deleteOplogLogs()">🗑 清空</button>
+        <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px;margin-left:auto" onclick="loadOplog()"> 刷新</button>
+        <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px;color:var(--red)" onclick="deleteOplogLogs()"> 清空</button>
       </div>
       <div class="oplog-list" id="oplogList"><div class="msg-empty">加载中…</div></div>
     </div>
@@ -1042,8 +1042,8 @@
     <div id="logTabTask" style="display:none">
       <div class="oplog-toolbar">
         <span class="msg-count" id="taskLogCount"></span>
-        <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px;margin-left:auto" onclick="loadTaskLogs()">🔄 刷新</button>
-        <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px;color:var(--red)" onclick="deleteTaskLogs()">🗑 清空记录</button>
+        <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px;margin-left:auto" onclick="loadTaskLogs()"> 刷新</button>
+        <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px;color:var(--red)" onclick="deleteTaskLogs()"> 清空记录</button>
       </div>
       <div class="oplog-list" id="taskLogList"><div class="msg-empty">加载中…</div></div>
     </div>
@@ -1052,13 +1052,13 @@
       <div class="oplog-toolbar">
         <select id="sysLogTag" onchange="loadSysLogs()"><option value="">全部标签</option></select>
         <span class="msg-count" id="sysLogCount"></span>
-        <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px;margin-left:auto" onclick="loadSysLogs()">🔄 刷新</button>
-        <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px;color:var(--red)" onclick="deleteSysLogs()">🗑 清空</button>
+        <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px;margin-left:auto" onclick="loadSysLogs()"> 刷新</button>
+        <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px;color:var(--red)" onclick="deleteSysLogs()"> 清空</button>
       </div>
       <div class="oplog-list" id="sysLogList"><div class="msg-empty">加载中…</div></div>
     </div>
     <div style="display:flex;gap:10px;justify-content:space-between;margin-top:12px">
-      <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px" onclick="pruneLogs()">🧹 执行保留期清理(任务14天/系统7天)</button>
+      <button class="btn btn-ghost" style="padding:3px 10px;font-size:12px" onclick="pruneLogs()"> 执行保留期清理(任务14天/系统7天)</button>
       <button class="btn btn-ghost" onclick="closeOplog()">关闭</button>
     </div>
   </div>
@@ -1069,7 +1069,7 @@
 <!-- 账号登录/注册遮罩(使用看板前须登录; 未登录时 init 不加载任何数据) -->
 <div class="login-dialog" id="authDialog">
   <div class="login-box" style="width:min(380px,90vw)">
-    <h3>🔐 探域数据看板</h3>
+    <h3> 统一数据看板</h3>
     <p style="font-size:13px;color:var(--text-sub);margin-bottom:16px">请登录账号后使用; 没有账号可注册, 操作日志将关联到你的账号(仅管理员可见)。</p>
     <div style="display:flex;gap:8px;margin-bottom:16px">
       <button class="btn btn-ghost auth-tab active" id="authTabLogin" onclick="switchAuthTab('login')">登 录</button>
@@ -1094,7 +1094,7 @@
 <!-- 管理员: 用户管理 -->
 <div class="login-dialog" id="adminUsersDialog">
   <div class="login-box" style="width:min(920px,94vw)">
-    <h3>👥 用户管理</h3>
+    <h3> 用户管理</h3>
     <p style="font-size:12px;color:var(--text-sub);margin:6px 0 12px">查看用户注册时间等信息; 可重置密码、封禁/解封、设置到期时间。</p>
     <div class="oplog-toolbar">
       <select id="adminUserFilter" onchange="loadAdminUsers()">
@@ -1104,7 +1104,7 @@
         <option value="banned">仅已封禁</option>
       </select>
       <span class="msg-count" id="adminUsersCount"></span>
-      <button class="btn btn-ghost" style="margin-left:auto" onclick="loadAdminUsers()">🔄 刷新</button>
+      <button class="btn btn-ghost" style="margin-left:auto" onclick="loadAdminUsers()"> 刷新</button>
       <button class="btn btn-primary" onclick="openCreateUser()">＋ 创建用户</button>
     </div>
     <div class="oplog-list" id="adminUsersList"><div class="msg-empty">加载中…</div></div>
@@ -1434,7 +1434,7 @@ function renderGroupSelect() {
       <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${name}</span>
       ${active ? '<span style="color:var(--blue);font-size:11px">✓</span>' : ''}
     </div>`;
-  }).join('') + `<div class="g-tip">💡 提示: 集团列表来自微信扫码登录。切换集团会自动同步该集团的店铺列表。</div>`;
+  }).join('') + `<div class="g-tip"> 提示: 集团列表来自微信扫码登录。切换集团会自动同步该集团的店铺列表。</div>`;
 }
 
 function toggleGroupMenu(event) {
@@ -1486,7 +1486,7 @@ async function switchGroup(groupId) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ group_id: groupId }),
     });
-    toast(`已切换到 ${(r.group && r.group.name) || g.groupName || '新集团'} ✅ 正在加载店铺…`);
+    toast(`已切换到 ${(r.group && r.group.name) || g.groupName || '新集团'}  正在加载店铺…`);
     document.getElementById('groupSyncTxt').textContent = '店铺已同步, 正在加载看板…';
     stopAuditPolling();  // 后端已取消旧集团核算: 停掉旧轮询, 避免把旧组结果渲染到新组下
     await loadGroups();
@@ -1582,7 +1582,7 @@ async function doImportExcel() {
   try {
     const r = await fetchJSON('/api/import/trace', { method: 'POST', body: fd });
     const w = r.warningCount || 0;
-    toast(`导入完成 ✅ 平台${PLATFORM_NAMES[r.platform]} · ${r.shops}店 ${r.days}天 ${r.staff}客服 ${r.kpis}条KPI${w ? ` · ${w}条告警` : ''}`);
+    toast(`导入完成  平台${PLATFORM_NAMES[r.platform]} · ${r.shops}店 ${r.days}天 ${r.staff}客服 ${r.kpis}条KPI${w ? ` · ${w}条告警` : ''}`);
     if (w) console.warn('导入告警:', (r.warnings || []).slice(0, 10));
     // 刷新平台视图: 店铺列表 + 概览 + 核算缓存 + 客服池
     await loadShops();
@@ -2072,7 +2072,7 @@ function renderTraceList() {
           ${m.buyer ? `<span class="st-badge st-none" style="background:rgba(167,139,250,.12);color:#9570ff">买家: ${esc(m.buyer)}</span>` : ''}
         </div>
         <div class="m-content">${esc(traceContent(m.content))}</div>
-        ${m.staff ? `<div class="m-staff">👤 ${esc(m.staff)}</div>` : ''}
+        ${m.staff ? `<div class="m-staff"> ${esc(m.staff)}</div>` : ''}
       </div>
     </div>`).join('');
   const remaining = rows.length - pageRows.length;
@@ -2500,7 +2500,7 @@ async function loadStaffData() {
         ? ` ${d.missingCount} 家店缺天`
         : (d.coveredFrom ? ` 仅覆盖 ${d.coveredFrom} ~ ${d.coveredTo}` : '');
       const days = d.missingDays ? `(缺 ${Object.keys(d.missingDays).join(', ')})` : '';
-      hintEl.textContent += ` ⚠️ 数据不全${miss}${days}`;
+      hintEl.textContent += ` ⚠ 数据不全${miss}${days}`;
     }
   } catch (e) {
     if (myGen !== staffDataGen) return;
@@ -2563,7 +2563,7 @@ async function syncStaffNames() {
     if (r && r.status === 'queued') {
       // 有任务在跑, 已加入队列: 恢复按钮, 提示排队位置并展示任务面板
       staffSyncRunning = false;
-      if (btn) { btn.disabled = false; btn.textContent = '👥 同步客服昵称'; }
+      if (btn) { btn.disabled = false; btn.textContent = ' 同步客服昵称'; }
       toast(`同步已加入任务队列(第${r.queuePosition || '?'}位), 轮到后自动执行`);
       if (!taskPanelVisible) toggleTaskPanel();
       refreshTaskBadge();
@@ -2573,7 +2573,7 @@ async function syncStaffNames() {
   } catch (e) {
     toast('同步启动失败: ' + e.message);
     staffSyncRunning = false;
-    if (btn) { btn.disabled = false; btn.textContent = '👥 同步客服昵称'; }
+    if (btn) { btn.disabled = false; btn.textContent = ' 同步客服昵称'; }
     return;
   }
   // 轮询同步状态, 完成后刷新昵称映射与客服池
@@ -2583,20 +2583,20 @@ async function syncStaffNames() {
       if (!t.running) {
         clearInterval(timer);
         staffSyncRunning = false;
-        if (btn) { btn.disabled = false; btn.textContent = '👥 同步客服昵称'; }
+        if (btn) { btn.disabled = false; btn.textContent = ' 同步客服昵称'; }
         if (t.error) {
           toast('客服昵称同步失败: ' + t.error);
           checkRisk();
         } else {
           await loadStaffNames();
           loadStaffData();
-          toast('客服昵称同步完成 ✅');
+          toast('客服昵称同步完成 ');
         }
       }
     } catch (e) {
       clearInterval(timer);
       staffSyncRunning = false;
-      if (btn) { btn.disabled = false; btn.textContent = '👥 同步客服昵称'; }
+      if (btn) { btn.disabled = false; btn.textContent = ' 同步客服昵称'; }
     }
   }, 3000);
 }
@@ -2622,12 +2622,12 @@ function todayQueryParams() {
 
 async function startTodayAudit() {
   todayMode = 'audit';
-  await kickTodayFetch('⚡ 正在抓取今日数据, 将更新核算表格…');
+  await kickTodayFetch(' 正在抓取今日数据, 将更新核算表格…');
 }
 
 async function startStaffToday() {
   todayMode = 'staff';
-  await kickTodayFetch('⚡ 正在抓取今日客服数据…');
+  await kickTodayFetch(' 正在抓取今日客服数据…');
 }
 
 // ---------- 任务队列面板(谁发起的抓取 / 排队状态 / 进度条) ----------
@@ -2708,7 +2708,7 @@ function renderTaskList(tasks) {
          <span style="font-size:10px;color:var(--text-dim)">${p.done || 0}/${p.total || 0}${cur}</span>`
       : `<span class="small text-muted">—</span>`;
     return `<div class="task-row">
-      <span class="t-who" title="${who}">👤 ${who}</span>
+      <span class="t-who" title="${who}"> ${who}</span>
       <span class="t-verb">请求</span>
       <span class="t-label" title="${label}${t.error ? ' | ' + esc(String(t.error)) : ''}">「${label}」</span>
       <span class="t-status" style="color:${st[1]}">${st[0]}${pos}</span>
@@ -2809,7 +2809,7 @@ function pollToday() {
             document.getElementById('auditProgress').classList.remove('show');
             document.getElementById('auditStatus').className = 'audit-status';
             document.getElementById('auditStatus').innerHTML =
-              `⚠️ 今日抓取已停止: ${esc(t.error)} · ${esc(t.nightly.source)} 自 ${esc(t.nightly.since)} 起已运行 ${t.nightly.minutes} 分钟, 请等它结束后再试`;
+              `⚠ 今日抓取已停止: ${esc(t.error)} · ${esc(t.nightly.source)} 自 ${esc(t.nightly.since)} 起已运行 ${t.nightly.minutes} 分钟, 请等它结束后再试`;
             toast('夜间抓取进行中, 今日抓取无法同时进行, 请稍后再试');
             checkRisk();
             return;
@@ -2839,15 +2839,15 @@ function applyTodayResult(result) {
   if (todayMode === 'audit') {
     document.getElementById('auditStatus').className = 'audit-status done';
     document.getElementById('auditStatus').innerHTML =
-      `今日抓取完成 ✅ ${rangeTxt}${platformTxt}${scopeTxt} · 总条数 ${(result.total || 0).toLocaleString()} · 采纳率 ${(result.rate || 0).toFixed(2)}% <span class="live-badge">实时</span>`;
+      `今日抓取完成  ${rangeTxt}${platformTxt}${scopeTxt} · 总条数 ${(result.total || 0).toLocaleString()} · 采纳率 ${(result.rate || 0).toFixed(2)}% <span class="live-badge">实时</span>`;
     renderAudit(result);
   } else {
     document.getElementById('auditStatus').className = 'audit-status done';
     document.getElementById('auditStatus').innerHTML =
-      `今日客服数据已更新 ✅ ${rangeTxt}${platformTxt}${scopeTxt} <span class="live-badge">实时</span>`;
+      `今日客服数据已更新  ${rangeTxt}${platformTxt}${scopeTxt} <span class="live-badge">实时</span>`;
     renderStaffGrid(result.byStaff || []);
   }
-  toast(`今日抓取完成 ✅ 共 ${(result.total || 0).toLocaleString()} 条消息`);
+  toast(`今日抓取完成  共 ${(result.total || 0).toLocaleString()} 条消息`);
 }
 
 async function startAudit(force) {
@@ -2886,7 +2886,7 @@ async function startAudit(force) {
       renderAudit(r.result);
       statusEl.className = 'audit-status done';
       const scopeTxt = auditSelMode ? ` · 所选 ${r.result.shopList.length} 家店铺` : '';
-      statusEl.innerHTML = `核算完成 ✅ ${r.startDate} ~ ${r.endDate}${scopeTxt}${liveBadgeHtml(r.result && r.result.live)}`;
+      statusEl.innerHTML = `核算完成  ${r.startDate} ~ ${r.endDate}${scopeTxt}${liveBadgeHtml(r.result && r.result.live)}`;
       resetAuditUI();
     } else if (r.status === 'running') {
       pollAudit();
@@ -2980,7 +2980,7 @@ function pollAudit() {
             document.getElementById('auditStatus').className = 'audit-status done';
             const scopeTxt = auditSelMode ? ` · 所选 ${res.shopList.length} 家店铺` : '';
             document.getElementById('auditStatus').innerHTML =
-              `核算完成 ✅ ${res.startDate} ~ ${res.endDate}${scopeTxt} · 总条数 ${res.total.toLocaleString()} · 核算采纳率 ${res.rate.toFixed(2)}%${liveBadgeHtml(res.live)}`;
+              `核算完成  ${res.startDate} ~ ${res.endDate}${scopeTxt} · 总条数 ${res.total.toLocaleString()} · 核算采纳率 ${res.rate.toFixed(2)}%${liveBadgeHtml(res.live)}`;
           }
         } else if (t.error) {
           document.getElementById('auditStatus').className = 'audit-status';
@@ -3115,7 +3115,7 @@ async function reloadCachedAudit() {
       renderAudit(result);
       statusEl.className = 'audit-status done';
       const scopeTxt = auditSelMode ? ` · 所选 ${result.shopList.length} 家店铺` : '';
-      statusEl.innerHTML = `核算完成 ✅ ${result.startDate} ~ ${result.endDate}${scopeTxt} · 总条数 ${result.total.toLocaleString()} · 核算采纳率 ${result.rate.toFixed(2)}%${liveBadgeHtml(result.live)}`;
+      statusEl.innerHTML = `核算完成  ${result.startDate} ~ ${result.endDate}${scopeTxt} · 总条数 ${result.total.toLocaleString()} · 核算采纳率 ${result.rate.toFixed(2)}%${liveBadgeHtml(result.live)}`;
     } else if (result) {
       // 有缓存但时间段与当前选择不一致: 展示旧结果, 但明确提示这不是当前时间段
       renderAudit(result);
@@ -3439,7 +3439,7 @@ function pollProgress() {
         if (t.error) {
           toast('刷新完成(有错误): ' + t.error);
         } else {
-          toast(`刷新完成 ✅ 上次刷新: ${lastRun}`);
+          toast(`刷新完成  上次刷新: ${lastRun}`);
         }
         refreshHeaderSub();  // 恢复日期口径标签(含自然日说明), 不用硬编码近7天
         await loadAllShopSummaries();
@@ -3515,7 +3515,7 @@ function openPrefetchDialog() {
   st.textContent = '选择日期范围, 点击「开始补抓」。已抓过的天自动跳过。';
   document.getElementById('btnPrefetchCancel').style.display = 'none';
   document.getElementById('btnPrefetchStart').disabled = false;
-  document.getElementById('btnPrefetchStart').textContent = '🚀 开始补抓';
+  document.getElementById('btnPrefetchStart').textContent = ' 开始补抓';
   document.getElementById('prefetchDialog').classList.add('show');
 }
 
@@ -3595,7 +3595,7 @@ function pollPrefetch() {
         clearInterval(timer);
         prefetchPolling = false;
         document.getElementById('btnPrefetchStart').disabled = false;
-        document.getElementById('btnPrefetchStart').textContent = '🚀 开始补抓';
+        document.getElementById('btnPrefetchStart').textContent = ' 开始补抓';
         document.getElementById('btnPrefetchCancel').style.display = 'none';
         if (t.error) {
           st.textContent = '补抓出错: ' + t.error;
@@ -3606,9 +3606,9 @@ function pollPrefetch() {
           st.className = 'login-status';
           toast('手动补抓已取消');
         } else {
-          st.textContent = `补抓完成 ✅ 上次: ${t.last_run ? new Date(t.last_run * 1000).toLocaleString('zh-CN') : ''}`;
+          st.textContent = `补抓完成  上次: ${t.last_run ? new Date(t.last_run * 1000).toLocaleString('zh-CN') : ''}`;
           st.className = 'login-status done';
-          toast('手动补抓完成 ✅');
+          toast('手动补抓完成 ');
         }
         loadDrawerLogs();
         // 数据已更新: 刷新概览与店铺汇总
@@ -3654,13 +3654,13 @@ function pollLogin() {
       statusEl.textContent = t.message || t.phase;
       if (t.phase === 'got_cookie') {
         statusEl.className = 'login-status done';
-        statusEl.textContent = '✅ Cookie 已保存! 可关闭此窗口。' + (t.message || '');
+        statusEl.textContent = ' Cookie 已保存! 可关闭此窗口。' + (t.message || '');
         clearInterval(timer);
         loginPolling = false;
         document.getElementById('btnLoginStart').disabled = false;
         setTimeout(() => {
           closeLogin();
-          toast('Cookie 已更新 ✅ 请刷新数据');
+          toast('Cookie 已更新  请刷新数据');
           loadGroups();
           loadCookieExpiry();  // 新凭证的到期时间已捕获, 刷新顶部提示
           loadStaffNames().then(() => { renderStaffGrid([]); loadStaffData(); });
@@ -3702,7 +3702,7 @@ function ensureClientIdentity() {
 let currentUser = null;  // 当前登录用户 {id, username, role, ...}
 function renderAuthUI() {
   const chip = document.getElementById('opChip');
-  if (chip) chip.textContent = currentUser ? `👤 ${currentUser.username}` : '👤 未登录';
+  if (chip) chip.textContent = currentUser ? ` ${currentUser.username}` : ' 未登录';
   const isAdmin = currentUser && currentUser.role === 'admin';
   const btnU = document.getElementById('btnAdminUsers');
   const btnO = document.getElementById('btnAdminOplog');
@@ -3864,7 +3864,7 @@ async function adminResetPwd(uid) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ new_password: pw }),
     });
-    toast('密码已重置 ✅');
+    toast('密码已重置 ');
     loadAdminUsers();
   } catch (e) { toast('重置失败: ' + e.message); }
 }
@@ -3909,7 +3909,7 @@ async function openCreateUser() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: username.trim(), password, role, expire_date: expire.trim() || null }),
     });
-    toast('用户已创建 ✅');
+    toast('用户已创建 ');
     loadAdminUsers();
   } catch (e) { toast('创建失败: ' + e.message); }
 }

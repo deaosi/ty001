@@ -181,7 +181,17 @@ def valid_username(name: str) -> bool:
 
 
 def valid_password(pw: str) -> bool:
+    """存量规则: 至少 6 位(已注册账号/管理员建号/改密码沿用, 不影响存量用户)"""
     return isinstance(pw, str) and len(pw) >= 6
+
+
+def valid_password_strong(pw: str) -> bool:
+    """新注册密码策略: ≥8 位 且 同时包含字母和数字(仅新注册用户适用)"""
+    if not isinstance(pw, str) or len(pw) < 8:
+        return False
+    has_alpha = any(c.isalpha() for c in pw)
+    has_digit = any(c.isdigit() for c in pw)
+    return has_alpha and has_digit
 
 
 # ---------- 注册频率限制(同一来源 IP, 滑动窗口计数) ----------

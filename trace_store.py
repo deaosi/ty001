@@ -130,8 +130,9 @@ def _init_schema(c):
             status      INTEGER,
             user_id     INTEGER
         );
-        CREATE INDEX IF NOT EXISTS idx_oplog_ts ON operation_log(id);
         CREATE INDEX IF NOT EXISTS idx_oplog_client ON operation_log(client_id);
+        -- 旧库遗留的冗余索引(id 已是 INTEGER PRIMARY KEY 自带索引): 清理掉减少写放大
+        DROP INDEX IF EXISTS idx_oplog_ts;
         CREATE TABLE IF NOT EXISTS users (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
             username      TEXT NOT NULL UNIQUE,
@@ -172,12 +173,21 @@ def _init_schema(c):
     )
 
 
+_schema_ready = False  # 进程级标志: 首次 _ensure 成功建表后, 读路径不再重复跑全量 DDL
+
+
 def _ensure():
+    global _schema_ready
+    if _schema_ready:
+        return
     with _write_lock:
+        if _schema_ready:
+            return  # 双检: 并发首次调用只跑一次
         c = _conn(write=True)
         try:
             _init_schema(c)
             c.commit()
+            _schema_ready = True
         finally:
             c.close()
 
@@ -538,36 +548,70 @@ def _msg_row(shop_id, platform, day, m):
 
 
 def upsert_shop_day(shop_id, platform, day, msgs):
-    """写入某店铺某天的消息(幂等: 同 trace_id 覆盖), 并刷新该店当日聚合"""
-    if not msgs:
-        return
+    """写入某店铺某天的消息(幂等: 同 trace_id 覆盖), 并刷新该店当日聚合。
+
+    即使当天 0 条消息也写 total=0 的 trace_daily 行(表示"该天已抓取完成"):
+    覆盖判定才能逐 (店,天) 格校验, 中间缺抓的天不会被 MIN/MAX 误判为已覆盖。
+    """
     _ensure()
     rows = [_msg_row(shop_id, platform, day, m) for m in msgs]
     rows = [r for r in rows if r is not None]
-    if not rows:
-        return
     with _write_lock:
         c = _conn(write=True)
         try:
-            # 部分唯一索引 (third_shop_id, trace_id) WHERE trace_id IS NOT NULL
-            # 不支持 ON CONFLICT 目标子句; 用 INSERT OR IGNORE 去重 + UPDATE 覆盖
-            c.executemany(
-                """INSERT OR IGNORE INTO messages(trace_id, third_shop_id, platform, msg_time,
-                                        send_type, seller_account, type, content_json, fetched_at)
-                   VALUES(?,?,?,?,?,?,?,?,?)""",
-                rows,
-            )
-            # 已存在的行(trace_id 非空)覆盖为最新抓取内容
-            c.executemany(
-                """UPDATE messages SET platform=?, msg_time=?, send_type=?,
-                   seller_account=?, type=?, content_json=?, fetched_at=?
-                   WHERE third_shop_id=? AND trace_id=?""",
-                [(r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[1], r[0]) for r in rows if r[0]],
+            if rows:
+                # 部分唯一索引 (third_shop_id, trace_id) WHERE trace_id IS NOT NULL
+                # 不支持 ON CONFLICT 目标子句; 用 INSERT OR IGNORE 去重 + UPDATE 覆盖
+                c.executemany(
+                    """INSERT OR IGNORE INTO messages(trace_id, third_shop_id, platform, msg_time,
+                                            send_type, seller_account, type, content_json, fetched_at)
+                       VALUES(?,?,?,?,?,?,?,?,?)""",
+                    rows,
+                )
+                # 已存在的行(trace_id 非空)覆盖为最新抓取内容
+                c.executemany(
+                    """UPDATE messages SET platform=?, msg_time=?, send_type=?,
+                       seller_account=?, type=?, content_json=?, fetched_at=?
+                       WHERE third_shop_id=? AND trace_id=?""",
+                    [(r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[1], r[0]) for r in rows if r[0]],
+                )
+            # 写/刷新当天聚合(0 条也写 total=0 行, 供覆盖判定逐格校验)
+            counts = {1: 0, 2: 0, 3: 0, None: 0}
+            by_staff, by_type = {}, {}
+            total = adopted = 0
+            for m in rows:
+                st = m[4]
+                counts[st] = counts.get(st, 0) + 1
+                staff = m[5] or "未知"
+                e = by_staff.setdefault(staff, {"total": 0, "adopted": 0})
+                e["total"] += 1
+                if st in ADOPTED_SEND_TYPES:
+                    e["adopted"] += 1
+                t = m[6] or "OTHER"
+                by_type[t] = by_type.get(t, 0) + 1
+                total += 1
+                if st in ADOPTED_SEND_TYPES:
+                    adopted += 1
+            c.execute(
+                """INSERT INTO trace_daily(third_shop_id, day, total, adopted,
+                                           counts_json, by_staff_json, by_type_json)
+                   VALUES(?,?,?,?,?,?,?)
+                   ON CONFLICT(third_shop_id, day) DO UPDATE SET
+                     total=excluded.total, adopted=excluded.adopted,
+                     counts_json=excluded.counts_json,
+                     by_staff_json=excluded.by_staff_json,
+                     by_type_json=excluded.by_type_json""",
+                (shop_id, day, total, adopted,
+                 json.dumps(counts, ensure_ascii=False),
+                 # 格式必须与 rebuild_daily/upsert_import_shop_day 一致:
+                 # list of [account, {total, adopted}] 按 total 降序(读链路按 list 遍历)
+                 json.dumps(sorted(by_staff.items(), key=lambda kv: -kv[1]["total"]),
+                            ensure_ascii=False),
+                 json.dumps(by_type, ensure_ascii=False)),
             )
             c.commit()
         finally:
             c.close()
-    rebuild_daily(shop_id)
 
 
 def rebuild_daily(shop_id):
@@ -784,10 +828,15 @@ def db_window_covers(start, end, platform=None, shop_filter=None):
     导入平台(10/11)数据无限期保留会撑大全库 MIN/MAX, 若抓取平台(1/5/7)请求
     早于其 ~35 天窗口的自定义区间, 全库口径会误判为已覆盖, 走纯 DB 聚合返回
     全 0 而不回退在线抓取——把抓取平台更早区间的真实数据藏成 0。
+
+    逐格校验(而非 MIN/MAX): 区间内每个 (店铺, 天) 都必须有 trace_daily 行。
+    upsert_shop_day 对"已抓取但 0 消息"的天也写 total=0 行, 所以某晚抓取失败
+    造成的中间缺天(无行)会被检出, 不会静默按 0 聚合。
     """
     if not DB_FILE.exists():
         return False
     try:
+        import datetime as _dt
         c = _conn()
         where = ""
         args = []
@@ -798,16 +847,34 @@ def db_window_covers(start, end, platform=None, shop_filter=None):
             placeholders = ",".join("?" * len(shop_filter))
             where += f" AND d.third_shop_id IN ({placeholders})"
             args.extend(shop_filter)
+        # 期望格数 = 目标店铺数 × 区间天数
         row = c.execute(
-            f"""SELECT MIN(d.day) AS lo, MAX(d.day) AS hi
-                FROM trace_daily d
-                JOIN shops s ON s.third_shop_id = d.third_shop_id
-                WHERE 1=1{where}""",
+            f"""SELECT COUNT(DISTINCT s.third_shop_id)
+                FROM shops s
+                WHERE 1=1{where.replace('d.', 's.')}""",
             args,
         ).fetchone()
-        if not row or not row["lo"] or not row["hi"]:
+        n_shops = row[0] if row else 0
+        if not n_shops:
             return False
-        return row["lo"] <= start and end <= row["hi"]
+        try:
+            n_days = (_dt.date.fromisoformat(end) - _dt.date.fromisoformat(start)).days + 1
+        except Exception:
+            return False
+        if n_days <= 0:
+            return False
+        expected = n_shops * n_days
+        # 实际格数: 区间内 (店铺, 天) 去重
+        row = c.execute(
+            f"""SELECT COUNT(*) FROM (
+                    SELECT DISTINCT d.third_shop_id, d.day
+                    FROM trace_daily d
+                    JOIN shops s ON s.third_shop_id = d.third_shop_id
+                    WHERE d.day >= ? AND d.day <= ?{where}
+                )""",
+            [start, end] + args,
+        ).fetchone()
+        return bool(row) and row[0] >= expected
     except Exception:
         return False
 
@@ -1227,6 +1294,111 @@ def avg_generation_rate(start, end, platform=None, shop_filter=None):
         return None
 
 
+def coverage_grid(start_day, end_day, platform=None):
+    """数据完整性哨兵: 区间内每 (店铺, 天) 的已抓取聚合行
+
+    返回 {shop_id: {day: {"total": n, "adopted": n}}}: 有行 = 该天已抓取
+    (upsert_shop_day 对 0 消息天也写行), 无行 = 缺抓/未抓。
+    """
+    if not DB_FILE.exists():
+        return {}
+    try:
+        c = _conn()
+        where = "d.day BETWEEN ? AND ?"
+        args = [start_day, end_day]
+        if platform is not None:
+            where += " AND s.platform = ?"
+            args.append(platform)
+        rows = c.execute(
+            f"""SELECT d.third_shop_id AS sid, d.day, d.total AS t, d.adopted AS a
+                FROM trace_daily d
+                JOIN shops s ON s.third_shop_id = d.third_shop_id
+                WHERE {where}""",
+            args,
+        ).fetchall()
+        out = {}
+        for r in rows:
+            out.setdefault(r["sid"], {})[r["day"]] = {"total": r["t"], "adopted": r["a"]}
+        return out
+    except Exception:
+        return {}
+
+
+def shop_staff_json(shop_id, day):
+    """读某店某天的客服聚合 JSON([(account, {total, adopted}), ...] 或 None)"""
+    if not DB_FILE.exists():
+        return None
+    try:
+        c = _conn()
+        row = c.execute(
+            "SELECT by_staff_json FROM trace_daily WHERE third_shop_id = ? AND day = ?",
+            (shop_id, day),
+        ).fetchone()
+        if not row or not row["by_staff_json"]:
+            return None
+        return json.loads(row["by_staff_json"])
+    except Exception:
+        return None
+
+
+def hourly_counts(start_ms, end_ms, platform=None):
+    """消息小时分布: 按 (天, 小时) 聚合原始消息条数(客服生物钟热力图)
+
+    返回 [(day 'YYYY-MM-DD', hour 0..23, count)]; 秒级时间戳转本地时区。
+    """
+    if not DB_FILE.exists():
+        return []
+    try:
+        c = _conn()
+        where = "msg_time BETWEEN ? AND ?"
+        args = [start_ms, end_ms]
+        if platform is not None:
+            where += " AND platform = ?"
+            args.append(platform)
+        rows = c.execute(
+            f"""SELECT date(msg_time/1000, 'unixepoch', 'localtime') AS d,
+                       CAST(strftime('%H', msg_time/1000, 'unixepoch', 'localtime') AS INTEGER) AS h,
+                       COUNT(*) AS n
+                FROM messages
+                WHERE {where}
+                GROUP BY d, h""",
+            args,
+        ).fetchall()
+        return [(r["d"], r["h"], r["n"]) for r in rows]
+    except Exception:
+        return []
+
+
+def shop_totals(start_day, end_day, platform=None, shop_filter=None):
+    """区间内每店聚合(总量/采纳/采纳率): 供洞察规则引擎用"""
+    if not DB_FILE.exists():
+        return {}
+    try:
+        c = _conn()
+        where = "d.day BETWEEN ? AND ?"
+        args = [start_day, end_day]
+        if platform is not None:
+            where += " AND s.platform = ?"
+            args.append(platform)
+        if shop_filter:
+            placeholders = ",".join("?" * len(shop_filter))
+            where += f" AND d.third_shop_id IN ({placeholders})"
+            args.extend(shop_filter)
+        rows = c.execute(
+            f"""SELECT d.third_shop_id AS sid, s.shop_name AS name, s.platform AS pf,
+                       SUM(d.total) AS t, SUM(d.adopted) AS a
+                FROM trace_daily d
+                JOIN shops s ON s.third_shop_id = d.third_shop_id
+                WHERE {where}
+                GROUP BY d.third_shop_id""",
+            args,
+        ).fetchall()
+        return {r["sid"]: {"name": r["name"], "platform": r["pf"],
+                           "total": r["t"] or 0, "adopted": r["a"] or 0} for r in rows}
+    except Exception:
+        return {}
+
+
 def staff_aggregate_per_shop_ms(start_ms, end_ms, platform=None, shop_filter=None):
     """按 (店铺, 客服) 组合聚合客服维度(秒级边界): 从 messages 表按 msg_time 过滤
 
@@ -1327,7 +1499,27 @@ def prune_window(keep_days=30):
                 (keep_start_str,),
             )
             c.commit()
+            # 大批量删除后主动 checkpoint 收缩 WAL(否则 WAL 只涨不缩, 拖慢后续读)
+            try:
+                c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:
+                pass
             return deleted
+        finally:
+            c.close()
+
+
+def prune_operation_log(keep_days=90):
+    """清理超过 keep_days 的操作日志(每条非轮询 API 请求一行, 无保留期会无限膨胀)"""
+    if not DB_FILE.exists():
+        return 0
+    cutoff = (datetime.datetime.now() - datetime.timedelta(days=keep_days)).strftime("%Y-%m-%d %H:%M:%S")
+    with _write_lock:
+        c = _conn(write=True)
+        try:
+            cur = c.execute("DELETE FROM operation_log WHERE ts < ?", (cutoff,))
+            c.commit()
+            return cur.rowcount
         finally:
             c.close()
 

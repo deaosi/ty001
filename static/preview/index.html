@@ -3,12 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>探域数据看板 · 新版预览</title>
+<title>统一数据看板 · 新版预览</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../vendor/tabler/tabler.min.css">
+<link rel="stylesheet" href="/static/vendor/tabler/tabler.min.css">
 <style>
   /* ═══════════════════ 预览版自定义样式(Tabler 之上) ═══════════════════ */
   body { font-family: 'Inter', -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; }
@@ -146,7 +146,7 @@
       <h1 class="navbar-brand navbar-brand-autodark">
         <span class="brand-logo" id="brandLogo"></span>
         <span>
-          <span class="brand-name d-block">探域数据看板</span>
+          <span class="brand-name d-block">统一数据看板</span>
           <span class="brand-sub">TANYU · 经营数据</span>
         </span>
       </h1>
@@ -284,7 +284,7 @@
               <div class="row align-items-center">
                 <div class="col-auto">
                   <h2 class="page-title">概览</h2>
-                  <div class="page-pretitle text-secondary">探域数据看板 · 首页</div>
+                  <div class="page-pretitle text-secondary">统一数据看板 · 首页</div>
                 </div>
                 <div class="col-auto ms-auto">
                   <div class="btn-list">
@@ -731,7 +731,7 @@
               <div class="login-brand">
                 <span class="brand-logo" id="loginLogo"></span>
                 <div>
-                  <div class="fw-bold" style="font-size:1.1rem">探域数据看板</div>
+                  <div class="fw-bold" style="font-size:1.1rem">统一数据看板</div>
                   <div class="text-secondary" style="font-size:.8rem">TANYU · 经营数据控制台</div>
                 </div>
               </div>
@@ -778,7 +778,7 @@
             </ul>
           </div>
           <div class="col-12 col-lg-auto mt-3 mt-lg-0">
-            <span class="text-secondary">探域数据看板 · 新版前端预览 v0.1 · Tabler v1.3 · 示例数据未接入后端</span>
+            <span class="text-secondary">统一数据看板 · 新版前端预览 v0.1 · Tabler v1.3 · 示例数据未接入后端</span>
           </div>
         </div>
       </div>
@@ -864,7 +864,7 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <script>
 /* ══════════════════════════════════════════════════════════════
-   探域数据看板 · 新版前端预览(纯静态, 示例数据)
+   统一数据看板 · 新版前端预览(纯静态, 示例数据)
    结构: 侧边栏导航 + 8 个模块(概览/店铺核算/客服池/消息轨迹/任务/日志/设置/登录)
    说明: 全部为模拟数据, 模块头部标注了迁移后对应的真实接口。
    ══════════════════════════════════════════════════════════════ */
@@ -1107,7 +1107,7 @@
     for (var i = 0; i < views.length; i++) views[i].classList.toggle('d-none', views[i].dataset.view !== name);
     var links = document.querySelectorAll('#sidebar .nav-link[data-page]');
     for (var j = 0; j < links.length; j++) links[j].classList.toggle('active', links[j].dataset.page === name);
-    document.title = PAGES[name].title + ' · 探域数据看板';
+    document.title = PAGES[name].title + ' · 统一数据看板';
     // 模块头部接口提示(迁移契约)
     var hintMap = { dashboard: 'dashApiHint', shops: 'shopsApiHint', staff: 'staffApiHint', trace: 'traceApiHint', tasks: 'tasksApiHint', logs: 'logsApiHint', settings: 'settingsApiHint' };
     Object.keys(hintMap).forEach(function (k) {

@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>登录 · 探域数据看板</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
+<title>登录 · 统一数据看板</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='2' width='28' height='28' rx='7' fill='%23066fd1'/%3E%3Crect x='9' y='17' width='3.5' height='8' rx='1' fill='%23fff'/%3E%3Crect x='14.5' y='12' width='3.5' height='13' rx='1' fill='%23fff'/%3E%3Crect x='20' y='7' width='3.5' height='18' rx='1' fill='%23fff'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -106,8 +106,8 @@
     <div class="bp-head">
       <span class="brand-logo" id="brandLogo"></span>
       <div>
-        <div class="t1">探域数据</div>
-        <div class="t2">TANYU DATA INTELLIGENCE</div>
+        <div class="t1">统一数据看板</div>
+        <div class="t2">UNIFIED DATA INTELLIGENCE</div>
       </div>
     </div>
 
@@ -149,8 +149,8 @@
     <div class="mobile-brand">
       <span class="brand-logo" id="mobileLogo"></span>
       <div>
-        <div class="fw-bold" style="font-size:1.05rem">探域数据</div>
-        <div class="text-secondary" style="font-size:.74rem">TANYU DATA INTELLIGENCE</div>
+        <div class="fw-bold" style="font-size:1.05rem">统一数据看板</div>
+        <div class="text-secondary" style="font-size:.74rem">UNIFIED DATA INTELLIGENCE</div>
       </div>
     </div>
 
@@ -200,7 +200,7 @@
           <label class="form-label">密码</label>
           <div class="field-wrap">
             <span class="field-icon" data-ic="lock"></span>
-            <input type="password" class="form-control" id="regPwd" placeholder="至少 6 位" autocomplete="new-password">
+            <input type="password" class="form-control" id="regPwd" placeholder="8 位以上, 含字母和数字" autocomplete="new-password">
           </div>
         </div>
         <div class="mb-3">
@@ -217,7 +217,7 @@
       </form>
 
       <div class="form-foot">
-        <span>会话凭据仅存于本机浏览器 · © 2026 探域数据</span>
+        <span>会话凭据仅存于本机浏览器 · © 2026 统一数据看板</span>
       </div>
     </div>
   </div>
@@ -323,7 +323,7 @@
     var password = $('regPwd').value;
     var password2 = $('regPwd2').value;
     if (!/^[A-Za-z0-9_.@-]{3,64}$/.test(username)) { showErr('regErr', '用户名需为 3~64 位字母/数字/下划线/@/.'); return false; }
-    if (password.length < 6) { showErr('regErr', '密码至少 6 位'); return false; }
+    if (password.length < 8 || !/[A-Za-z]/.test(password) || !/\d/.test(password)) { showErr('regErr', '密码需 8 位以上, 且同时包含字母和数字'); return false; }
     if (password !== password2) { showErr('regErr', '两次输入的密码不一致'); return false; }
     var btn = $('regBtn');
     setLoading(btn, true);
@@ -388,7 +388,7 @@
     var ctx = canvas.getContext('2d');
     var fctx = fx.getContext('2d');
     var W = 0, H = 0, DPR = 1;
-    var parts = [], glows = [], mouse = { x: -9999, y: -9999 }, raf = 0, running = true;
+    var parts = [], systems = [], mouse = { x: -9999, y: -9999 }, raf = 0, running = true;
     var M_R = 170;       // 鼠标推开半径
     var GRID = 44;       // 方格线间距(px)
     // 三层颗粒: 远景(暗) / 中景 / 近景(亮), 恒定亮度(不闪烁)
@@ -425,18 +425,88 @@
           a: LAYER_A[layer] * (0.9 + Math.random() * 0.3)
         });
       }
-      glows = [];
-      var gn = Math.max(6, Math.floor(W * H / 220000));
-      var GC = ['rgba(76,201,240,', 'rgba(139,124,246,', 'rgba(6,111,209,'];
-      for (var j = 0; j < gn; j++) {
-        glows.push({
-          x: Math.random() * W, y: Math.random() * H, ix: 0, iy: 0,
-          r: 8 + Math.random() * 14,
-          c: GC[j % GC.length] + (0.05 + Math.random() * 0.05).toFixed(3) + ')',
-          vx: (Math.random() - 0.5) * 0.06, vy: (Math.random() - 0.5) * 0.06
+      makeSystems();
+      paintAll();
+    }
+
+    // 恒星系: 金色恒星(脉动光晕) + 2~4 颗行星沿轨道公转
+    function makeSystems() {
+      systems = [];
+      var n = 1 + (Math.random() < 0.65 ? 1 : 0);   // 1~2 个恒星系
+      for (var i = 0; i < n; i++) {
+        // 位置偏向四周(避开中央登录区)
+        var x = (Math.random() < 0.5 ? W * (0.06 + Math.random() * 0.2) : W * (0.74 + Math.random() * 0.2));
+        var y = (Math.random() < 0.5 ? H * (0.08 + Math.random() * 0.18) : H * (0.74 + Math.random() * 0.18));
+        var planets = [];
+        var used = [];
+        var np = 2 + Math.floor(Math.random() * 3);   // 2~4 颗行星
+        for (var p = 0; p < np; p++) {
+          var dist = 20 + Math.random() * 48;         // 轨道半径
+          var ok = true;
+          for (var u = 0; u < used.length; u++) { if (Math.abs(used[u] - dist) < 14) ok = false; }
+          if (!ok) continue;
+          used.push(dist);
+          planets.push({
+            dist: dist,
+            size: 1.2 + Math.random() * 2.2,
+            color: ['#8aa0c4', '#6f8ab5', '#aab6cd', '#5f6a82', '#c9d4e8'][Math.floor(Math.random() * 5)],
+            speed: (0.15 + Math.random() * 0.3) * (Math.random() < 0.3 ? -1 : 1),  // 公转速度/方向随机
+            angle: Math.random() * Math.PI * 2
+          });
+        }
+        systems.push({
+          x: x, y: y,
+          r: 8 + Math.random() * 5,
+          vx: (Math.random() - 0.5) * 0.05, vy: (Math.random() - 0.5) * 0.05,   // 恒星缓慢漂移
+          planets: planets,
+          phase: Math.random() * Math.PI * 2
         });
       }
-      paintAll();
+    }
+
+    // 绘制恒星系(顶层画布, 每帧重画): 恒星光晕/亮核 + 轨道环 + 行星公转
+    function drawSystems() {
+      var tm = performance.now() / 1000;
+      var i, j, s, pl, px, py, pulse, g;
+      for (i = 0; i < systems.length; i++) {
+        s = systems[i];
+        s.x += s.vx; s.y += s.vy;
+        if (s.x < -30) s.x = W + 30; else if (s.x > W + 30) s.x = -30;
+        if (s.y < -30) s.y = H + 30; else if (s.y > H + 30) s.y = -30;
+        pulse = 0.82 + 0.18 * Math.sin(tm * 1.5 + s.phase);   // 恒星脉动
+        // 恒星光晕
+        g = fctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, s.r * 4.2);
+        g.addColorStop(0, 'rgba(255, 195, 125, ' + (0.15 * pulse).toFixed(3) + ')');
+        g.addColorStop(0.4, 'rgba(255, 165, 95, 0.055)');
+        g.addColorStop(1, 'rgba(255, 165, 95, 0)');
+        fctx.fillStyle = g;
+        fctx.fillRect(s.x - s.r * 4.2, s.y - s.r * 4.2, s.r * 8.4, s.r * 8.4);
+        // 行星轨道(极淡圆环)
+        for (j = 0; j < s.planets.length; j++) {
+          pl = s.planets[j];
+          fctx.strokeStyle = 'rgba(170, 185, 215, 0.06)';
+          fctx.lineWidth = 1;
+          fctx.beginPath();
+          fctx.arc(s.x, s.y, pl.dist, 0, Math.PI * 2);
+          fctx.stroke();
+        }
+        // 行星公转
+        for (j = 0; j < s.planets.length; j++) {
+          pl = s.planets[j];
+          pl.angle += pl.speed * 0.016;
+          px = s.x + Math.cos(pl.angle) * pl.dist;
+          py = s.y + Math.sin(pl.angle) * pl.dist;
+          fctx.fillStyle = pl.color;
+          fctx.globalAlpha = 0.75;
+          fctx.beginPath(); fctx.arc(px, py, pl.size, 0, Math.PI * 2); fctx.fill();
+        }
+        fctx.globalAlpha = 1;
+        // 恒星亮核(双层: 暖橙 + 高光)
+        fctx.fillStyle = 'rgba(255, 205, 135, ' + (0.92 * pulse).toFixed(3) + ')';
+        fctx.beginPath(); fctx.arc(s.x, s.y, s.r * 0.45, 0, Math.PI * 2); fctx.fill();
+        fctx.fillStyle = 'rgba(255, 225, 175, ' + (0.5 * pulse).toFixed(3) + ')';
+        fctx.beginPath(); fctx.arc(s.x, s.y, s.r * 0.22, 0, Math.PI * 2); fctx.fill();
+      }
     }
 
     // 顶层画布: 方格线(每帧重画)
@@ -565,7 +635,7 @@
       }
     }
 
-    // 一次性全量绘制(初始/窗口变化时): 底层颗粒 + 光斑
+    // 一次性全量绘制(初始/窗口变化时): 底层颗粒
     function paintAll() {
       ctx.clearRect(0, 0, W, H);
       var i, p, lastStyle = '';
@@ -576,21 +646,15 @@
         ctx.globalAlpha = p.a;
         ctx.fillRect(p.ix, p.iy, p.s, p.s);
       }
-      for (i = 0; i < glows.length; i++) {
-        var g = glows[i];
-        g.ix = Math.round(g.x); g.iy = Math.round(g.y);
-        ctx.globalAlpha = 1;
-        ctx.fillStyle = g.c;
-        ctx.beginPath(); ctx.arc(g.x, g.y, g.r, 0, Math.PI * 2); ctx.fill();
-      }
       ctx.globalAlpha = 1;
     }
 
     function step() {
       if (!running) return;
       drawGrid();       // 顶层: 方格线
-      drawRays();       // 顶层: 鼠标范围随机光线(池内渐隐)
-      var i, p, g, dx, dy, dd, dist, f;
+      drawSystems();    // 顶层: 恒星系(恒星光晕 + 行星公转)
+      drawRays();       // 顶层: 鼠标彗星(最上层)
+      var i, p, dx, dy, dd, dist, f;
       var mr2 = M_R * M_R;
       var lastStyle = '';
       for (i = 0; i < parts.length; i++) {
@@ -617,21 +681,7 @@
           ctx.fillRect(ix, iy, p.s, p.s);
         }
       }
-      // 光晕光斑漂移
-      for (i = 0; i < glows.length; i++) {
-        g = glows[i];
-        g.x += g.vx; g.y += g.vy;
-        if (g.x < -g.r) g.x = W + g.r; else if (g.x > W + g.r) g.x = -g.r;
-        if (g.y < -g.r) g.y = H + g.r; else if (g.y > H + g.r) g.y = -g.r;
-        var gx = Math.round(g.x), gy = Math.round(g.y);
-        if (gx !== g.ix || gy !== g.iy) {
-          ctx.clearRect(g.ix - g.r - 1, g.iy - g.r - 1, g.r * 2 + 2, g.r * 2 + 2);
-          g.ix = gx; g.iy = gy;
-        }
-        ctx.globalAlpha = 1;
-        ctx.fillStyle = g.c;
-        ctx.beginPath(); ctx.arc(g.x, g.y, g.r, 0, Math.PI * 2); ctx.fill();
-      }
+      // 光晕光斑已升级为恒星系(drawSystems 在顶层每帧绘制)
       ctx.globalAlpha = 1;
       raf = requestAnimationFrame(step);
     }

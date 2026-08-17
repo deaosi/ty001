@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>探域数据看板</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
+<title>统一数据看板</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='2' width='28' height='28' rx='7' fill='%23066fd1'/%3E%3Crect x='9' y='17' width='3.5' height='8' rx='1' fill='%23fff'/%3E%3Crect x='14.5' y='12' width='3.5' height='13' rx='1' fill='%23fff'/%3E%3Crect x='20' y='7' width='3.5' height='18' rx='1' fill='%23fff'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -85,6 +85,11 @@
   .staff-card:hover { border-color: var(--tblr-primary); box-shadow: 0 .25rem .75rem rgba(0,0,0,.08); }
   .staff-card .s-name { font-weight: 600; font-size: .9rem; }
   .staff-card .s-acct { font-size: .7rem; color: var(--tblr-secondary); font-family: ui-monospace, Consolas, monospace; }
+
+  /* 数据洞察: 小时热力图格子 + 覆盖日历首列吸顶 */
+  .heat-cell { width: 18px; height: 18px; border-radius: 3px; flex: none; }
+  .coverage-cell { width: 22px; height: 14px; border-radius: 3px; display: inline-block; }
+  .sticky-col { position: sticky; left: 0; background: var(--tblr-bg-surface); z-index: 1; border-right: 1px solid var(--tblr-border-color-translucent); }
 
   /* 店铺双行单元格 */
   .shop-cell .sc-name { font-weight: 600; font-size: .9rem; line-height: 1.3; cursor: pointer; text-decoration: none; }
@@ -178,13 +183,14 @@
       <h1 class="navbar-brand navbar-brand-autodark">
         <span class="brand-logo" id="brandLogo"></span>
         <span>
-          <span class="brand-name d-block">探域数据看板</span>
-          <span class="brand-sub">TANYU · 经营数据</span>
+          <span class="brand-name d-block">统一数据看板</span>
+          <span class="brand-sub">UNIFIED · 经营数据</span>
         </span>
       </h1>
       <div class="collapse navbar-collapse" id="sidebar-menu">
         <ul class="navbar-nav pt-lg-3">
           <li class="nav-item"><a class="nav-link" href="#/dashboard" data-page="dashboard"><span class="nav-link-icon" data-ic="layout"></span>概览</a></li>
+          <li class="nav-item"><a class="nav-link" href="#/insights" data-page="insights"><span class="nav-link-icon" data-ic="report"></span>数据洞察</a></li>
           <li class="nav-group-label">经营数据</li>
           <li class="nav-item"><a class="nav-link" href="#/shops" data-page="shops"><span class="nav-link-icon" data-ic="store"></span>店铺核算</a></li>
           <li class="nav-item"><a class="nav-link" href="#/staff" data-page="staff"><span class="nav-link-icon" data-ic="users"></span>客服账号池</a></li>
@@ -236,7 +242,12 @@
             <button class="icon-btn" data-bs-toggle="dropdown" title="通知" id="btnBell"></button>
             <div class="dropdown-menu dropdown-menu-end dropdown-menu-card" style="width:330px">
               <div class="card">
-                <div class="card-header"><h3 class="card-title">通知</h3></div>
+                <div class="card-header"><h3 class="card-title">通知</h3>
+                  <div class="card-actions ms-auto">
+                    <a href="#" class="small link-primary" onclick="app.notifyReadAll(event)">全部已读</a>
+                    <a href="#" class="small link-danger ms-2" onclick="app.notifyClearAll(event)">清空</a>
+                  </div>
+                </div>
                 <div class="list-group list-group-flush" id="bellList"><div class="list-group-item text-secondary small">加载中…</div></div>
               </div>
             </div>
@@ -285,8 +296,8 @@
               <div class="card-body p-4">
                 <div class="row align-items-center">
                   <div class="col">
-                    <div class="wc-title" id="welcomeTitle">👋 欢迎回来</div>
-                    <div class="wc-sub mt-1" id="welcomeSub">探域数据看板 · 经营数据一览</div>
+                    <div class="wc-title" id="welcomeTitle">欢迎回来</div>
+                    <div class="wc-sub mt-1" id="welcomeSub">统一数据看板 · 经营数据一览</div>
                     <div class="d-flex align-items-center gap-2 mt-2 flex-wrap" id="welcomeMeta"></div>
                   </div>
                   <div class="col-auto text-end">
@@ -300,11 +311,35 @@
               </div>
             </div>
 
+            <!-- 今日洞察摘要条(点击进数据洞察页) -->
+            <div class="card mt-1" id="insightStrip" style="display:none;cursor:pointer" onclick="location.hash='#/insights'">
+              <div class="card-body py-2 px-3">
+                <div class="d-flex align-items-center gap-3 flex-wrap" id="insightStripBody"></div>
+              </div>
+            </div>
+
             <!-- KPI 卡 -->
             <div class="row row-deck row-cards" id="overviewCards"></div>
 
             <!-- 平台经营指标 -->
             <div class="row row-cards mt-1" id="platformMetrics"></div>
+
+            <!-- 今日各平台(实时抓取, 按平台拆分展示) -->
+            <div class="row row-cards mt-1" id="todayPlatforms">
+              <div class="col-12">
+                <div class="card">
+                  <div class="card-header">
+                    <h3 class="card-title">今日各平台
+                      <span class="text-secondary" style="font-size:.72rem;font-weight:400" id="todayPlatMeta"></span>
+                    </h3>
+                    <div class="card-actions">
+                      <button class="btn btn-sm btn-primary" onclick="app.fetchTodayPlatforms()" id="btnFetchToday"><span class="me-1" data-ic="zap"></span>抓取今日数据</button>
+                    </div>
+                  </div>
+                  <div class="card-body" id="todayPlatBody"><span class="empty-hint">今日数据未抓取 — 点击右上角「抓取今日数据」实时抓取各平台当天消息量</span></div>
+                </div>
+              </div>
+            </div>
 
             <!-- 经营趋势(探域罗盘扩展: 平台销售额趋势) -->
             <div class="row row-cards mt-1">
@@ -410,6 +445,135 @@
                   <div class="card-header"><h3 class="card-title">快捷操作</h3></div>
                   <div class="card-body"><div class="row g-3" id="quickActions"></div></div>
                 </div>
+                <div class="card mt-2">
+                  <div class="card-header"><h3 class="card-title">常用店铺</h3><span class="text-secondary small ms-auto">点击进消息轨迹</span></div>
+                  <div class="card-body py-2" id="favShopsBox"></div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ═══════════ 数据洞察(自动日报 / 客服生物钟 / 数据完整性) ═══════════ -->
+          <section data-view="insights" class="d-none">
+            <div class="page-header d-print-none">
+              <div class="row align-items-center">
+                <div class="col-auto">
+                  <h2 class="page-title">数据洞察</h2>
+                  <div class="page-pretitle text-secondary">数据日报 · 客服活跃时段 · 抓取覆盖</div>
+                </div>
+                <div class="col-auto ms-auto"></div>
+              </div>
+            </div>
+
+            <div class="row row-cards">
+              <!-- 数据日报 -->
+              <div class="col-12">
+                <div class="card">
+                  <div class="card-header">
+                    <h3 class="card-title"><span class="me-1" data-ic="report" data-size="18"></span>数据日报</h3>
+                    <div class="card-actions">
+                      <div class="btn-group btn-group-sm" id="insightTabs">
+                        <button class="btn btn-outline-primary active" data-idays="1" onclick="app.insightDays(1)">昨日</button>
+                        <button class="btn btn-outline-primary" data-idays="3" onclick="app.insightDays(3)">近3天</button>
+                        <button class="btn btn-outline-primary" data-idays="7" onclick="app.insightDays(7)">近7天</button>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="card-body" id="insightList"><span class="empty-hint">加载中…</span></div>
+                </div>
+              </div>
+
+              <!-- 客服排行榜 -->
+              <div class="col-12">
+                <div class="card">
+                  <div class="card-header">
+                    <h3 class="card-title"><span class="me-1" data-ic="users" data-size="18"></span>客服排行榜</h3>
+                    <span class="text-secondary small ms-auto">按消息量与采纳率排序 · 同名客服跨店合并统计</span>
+                    <div class="card-actions ms-3">
+                      <select id="rankPlatSel" class="form-select form-select-sm" style="width:auto" onchange="app.renderRanking()"></select>
+                      <div class="btn-group btn-group-sm ms-2" id="rankTabs">
+                        <button class="btn btn-outline-primary active" data-rank="7" onclick="app.rankDays(7)">近7天</button>
+                        <button class="btn btn-outline-primary" data-rank="30" onclick="app.rankDays(30)">近30天</button>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="card-body" id="rankBox"><span class="empty-hint">加载中…</span></div>
+                </div>
+              </div>
+
+              <!-- 周期对比: 本周vs上周 / 本月vs上月 -->
+              <div class="col-12">
+                <div class="card">
+                  <div class="card-header">
+                    <h3 class="card-title"><span class="me-1" data-ic="activity" data-size="18"></span>周期对比</h3>
+                    <span class="text-secondary small ms-auto">逐店消息量/采纳率涨跌</span>
+                    <div class="card-actions ms-3">
+                      <select id="cmpPlatSel" class="form-select form-select-sm" style="width:auto" onchange="app.renderCompare()"></select>
+                      <div class="btn-group btn-group-sm ms-2" id="cmpTabs">
+                        <button class="btn btn-outline-primary active" data-cmp="week" onclick="app.cmpMode('week')">本周 vs 上周</button>
+                        <button class="btn btn-outline-primary" data-cmp="month" onclick="app.cmpMode('month')">本月 vs 上月</button>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="card-body">
+                    <div class="mb-2 small text-secondary" id="cmpSummary">加载中…</div>
+                    <div class="table-responsive" style="max-height:480px;overflow:auto">
+                      <table class="table table-sm table-vcenter">
+                        <thead><tr>
+                          <th>店铺</th><th class="text-end">本期消息量</th><th class="text-end">上期消息量</th>
+                          <th class="text-end">消息量变化</th><th class="text-end">本期采纳率</th><th class="text-end">上期采纳率</th>
+                          <th class="text-end">采纳率变化</th>
+                        </tr></thead>
+                        <tbody id="cmpBody"></tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 客服生物钟: 小时热力图 -->
+              <div class="col-12">
+                <div class="card">
+                  <div class="card-header">
+                    <h3 class="card-title"><span class="me-1" data-ic="heat" data-size="18"></span>消息小时分布</h3>
+                    <span class="text-secondary small ms-auto">24 小时 × N 天消息量分布, 颜色越深消息量越大</span>
+                    <div class="card-actions ms-3">
+                      <select id="heatPlatSel" class="form-select form-select-sm" style="width:auto" onchange="app.renderHeatmap()"></select>
+                      <div class="btn-group btn-group-sm ms-2" id="heatTabs">
+                        <button class="btn btn-outline-primary active" data-hdays="7" onclick="app.heatDays(7)">7天</button>
+                        <button class="btn btn-outline-primary" data-hdays="14" onclick="app.heatDays(14)">14天</button>
+                        <button class="btn btn-outline-primary" data-hdays="30" onclick="app.heatDays(30)">30天</button>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="card-body" id="heatmapBox"><span class="empty-hint">加载中…</span></div>
+                </div>
+              </div>
+
+              <!-- 数据完整性哨兵: 缺格日历 -->
+              <div class="col-12">
+                <div class="card">
+                  <div class="card-header">
+                    <h3 class="card-title"><span class="me-1" data-ic="shield" data-size="18"></span>抓取覆盖日历</h3>
+                    <span class="text-secondary small ms-auto">绿=该天已抓取(含0消息) 红=缺抓</span>
+                    <div class="card-actions ms-3">
+                      <select id="gridPlatSel" class="form-select form-select-sm" style="width:auto" onchange="app.renderCoverageGrid()"></select>
+                      <select id="gridDaysSel" class="form-select form-select-sm ms-2" style="width:auto" onchange="app.renderCoverageGrid()">
+                        <option value="7">7 天</option><option value="14">14 天</option>
+                        <option value="30" selected>30 天</option><option value="35">35 天</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="card-body">
+                    <div class="d-flex align-items-center gap-3 mb-2 flex-wrap" id="gridStats"></div>
+                    <div class="table-responsive" style="max-height:520px;overflow:auto">
+                      <table class="table table-sm table-vcenter" style="min-width:max-content">
+                        <thead id="gridHead"></thead>
+                        <tbody id="gridBody"></tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </section>
@@ -424,6 +588,7 @@
                 </div>
                 <div class="col-auto ms-auto">
                   <div class="btn-list">
+                    <button class="btn btn-outline-primary" id="btnImportExcel" style="display:none" onclick="app.importExcelPick()"><span class="me-1" data-ic="box"></span>导入 Excel</button>
                     <button class="btn btn-outline-primary" onclick="app.exportShops()"><span class="me-1" data-ic="download"></span>导出</button>
                     <button class="btn btn-primary" onclick="app.startAudit()"><span class="me-1" data-ic="play"></span>开始核算</button>
                   </div>
@@ -433,21 +598,38 @@
             <div class="card">
               <div class="card-header">
                 <div class="row g-2 align-items-center w-100">
-                  <div class="col-12 col-md-auto"><select id="shopsPlatform" class="form-select form-select-sm" onchange="app.renderShops()"></select></div>
+                  <div class="col-12 col-md-auto"><select id="shopsPlatform" class="form-select form-select-sm" onchange="app.applyPlatform(this.value)"></select></div>
                   <div class="col-12 col-md-auto">
-                    <select id="shopsRange" class="form-select form-select-sm" onchange="app.renderShops()">
+                    <select id="shopsRange" class="form-select form-select-sm" onchange="app.shopsRangeChange()">
                       <option value="yesterday" selected>昨日</option>
                       <option value="week">本周(自然周)</option>
                       <option value="month">本月(自然月)</option>
                       <option value="last7">近 7 天</option>
                       <option value="last30">近 30 天</option>
+                      <option value="day">按日…</option>
+                      <option value="weekpick">按周…</option>
+                      <option value="monthpick">按月…</option>
+                      <option value="custom">自定义区间…</option>
                     </select>
+                  </div>
+                  <div class="col-12 col-md-auto d-inline-flex align-items-center gap-1 flex-wrap" id="shopsRangeBox" style="display:none">
+                    <input type="date" id="shopsDay" class="form-control form-control-sm" style="width:auto;display:none" onchange="app.renderShops()">
+                    <select id="shopsWeek" class="form-select form-select-sm" style="width:auto;display:none" onchange="app.renderShops()"></select>
+                    <select id="shopsMonth" class="form-select form-select-sm" style="width:auto;display:none" onchange="app.renderShops()"></select>
+                    <input type="date" id="shopsStart" class="form-control form-control-sm" style="width:auto;display:none" onchange="app.renderShops()">
+                    <span class="text-secondary small" id="shopsRangeSep" style="display:none">~</span>
+                    <input type="date" id="shopsEnd" class="form-control form-control-sm" style="width:auto;display:none" onchange="app.renderShops()">
                   </div>
                   <div class="col-12 col-md">
                     <div class="input-icon">
                       <span class="input-icon-addon" data-ic="search"></span>
-                      <input type="search" class="form-control form-control-sm" id="shopsSearch" placeholder="搜索店铺名…" oninput="app.renderShopsTable()">
+                      <input type="search" class="form-control form-control-sm" id="shopsSearch" placeholder="搜索店铺名…" oninput="app.debouncedShops()">
                     </div>
+                  </div>
+                  <div class="col-12 col-md-auto">
+                    <select id="shopsTagFilter" class="form-select form-select-sm" onchange="app.renderShopsTable()">
+                      <option value="">全部店铺</option>
+                    </select>
                   </div>
                   <div class="col-12 col-md-auto text-md-end">
                     <div class="d-flex align-items-center gap-2 justify-content-md-end flex-wrap">
@@ -473,6 +655,7 @@
                   <tbody id="shopsBody"></tbody>
                 </table>
               </div>
+              <input type="file" id="importFile" accept=".xlsx" style="display:none" onchange="app.doImportExcel()">
               <div class="card-footer d-flex align-items-center">
                 <p class="m-0 text-secondary small" id="shopsFooter"></p>
                 <div class="ms-auto btn-list">
@@ -501,10 +684,10 @@
             <div class="card">
               <div class="card-header">
                 <div class="row g-2 align-items-center w-100">
-                  <div class="col-12 col-md-auto"><select id="staffPlatform" class="form-select form-select-sm" onchange="app.renderStaff()"></select></div>
+                  <div class="col-12 col-md-auto"><select id="staffPlatform" class="form-select form-select-sm" onchange="app.applyPlatform(this.value)"></select></div>
                   <div class="col-12 col-md-auto">
                     <select id="staffDays" class="form-select form-select-sm" onchange="app.renderStaff()">
-                      <option value="1">今天</option><option value="3">近 3 天</option>
+                      <option value="1">昨日</option><option value="3">近 3 天</option>
                       <option value="7" selected>近 7 天</option><option value="14">近 14 天</option>
                       <option value="30">近 30 天</option><option value="custom">自定义</option>
                     </select>
@@ -528,7 +711,7 @@
                   <div class="col-12 col-md">
                     <div class="input-icon">
                       <span class="input-icon-addon" data-ic="search"></span>
-                      <input type="search" class="form-control form-control-sm" id="staffSearch" placeholder="搜索客服昵称 / 账号 / 店铺…" oninput="app.renderStaffGrid()">
+                      <input type="search" class="form-control form-control-sm" id="staffSearch" placeholder="搜索客服昵称 / 账号 / 店铺…" oninput="app.debouncedStaff()">
                     </div>
                   </div>
                   <div class="col-12 col-md-auto">
@@ -544,6 +727,7 @@
                 </div>
               </div>
               <div class="card-body">
+                <div id="staffWarn"></div>
                 <div class="staff-grid" id="staffGrid"><span class="empty-hint">加载中…</span></div>
                 <div class="load-more-wrap" id="staffLoadMoreWrap" style="display:none">
                   <button class="btn btn-outline-primary btn-sm" id="staffLoadMore" onclick="app.staffLoadMore()"><span class="me-1" data-ic="plus"></span>加载更多</button>
@@ -572,9 +756,18 @@
                 <div class="row g-2 align-items-center w-100">
                   <div class="col-12 col-md-4"><select id="traceShop" class="form-select form-select-sm" onchange="app.renderTrace()"><option>加载中…</option></select></div>
                   <div class="col-12 col-md-auto">
-                    <select id="traceRange" class="form-select form-select-sm" onchange="app.renderTrace()">
+                    <select id="traceRange" class="form-select form-select-sm" onchange="app.traceRangeChange()">
                       <option value="7">近 7 天</option><option value="14">近 14 天</option><option value="30">近 30 天</option>
+                      <option value="day">按日…</option><option value="weekpick">按周…</option><option value="monthpick">按月…</option><option value="custom">自定义区间…</option>
                     </select>
+                  </div>
+                  <div class="col-12 col-md-auto d-inline-flex align-items-center gap-1 flex-wrap" id="traceRangeBox" style="display:none">
+                    <input type="date" id="traceDay" class="form-control form-control-sm" style="width:auto;display:none" onchange="app.renderTrace()">
+                    <select id="traceWeek" class="form-select form-select-sm" style="width:auto;display:none" onchange="app.renderTrace()"></select>
+                    <select id="traceMonth" class="form-select form-select-sm" style="width:auto;display:none" onchange="app.renderTrace()"></select>
+                    <input type="date" id="traceStart" class="form-control form-control-sm" style="width:auto;display:none" onchange="app.renderTrace()">
+                    <span class="text-secondary small" id="traceRangeSep" style="display:none">~</span>
+                    <input type="date" id="traceEnd" class="form-control form-control-sm" style="width:auto;display:none" onchange="app.renderTrace()">
                   </div>
                   <div class="col-12 col-md-auto ms-auto"><span class="text-secondary small" id="traceSummary"></span></div>
                 </div>
@@ -789,6 +982,36 @@
                   </div>
                 </div>
 
+                <div class="card" id="importCard" style="display:none">
+                  <div class="card-header">
+                    <h3 class="card-title">天猫数据导入(Excel)</h3>
+                    <span class="text-secondary small ms-auto">仅管理员 · 全量重传即替换</span>
+                  </div>
+                  <div class="card-body">
+                    <div class="text-secondary small mb-3">
+                      天猫1/天猫2 无 tanyu 抓取能力, 数据来自 RPA 生成的 Excel 文档。
+                      按模板填写后上传, <b>整份文件会替换该平台全部旧数据</b>(不是增量)。
+                    </div>
+                    <div class="row g-2 align-items-end mb-3">
+                      <div class="col-6">
+                        <label class="form-label">导入平台</label>
+                        <select class="form-select form-select-sm" id="importPlatSel">
+                          <option value="10">天猫1</option>
+                          <option value="11">天猫2</option>
+                        </select>
+                      </div>
+                      <div class="col-6">
+                        <button class="btn btn-outline-primary btn-sm w-100" onclick="app.downloadImportTemplate()"><span class="me-1" data-ic="download"></span>下载 Excel 模板</button>
+                      </div>
+                      <div class="col-12">
+                        <input type="file" id="importFile2" accept=".xlsx" style="display:none" onchange="app.doImportExcel('importFile2','importResultBox')">
+                        <button class="btn btn-primary btn-sm w-100" onclick="app.importExcelPick2()"><span class="me-1" data-ic="box"></span>选择 Excel 文档并导入</button>
+                      </div>
+                    </div>
+                    <div id="importResultBox" class="small"></div>
+                  </div>
+                </div>
+
                 <div class="card" id="dingtalkCard">
                   <div class="card-header"><h3 class="card-title">钉钉机器人</h3></div>
                   <div class="card-body" id="dingtalkBody">加载中…</div>
@@ -813,7 +1036,7 @@
               <div class="card-header"><h3 class="card-title">预留板块</h3><span class="text-secondary small ms-auto">更多功能将陆续开放</span></div>
               <div class="card-body">
                 <div class="empty" style="padding:2.5rem 0">
-                  <div class="empty-img text-secondary" style="font-size:2.6rem">🚧</div>
+                  <div class="empty-img text-secondary" style="font-size:2.6rem"><span data-ic="grid" data-size="40"></span></div>
                   <p class="empty-title">此板块为后续功能预留</p>
                   <p class="empty-subtitle text-secondary">报表导出、多店对比、趋势分析、预警通知等功能将在此开放</p>
                 </div>
@@ -853,7 +1076,7 @@
             </ul>
           </div>
           <div class="col-12 col-lg-auto mt-3 mt-lg-0">
-            <span class="text-secondary">© 2026 探域数据看板</span>
+            <span class="text-secondary">© 2026 统一数据看板</span>
           </div>
         </div>
       </div>
@@ -879,7 +1102,7 @@
           <select id="msgStSel" class="form-select form-select-sm" style="width:auto" title="按发送状态筛选" onchange="app.renderMsgList()">
             <option value="all">全部发送状态</option><option value="1">自动发送</option><option value="2">侧边栏点击</option><option value="3">编辑后发送</option><option value="0">未发送</option>
           </select>
-          <input type="search" id="msgKw" class="form-control form-control-sm" style="width:190px" placeholder="🔍 搜索消息内容…" oninput="app.renderMsgList()">
+          <input type="search" id="msgKw" class="form-control form-control-sm" style="width:190px" placeholder="搜索消息内容…" oninput="app.debouncedMsg()">
           <span class="text-secondary small ms-auto" id="msgCount"></span>
         </div>
         <!-- 消息列表(聊天气泡, 分批懒渲染) -->
@@ -936,7 +1159,7 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <script>
 /* ══════════════════════════════════════════════════════════════
-   探域数据看板 v2.0 · Tabler 框架级后台
+   统一数据看板 v2.0 · Tabler 框架级后台
    鉴权: localStorage tanyu_token(Bearer) + X-Client-Id/Name 头
    未登录/401 → 跳转 /login
    ══════════════════════════════════════════════════════════════ */
@@ -975,7 +1198,12 @@
     grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
     check: '<path d="m5 12 5 5L20 7"/>',
     scan: '<path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/>',
-    folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>'
+    folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
+    sparkles: '<path d="M12 3l1.7 4.6 4.6 1.7-4.6 1.7L12 15.6l-1.7-4.6-4.6-1.7 4.6-1.7Z"/><path d="M19 14l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8Z"/><path d="M5 16l.7 1.9 1.9.7-1.9.7-.7 1.9-.7-1.9-1.9-.7 1.9-.7Z"/>',
+    report: '<path d="M6 3h8l4 4v14H6Z"/><path d="M14 3v4h4"/><path d="M9 13h6M9 17h4"/>',
+    trend: '<path d="M4 19V5M4 19h16"/><path d="m7 14 3-4 3 3 4-6"/>',
+    tag: '<path d="M3 5v5.5L13.5 21a1.5 1.5 0 0 0 2.1 0l5-5a1.5 1.5 0 0 0 0-2.1L10.5 3H5a2 2 0 0 0-2 2Z"/><circle cx="7.5" cy="7.5" r="1.3" fill="currentColor" stroke="none"/>',
+    heat: '<path d="M4 20h16M6 16l3-5 3 3 3-7 3 9"/><path d="M4 20h16"/>'
   };
   function icon(name, size) {
     size = size || 24;
@@ -984,7 +1212,22 @@
 
   /* ---------- 工具 ---------- */
   function $(id) { return document.getElementById(id); }
+  /* 输入防抖: 停止输入 250ms 后才渲染(大列表/消息筛选免每键全量重渲染) */
+  function debounce(fn, ms) {
+    var t = null;
+    return function () {
+      var args = arguments, self = this;
+      if (t) clearTimeout(t);
+      t = setTimeout(function () { fn.apply(self, args); }, ms || 250);
+    };
+  }
+  var debouncedShops = debounce(function () { renderShopsTable(); });
+  var debouncedStaff = debounce(function () { renderStaffGrid(); });
+  var debouncedMsg = debounce(function () { renderMsgList(); });
   function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
+  /* 安全嵌入 onclick 属性: JSON 双引号串经 esc 往返后仍是合法 JS 字符串字面量,
+     HTML 属性实体二次解码不会破坏它(单引号在双引号串内安全) */
+  function jsStr(v) { return esc(JSON.stringify(v == null ? '' : String(v))); }
   function fmt(n) { return (n == null ? 0 : n).toLocaleString('zh-CN'); }
   function pct(n) { return (Number(n) == null ? 0 : Number(n)).toFixed(2) + '%'; }
   function rateCls(r) { r = Number(r) || 0; return r >= 70 ? 'rate-good' : r >= 40 ? 'rate-mid' : 'rate-bad'; }
@@ -1008,6 +1251,7 @@
   function showModal(id) {
     var el = $(id);
     if (!el) return;
+    if (el.classList.contains('show')) return;   // 已显示, 防止重复 backdrop
     el.classList.add('show');
     el.style.display = 'block';
     document.body.classList.add('modal-open');
@@ -1020,9 +1264,10 @@
   function hideModal(id) {
     var el = $(id);
     if (el) { el.classList.remove('show'); el.style.display = ''; }
-    var bd = document.querySelector('.modal-backdrop[data-for="' + id + '"]');
-    if (bd) bd.remove();
-    document.body.classList.remove('modal-open');
+    // 全量清除该 modal 的残留 backdrop(连点/异常时可能有多个)
+    var bds = document.querySelectorAll('.modal-backdrop[data-for="' + id + '"]');
+    for (var i = 0; i < bds.length; i++) bds[i].remove();
+    if (!document.querySelector('.modal-backdrop')) document.body.classList.remove('modal-open');
   }
   // 模态框内 [data-bs-dismiss="modal"] 按钮 + Esc 关闭(Tabler 未暴露 bootstrap)
   document.addEventListener('click', function (e) {
@@ -1039,8 +1284,10 @@
     }
   });
   function fmtTime(ts) {
-    if (!ts) return '';
-    var d = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts);
+    if (ts == null || ts === '') return '';
+    // 兼容数字/数字字符串 epoch(秒), 其余走 Date 解析
+    var n = Number(ts);
+    var d = (!isNaN(n) && String(ts).trim() !== '') ? new Date(n < 1e12 ? n * 1000 : n) : new Date(ts);
     if (isNaN(d.getTime())) return String(ts);
     return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
   }
@@ -1073,7 +1320,22 @@
     opts.headers = Object.assign(clientHeaders(), opts.headers || {});
     var token = localStorage.getItem('tanyu_token');
     if (token) opts.headers['Authorization'] = 'Bearer ' + token;
-    var resp = await fetch(url, opts);
+    // 30s 超时: 后端假死时不再永久"加载中"
+    var ctl = null;
+    if (typeof AbortController !== 'undefined') {
+      ctl = new AbortController();
+      var to = setTimeout(function () { ctl.abort(); }, 30000);
+      opts.signal = ctl.signal;
+    }
+    var resp;
+    try {
+      resp = await fetch(url, opts);
+    } catch (e) {
+      if (ctl && ctl.signal.aborted) throw new Error('请求超时(30s), 请稍后重试');
+      throw e;
+    } finally {
+      if (to) clearTimeout(to);
+    }
     if (resp.status === 401) { goLogin(); throw new Error('未登录或登录已过期'); }
     if (!resp.ok) {
       var msg = 'HTTP ' + resp.status;
@@ -1085,12 +1347,25 @@
   async function checkAuth() {
     var token = localStorage.getItem('tanyu_token');
     if (token) {
-      try {
-        var d = await api('/api/auth/me');
-        currentUser = d.user;
-        localStorage.setItem('tanyu_user', JSON.stringify(currentUser));
-        return true;
-      } catch (e) { if (authRedirecting) return false; }
+      for (var attempt = 1; attempt <= 3; attempt++) {
+        try {
+          var d = await api('/api/auth/me');
+          currentUser = d.user;
+          localStorage.setItem('tanyu_user', JSON.stringify(currentUser));
+          return true;
+        } catch (e) {
+          var msg = e && e.message ? String(e.message) : '';
+          // 网络/后端故障(非 401)≠未登录: 短暂等待后重试, 最多 3 次
+          if (msg.indexOf('401') !== 0 && msg.indexOf('未登录') < 0 && attempt < 3) {
+            await new Promise(function (r) { setTimeout(r, 1200 * attempt); });
+            continue;
+          }
+          if (!authRedirecting) goLogin();
+          return false;
+        }
+      }
+      if (!authRedirecting) goLogin();
+      return false;
     }
     goLogin();
     return false;
@@ -1099,6 +1374,7 @@
   /* ---------- 页面元信息 ---------- */
   var PAGES = {
     dashboard: { title: '概览', parent: '首页', icon: 'layout' },
+    insights:  { title: '数据洞察', parent: '首页', icon: 'report' },
     shops:     { title: '店铺核算', parent: '经营数据', icon: 'store' },
     staff:     { title: '客服账号池', parent: '经营数据', icon: 'users' },
     trace:     { title: '消息轨迹', parent: '经营数据', icon: 'message' },
@@ -1125,6 +1401,7 @@
   var adminUsersCache = [];
   var isAdmin = false;
   var rendered = {};
+  var pollTimer = null, tasksTimer = null;   // 全局轮询定时器(logout/页面隐藏时清理)
 
   /* ---------- 路由 ---------- */
   function route() {
@@ -1134,15 +1411,15 @@
     for (var i = 0; i < views.length; i++) views[i].classList.toggle('d-none', views[i].dataset.view !== name);
     var links = document.querySelectorAll('#sidebar .nav-link[data-page]');
     for (var j = 0; j < links.length; j++) links[j].classList.toggle('active', links[j].dataset.page === name);
-    document.title = PAGES[name].title + ' · 探域数据看板';
-    if (name !== 'login' && !rendered[name]) { rendered[name] = true; renderPage(name); }
-    if (name === 'dashboard') renderDashboard();
+    document.title = PAGES[name].title + ' · 统一数据看板';
+    if (name === 'dashboard') { if (!rendered.dashboard) { rendered.dashboard = true; renderDashboard(); } }
+    else if (name !== 'login' && !rendered[name]) { rendered[name] = true; renderPage(name); }
     window.scrollTo(0, 0);
     var sb = $('sidebar-menu');
     if (sb && sb.classList.contains('show')) sb.classList.remove('show');
   }
   function renderPage(name) {
-    var map = { dashboard: renderDashboard, shops: renderShops, staff: renderStaff, trace: renderTrace, tasks: renderTasks, logs: renderLogs, settings: renderSettings, more: renderMore };
+    var map = { dashboard: renderDashboard, insights: renderInsightsPage, shops: renderShops, staff: renderStaff, trace: renderTrace, tasks: renderTasks, logs: renderLogs, settings: renderSettings, more: renderMore };
     if (map[name]) map[name]();
   }
   function currentViewName() {
@@ -1151,6 +1428,25 @@
   }
 
   /* ---------- 平台 / 集团 ---------- */
+  /* 统一平台切换: 任意下拉(顶栏/店铺核算/客服池)变更都同步到 state + 全部下拉 +
+     清店铺勾选 + 重置轨迹门控 + 刷新当前视图。防止"页面内切了平台, 核算请求却用
+     旧全局平台"(startAudit 用 state.platform 发请求)。 */
+  function applyPlatform(val) {
+    state.platform = val || '';
+    clearShopsSel();          // 切平台清空店铺勾选(核算范围随平台重置)
+    traceShopPlatform = null; // 消息轨迹店铺下拉强制跟随新平台
+    var ts = $('topPlatformSel'); if (ts) ts.value = state.platform;
+    var ss = $('shopsPlatform'); if (ss) ss.value = state.platform;
+    var st = $('staffPlatform'); if (st) st.value = state.platform;
+    reloadCurrent();
+  }
+  /* 当前视图实际生效的平台(页面内下拉优先, 兜底全局): 核算/导出等发请求前用 */
+  function currentPlatform() {
+    var v = currentViewName();
+    var el = v === 'shops' ? $('shopsPlatform') : v === 'staff' ? $('staffPlatform') : null;
+    if (el && el.value) return el.value;
+    return state.platform;
+  }
   function fillPlatformSelect(sel, includeAll) {
     sel.innerHTML = (includeAll ? '<option value="">全部平台</option>' : '');
     var list = [];
@@ -1195,8 +1491,13 @@
     try {
       var d = await api('/api/groups/switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ group_id: groupId }) });
       toast('已切换到: ' + ((d.group && d.group.groupName) || groupId), 'success');
+      // 集团已变: 店铺/轨迹/勾选缓存全部失效, 强制重建
+      allShops = [];
+      traceShopPlatform = null;
+      state.selShops = {};
+      clearShopsSel();
       await loadGroups();
-      api('/api/shops/sync').then(function () { toast('店铺列表已同步', 'success'); }).catch(function (e) { toast('店铺同步失败: ' + e.message, 'danger'); });
+      api('/api/shops/sync', { method: 'POST' }).then(function () { toast('店铺列表已同步', 'success'); }).catch(function (e) { toast('店铺同步失败: ' + e.message, 'danger'); });
       reloadCurrent();
     } catch (e) {
       toast('切换失败: ' + e.message, 'danger');
@@ -1214,7 +1515,7 @@
     var h = now.getHours();
     var greet = h < 6 ? '凌晨好' : h < 9 ? '早上好' : h < 12 ? '上午好' : h < 14 ? '中午好' : h < 18 ? '下午好' : '晚上好';
     var uname = currentUser ? currentUser.username : '';
-    $('welcomeTitle').textContent = greet + ', ' + uname + ' 👋';
+    $('welcomeTitle').textContent = greet + ', ' + uname;
     $('welcomeDate').textContent = now.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
     // 当前集团 / 平台徽标
     var meta = [];
@@ -1231,6 +1532,7 @@
 
   async function renderDashboard() {
     renderWelcome();
+    renderFavShops();   // 同步渲染, 独立于下方异步流程(防中途异常导致不显示)
     // KPI 指标卡
     $('overviewCards').innerHTML = '<div class="col-12"><span class="empty-hint">加载中…</span></div>';
     try {
@@ -1277,11 +1579,53 @@
 
     drawPlatformCharts();
     drawSalesTrend();
+    renderTodayPlatforms();   // 今日各平台(上次抓取结果, 未抓则显示提示)
     renderGroupStatus();
     renderDbStatus();
     renderRecentTasks();
     renderActivity();
     renderQuickActions();
+    renderInsightStrip();
+    renderFavShops();
+  }
+  /* 首页常用店铺卡(收藏的店铺一键直达) */
+  function renderFavShops() {
+    var box = $('favShopsBox');
+    if (!box) return;
+    var favs = loadFavShops();
+    var ids = Object.keys(favs);
+    if (!ids.length) { box.innerHTML = '<span class="empty-hint">还没有收藏店铺 — 在「店铺核算」里点星标 ⭐ 收藏常用店铺</span>'; return; }
+    box.innerHTML = ids.map(function (id) {
+      var f = favs[id] || {};
+      var pfNum = Number(f.platform);
+      return '<div class="d-flex align-items-center gap-2 py-2" style="border-bottom:1px solid var(--tblr-border-color-translucent)">' +
+        '<span class="text-warning">★</span>' +
+        '<a href="#" class="link-primary small fw-semibold flex-fill" style="text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" onclick="event.preventDefault();app.viewShopTrace(' + jsStr(id) + ',' + jsStr(f.name || id) + ')">' + esc(f.name || id) + '</a>' +
+        (f.platform ? '<span>' + pfBadge(pfNum) + '</span>' : '') +
+        '<button class="btn btn-sm btn-ghost" onclick="app.shopDetail(' + jsStr(id) + ')">明细</button>' +
+        '<button class="btn btn-sm btn-ghost" onclick="app.toggleFavShop(' + jsStr(id) + ',' + jsStr(f.name || id) + ',' + jsStr(f.platform || '') + ')">✕</button></div>';
+    }).join('');
+  }
+  /* 首页洞察摘要条: 昨日日报前 4 条, 点击跳转数据洞察 */
+  async function renderInsightStrip() {
+    var strip = $('insightStrip');
+    if (!strip) return;
+    try {
+      var d = await api('/api/insights?days=1');
+      var items = (d.items || []).slice(0, 4);
+      if (!items.length) { strip.style.display = 'none'; return; }
+      var icMap = { danger: 'alert', warning: 'zap', success: 'check', info: 'activity' };
+      var lvMap = { danger: 'text-danger', warning: 'text-warning', success: 'text-success', info: 'text-secondary' };
+      var html = '<span class="fw-semibold small" style="flex:none"><span class="me-1" data-ic="report" data-size="15"></span>今日速览</span>' +
+        items.map(function (it) {
+          return '<span class="small ' + lvMap[it.level] + '" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:320px" title="' + esc(it.text.replace(/<[^>]+>/g, '')) + '">' +
+            it.text + '</span>';
+        }).join('<span class="text-secondary">·</span>') +
+        '<span class="small text-secondary ms-auto" style="flex:none">查看全部 →</span>';
+      strip.style.display = '';
+      strip.innerHTML = '<div class="d-flex align-items-center gap-3 flex-wrap" id="insightStripBody">' + html + '</div>';
+      paintIcons();
+    } catch (e) { strip.style.display = 'none'; }
   }
 
   /* 图表 + 平台指标(共用一次平台核算缓存拉取) */
@@ -1320,6 +1664,78 @@
         '<div class="text-secondary mt-1" style="font-size:.7rem">采纳 ' + fmt(r.adopted) + ' 条' + (range ? ' · ' + range : '') + '</div>' +
         '</div></div></div>';
     }).join('');
+  }
+  /* 今日各平台(实时抓取结果按平台拆分, 数据源 /api/trace/today/status) */
+  var todayPollTimer = null;
+  function todayPlatHtml(st) {
+    var body = $('todayPlatBody');
+    if (!body) return;
+    var res = (st && st.result) || {};
+    var by = res.byPlatform || {};
+    var keys = Object.keys(by);
+    var meta = $('todayPlatMeta');
+    if (!keys.length) {
+      body.innerHTML = '<span class="empty-hint">今日数据未抓取 — 点击右上角「抓取今日数据」实时抓取各平台当天消息量</span>';
+      if (meta) meta.textContent = '';
+      return;
+    }
+    var names = { 1: ['拼多多', 'bg-green-lt text-success'], 5: ['抖音', 'bg-cyan-lt text-cyan'], 7: ['京东', 'bg-red-lt text-danger'] };
+    body.innerHTML = '<div class="row row-cards g-3">' + keys.map(function (p) {
+      var v = by[p] || {};
+      var n = names[p] || ['平台 ' + p, 'bg-secondary-lt'];
+      var rate = v.total ? (v.adopted / v.total * 100) : 0;
+      var bar = rate >= 70 ? 'bg-success' : rate >= 40 ? 'bg-warning' : 'bg-danger';
+      return '<div class="col-md-4"><div class="card"><div class="card-body">' +
+        '<div class="d-flex justify-content-between align-items-center">' +
+        '<span class="pf-badge ' + n[1] + '">' + n[0] + '</span>' +
+        '<span class="text-secondary small">' + (v.shops || 0) + ' 家店铺</span></div>' +
+        '<div class="d-flex align-items-baseline justify-content-between mt-2">' +
+        '<div><div class="text-secondary" style="font-size:.7rem">今日消息量</div>' +
+        '<div class="fw-bold" style="font-size:1.3rem;font-variant-numeric:tabular-nums">' + fmt(v.total) + '</div></div>' +
+        '<div class="text-end"><div class="text-secondary" style="font-size:.7rem">采纳率</div>' + ratePill(rate) + '</div></div>' +
+        '<div class="progress mt-2" style="height:.4rem"><div class="progress-bar ' + bar + '" style="width:' + Math.min(100, rate) + '%"></div></div>' +
+        '<div class="text-secondary mt-1" style="font-size:.7rem">采纳 ' + fmt(v.adopted) + ' 条</div>' +
+        '</div></div></div>';
+    }).join('') + '</div>';
+    if (meta) meta.textContent = (st.running ? '抓取中… ' : '上次抓取 ') +
+      (res.startDate || '') + ' ' + (res.startTs || '00:00') + ' ~ ' + (res.endTs || '') + (res.live ? ' · 实时' : '');
+    paintIcons();
+  }
+  async function renderTodayPlatforms() {
+    var body = $('todayPlatBody');
+    if (!body) return;
+    try { todayPlatHtml(await api('/api/trace/today/status')); }
+    catch (e) { body.innerHTML = '<span class="empty-hint">今日数据加载失败: ' + esc(e.message) + '</span>'; }
+  }
+  async function fetchTodayPlatforms() {
+    var btn = $('btnFetchToday');
+    if (btn) { btn.disabled = true; btn.textContent = '抓取中…'; }
+    try {
+      var d = await api('/api/trace/today?mode=audit', { method: 'POST' });
+      if (d.status === 'queued' || d.status === 'running') {
+        toast(d.status === 'queued' ? '任务已排队(前面有任务在跑), 完成后自动刷新' : '已开始抓取今日数据, 完成后自动刷新', 'success');
+      } else {
+        toast('已发起抓取今日数据', 'success');
+      }
+      pollTodayResult();
+    } catch (e) {
+      toast('发起失败: ' + e.message, 'danger');
+      if (btn) { btn.disabled = false; btn.textContent = '抓取今日数据'; }
+    }
+  }
+  function pollTodayResult() {
+    if (todayPollTimer) clearInterval(todayPollTimer);
+    todayPollTimer = setInterval(async function () {
+      var st;
+      try { st = await api('/api/trace/today/status'); } catch (e) { return; }
+      todayPlatHtml(st);
+      if (!st.running) {
+        clearInterval(todayPollTimer); todayPollTimer = null;
+        var btn = $('btnFetchToday');
+        if (btn) { btn.disabled = false; btn.textContent = '抓取今日数据'; }
+        toast(st.error ? ('今日抓取失败: ' + st.error) : '今日数据已更新', st.error ? 'danger' : 'success');
+      }
+    }, 4000);
   }
   async function drawPlatformCharts() {
     var run = ++chartRun;
@@ -1471,7 +1887,7 @@
   function renderGroupStatus() {
     $('groupStatus').innerHTML = (groupsData && groupsData.groups ? groupsData.groups : []).map(function (g) {
       var cur = g.current ? badge('当前', 'bg-blue') : '';
-      var sw = g.current ? '' : '<button class="btn btn-sm btn-outline-primary" onclick="app.switchGroup(\'' + esc(g.groupId) + '\')">切换</button>';
+      var sw = g.current ? '' : '<button class="btn btn-sm btn-outline-primary" onclick="app.switchGroup(' + jsStr(g.groupId) + ')">切换</button>';
       return '<div class="platform-row">' + (g.ifEnable === false ? '<span class="status status-gray"></span>' : '<span class="status status-green"></span>') +
         '<div class="flex-fill"><div class="fw-semibold" style="font-size:.88rem">' + esc(g.groupName || g.groupId) + '</div>' +
         '<div class="text-secondary" style="font-size:.72rem">' + (g.platform != null ? pfBadge(g.platform) : '') + '</div></div>' +
@@ -1575,6 +1991,68 @@
     }).join('');
   }
 
+  /* ---------- 导入平台 Excel 文档(天猫1/2) ---------- */
+  function importExcelPick() { $('importFile').click(); }
+  function importExcelPick2() { $('importFile2').click(); }
+  async function doImportExcel(inputId, resultElId) {
+    inputId = inputId || 'importFile';
+    if (!isAdmin) { toast('仅管理员可导入 Excel 文档', 'danger'); return; }
+    var input = $(inputId);
+    var file = input.files && input.files[0];
+    if (!file) return;
+    // 平台: 设置页用下拉值; 店铺核算页用当前视图平台(导入平台 10/11 用之, 否则默认天猫1)
+    var plat;
+    var platSel = $('importPlatSel');
+    if (platSel && platSel.value) plat = Number(platSel.value);
+    else {
+      plat = Number(currentPlatform() || state.platform);
+      if (plat !== 10 && plat !== 11) plat = 10;
+    }
+    var fd = new FormData();
+    fd.append('file', file);
+    fd.append('platform', String(plat));
+    input.value = '';
+    toast('正在导入 ' + file.name + ' …');
+    try {
+      var r = await api('/api/import/trace', { method: 'POST', body: fd });
+      var w = r.warningCount || 0;
+      var summary = '平台' + (r.platformName || r.platform) + ' · ' + (r.shops || 0) + '店 ' + (r.days || 0) + '天 ' + (r.staff || 0) + '客服 ' + (r.kpis || 0) + '条KPI' + (w ? ' · ' + w + '条告警' : '');
+      toast('导入完成: ' + summary, 'success');
+      var box = resultElId ? $(resultElId) : null;
+      if (box) {
+        var warnHtml = '';
+        if (w) warnHtml = '<div class="text-danger mt-1">' + (r.warnings || []).slice(0, 10).map(function (x) { return esc(x); }).join('<br>') + (w > 10 ? '<br>… 共 ' + w + ' 条' : '') + '</div>';
+        box.innerHTML = '<div class="text-success">导入完成: ' + esc(summary) + '</div>' + warnHtml;
+      } else if (w) {
+        console.warn('导入告警:', (r.warnings || []).slice(0, 10));
+      }
+      renderShops();
+      renderStaff();
+    } catch (e) {
+      toast('导入失败: ' + e.message, 'danger');
+      var box2 = resultElId ? $(resultElId) : null;
+      if (box2) box2.innerHTML = '<div class="text-danger">导入失败: ' + esc(e.message) + '</div>';
+    }
+  }
+  /* 下载导入模板(带鉴权 fetch → blob) */
+  async function downloadImportTemplate() {
+    var platSel = $('importPlatSel');
+    var plat = (platSel && platSel.value) ? platSel.value : 10;
+    try {
+      var resp = await fetch('/api/import/template?platform=' + plat, {
+        headers: Object.assign(clientHeaders(), { 'Authorization': 'Bearer ' + (localStorage.getItem('tanyu_token') || '') })
+      });
+      if (!resp.ok) { var d = await resp.json().catch(function () { return {}; }); toast('模板下载失败: ' + (d.detail || resp.status), 'danger'); return; }
+      var blob = await resp.blob();
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = '天猫' + (plat === '10' ? '1' : '2') + '_导入模板.xlsx';
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast('模板已下载(含已登记店铺参考表)', 'success');
+    } catch (e) { toast('模板下载失败: ' + e.message, 'danger'); }
+  }
+
   /* ---------- 店铺核算 ---------- */
   /* 时间筛选与探域「数据罗盘」对齐: 统计口径(自然日/自然周/自然月) + 快捷区间
      (昨日/近7天/近30天)。区间计算与罗盘前端一致:
@@ -1598,16 +2076,126 @@
     }
     else if (rng === 'month') { start = iso(new Date(today.getFullYear(), today.getMonth(), 1)); end = iso(today); }
     else if (rng === 'last30') { start = iso(new Date(y.getTime() - 30 * 86400000)); end = iso(y); }
+    else if (rng === 'day' || rng === 'weekpick' || rng === 'monthpick' || rng === 'custom') {
+      var rd = pickRangeDates('shops', rng);
+      start = rd.start; end = rd.end;
+    }
     else { start = iso(new Date(y.getTime() - 7 * 86400000)); end = iso(y); }  // last7
     return { start: start, end: end };
   }
+
+  /* 核算周期切换: 显示/隐藏 日·周·月·自定义 控件并初始化默认值 */
+  function shopsRangeChange() {
+    toggleRangeControls('shops', $('shopsRange').value);
+    renderShops();
+  }
+  /* 通用: 周期控件显隐 + 默认值(prefix = 控件 id 前缀, 如 'shops'/'trace') */
+  function toggleRangeControls(prefix, rng) {
+    var box = $(prefix + 'RangeBox');
+    var isPick = rng === 'day' || rng === 'weekpick' || rng === 'monthpick' || rng === 'custom';
+    if (box) box.style.display = isPick ? '' : 'none';
+    $(prefix + 'Day').style.display = rng === 'day' ? '' : 'none';
+    $(prefix + 'Week').style.display = rng === 'weekpick' ? '' : 'none';
+    $(prefix + 'Month').style.display = rng === 'monthpick' ? '' : 'none';
+    $(prefix + 'Start').style.display = rng === 'custom' ? '' : 'none';
+    $(prefix + 'RangeSep').style.display = rng === 'custom' ? '' : 'none';
+    $(prefix + 'End').style.display = rng === 'custom' ? '' : 'none';
+    function iso(d) {
+      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    }
+    var y = new Date(Date.now() - 86400000);
+    if (rng === 'day' && !$(prefix + 'Day').value) $(prefix + 'Day').value = iso(y);
+    if (rng === 'weekpick' && !$(prefix + 'Week').options.length) fillWeekSelect(prefix + 'Week');
+    if (rng === 'monthpick' && !$(prefix + 'Month').options.length) fillMonthSelect(prefix + 'Month');
+    if (rng === 'custom') {
+      if (!$(prefix + 'Start').value) $(prefix + 'Start').value = iso(new Date(Date.now() - 7 * 86400000));
+      if (!$(prefix + 'End').value) $(prefix + 'End').value = iso(y);
+    }
+  }
+  /* 通用: 自定义周期 → 起止日期 */
+  function pickRangeDates(prefix, rng) {
+    function iso(d) {
+      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    }
+    var today = new Date();
+    var y = new Date(today.getTime() - 86400000);
+    var start, end;
+    if (rng === 'day') {
+      var dv = $(prefix + 'Day').value || iso(y);
+      start = dv; end = dv;
+    }
+    else if (rng === 'weekpick') {
+      var wv = $(prefix + 'Week').value;
+      if (wv && wv.indexOf('|') > 0) { start = wv.split('|')[0]; end = wv.split('|')[1]; }
+      else {
+        var monday = new Date(today);
+        monday.setDate(today.getDate() - ((today.getDay() + 6) % 7));
+        start = iso(monday); end = iso(today);
+      }
+    }
+    else if (rng === 'monthpick') {
+      var mv = $(prefix + 'Month').value;
+      if (mv) {
+        var yy = +mv.split('-')[0], mm = +mv.split('-')[1];
+        var lastDay = new Date(yy, mm, 0).getDate();
+        start = mv + '-01';
+        var me = new Date(yy, mm - 1, lastDay);
+        if (me > y) me = y;
+        end = iso(me);
+      } else { start = iso(new Date(today.getFullYear(), today.getMonth(), 1)); end = iso(today); }
+    }
+    else if (rng === 'custom') {
+      var cs = $(prefix + 'Start').value, ce = $(prefix + 'End').value;
+      if (cs && ce) { start = cs; end = ce; }
+      else { start = iso(new Date(y.getTime() - 7 * 86400000)); end = iso(y); }
+    }
+    return { start: start, end: end };
+  }
+  /* 通用: 周下拉(本周 + 可回溯历史周) */
+  function fillWeekSelect(selId) {
+    api('/api/history/weeks').then(function (d) {
+      var sel = $(selId);
+      var weeks = d.weeks || [];
+      function iso2(dd) {
+        return dd.getFullYear() + '-' + String(dd.getMonth() + 1).padStart(2, '0') + '-' + String(dd.getDate()).padStart(2, '0');
+      }
+      var today = new Date();
+      var monday = new Date(today);
+      monday.setDate(today.getDate() - ((today.getDay() + 6) % 7));
+      var html = '<option value="' + iso2(monday) + '|' + iso2(today) + '">本周(' + iso2(monday) + ' ~ ' + iso2(today) + ')</option>';
+      weeks.forEach(function (w) {
+        html += '<option value="' + w.start + '|' + w.end + '">' + (w.label || (w.start + ' ~ ' + w.end)) + '</option>';
+      });
+      sel.innerHTML = html;
+    }).catch(function () {});
+  }
+  /* 通用: 月下拉(最近 12 个自然月) */
+  function fillMonthSelect(selId) {
+    var sel = $(selId);
+    var today = new Date();
+    var html = '';
+    for (var i = 0; i < 12; i++) {
+      var m = new Date(today.getFullYear(), today.getMonth() - i, 1);
+      var key = m.getFullYear() + '-' + String(m.getMonth() + 1).padStart(2, '0');
+      html += '<option value="' + key + '">' + m.getFullYear() + ' 年 ' + (m.getMonth() + 1) + ' 月</option>';
+    }
+    sel.innerHTML = html;
+  }
+  var shopsRun = 0;
   async function renderShops() {
+    var run = ++shopsRun;
+    refreshTagFilter();
     var body = $('shopsBody');
     body.innerHTML = '<tr><td colspan="7" class="text-center empty-hint py-4">加载中…</td></tr>';
     var rng = $('shopsRange').value, pf = $('shopsPlatform').value || state.platform;
+    // 导入平台(天猫1/2)且管理员才显示"导入 Excel"入口
+    var pfNum = Number(pf);
+    var btnImp = $('btnImportExcel');
+    if (btnImp) btnImp.style.display = (isAdmin && (pfNum === 10 || pfNum === 11)) ? '' : 'none';
     var rd = shopsRangeDates(rng);
     try {
       var d = await api('/api/trace/overview?start=' + rd.start + '&end=' + rd.end + '&platform=' + (pf || '') + '&from_cache=1');
+      if (run !== shopsRun) return;   // 已有更新的渲染, 丢弃本次
       var res = d.result;
       if (!res || !res.shopList) {
         body.innerHTML = '<tr><td colspan="7" class="text-center empty-hint py-4">该平台/区间暂无核算缓存, 点击右上角"开始核算"生成</td></tr>';
@@ -1632,19 +2220,31 @@
       updateShopsSelUI();
       $('shopsSummary').textContent = (res.startDate || '') + ' ~ ' + (res.endDate || '') + ' · 共 ' + fmt(res.total || 0) + ' 条 · 采纳率 ' + pct(res.rate || 0);
     } catch (e) {
+      if (run !== shopsRun) return;   // 过期请求的错误也丢弃
       body.innerHTML = '<tr><td colspan="7" class="text-center empty-hint py-4">加载失败: ' + esc(e.message) + '</td></tr>';
     }
   }
   function renderShopsTable() {
     var kw = ($('shopsSearch').value || '').trim().toLowerCase();
-    var list = shopsCache.filter(function (s) { return !kw || s.name.toLowerCase().includes(kw); });
+    var tagFilter = ($('shopsTagFilter') || {}).value || '';
+    var favs = loadFavShops(), tags = loadShopTags();
+    var list = shopsCache.filter(function (s) {
+      if (kw && !s.name.toLowerCase().includes(kw)) return false;
+      if (tagFilter === '_fav' && !favs[s.id]) return false;
+      if (tagFilter === '_none' && (tags[s.id] || []).length) return false;
+      if (tagFilter && tagFilter.indexOf('_') !== 0 && (tags[s.id] || []).indexOf(tagFilter) < 0) return false;
+      return true;
+    });
     var key = state.shopsSort.key, dir = state.shopsSort.dir;
     list.sort(function (a, b) {
+      // 收藏店铺恒置顶
+      var fa = favs[a.id] ? 0 : 1, fb = favs[b.id] ? 0 : 1;
+      if (fa !== fb) return fa - fb;
       var va = key === 'name' ? a.name : a[key], vb = key === 'name' ? b.name : b[key];
       if (va < vb) return -1 * dir; if (va > vb) return 1 * dir; return 0;
     });
     var pages = Math.max(1, Math.ceil(list.length / state.shopsPageSize));
-    state.shopsPage = Math.min(state.shopsPage, pages);
+    state.shopsPage = Math.max(1, Math.min(state.shopsPage, pages));
     var start = (state.shopsPage - 1) * state.shopsPageSize;
     var page = list.slice(start, start + state.shopsPageSize);
     $('shopsFooter').textContent = '第 ' + state.shopsPage + ' / ' + pages + ' 页 · 共 ' + list.length + ' 家';
@@ -1652,21 +2252,80 @@
     $('shopsBody').innerHTML = page.map(function (s) {
       var rate = s.rate || 0;
       var rateBar = rate >= 70 ? 'bg-success' : rate >= 40 ? 'bg-warning' : 'bg-danger';
+      var fav = favs[s.id];
+      var star = fav ? '★' : '☆';
+      var starCls = fav ? 'text-warning' : 'text-secondary';
+      var sTags = (tags[s.id] || []).map(function (t) {
+        return '<span class="badge bg-purple-lt text-purple" style="font-size:.6rem;cursor:pointer" onclick="event.stopPropagation();app.editShopTags(' + jsStr(s.id) + ',' + jsStr(s.name) + ')">' + esc(t) + '</span>';
+      }).join(' ');
       return '<tr>' +
         '<td><label class="shop-check" title="勾选用于核算所选店铺" onclick="event.stopPropagation()">' +
         '<input type="checkbox" class="shop-sel" value="' + esc(s.id) + '"' + (state.selShops[s.id] ? ' checked' : '') +
         ' onchange="app.toggleShopSel(this.value,this.checked)"></label></td>' +
-        '<td><div class="shop-cell"><a href="#" class="sc-name link-primary" onclick="event.preventDefault();event.stopPropagation();app.shopDetail(\'' + esc(s.id) + '\')">' + esc(s.name) + '</a>' + (s.id ? '<div class="sc-id">' + esc(s.id) + '</div>' : '') + '</div></td>' +
+        '<td><div class="shop-cell">' +
+        '<span class="' + starCls + '" style="cursor:pointer;font-size:.95rem" title="' + (fav ? '取消收藏' : '收藏常用店铺') + '" onclick="event.stopPropagation();app.toggleFavShop(' + jsStr(s.id) + ',' + jsStr(s.name) + ',' + jsStr(s.platform || '') + ')">' + star + '</span> ' +
+        '<a href="#" class="sc-name link-primary" onclick="event.preventDefault();event.stopPropagation();app.shopDetail(' + jsStr(s.id) + ')">' + esc(s.name) + '</a>' +
+        '<span class="ms-1">' + sTags + '</span>' + (s.id ? '<div class="sc-id">' + esc(s.id) + '</div>' : '') + '</div></td>' +
         '<td>' + (s.platformName ? esc(s.platformName) : pfBadge(s.platform)) + '</td>' +
         '<td class="text-end fw-semibold">' + fmt(s.total) + '</td>' +
         '<td class="text-end">' + fmt(s.adopted) + '</td>' +
         '<td class="text-end"><div class="rate-cell">' + ratePill(rate) +
         '<div class="progress"><div class="progress-bar ' + rateBar + '" style="width:' + Math.min(100, rate) + '%"></div></div></div></td>' +
         '<td class="text-end"><div class="btn-list justify-content-end">' +
-        '<button class="btn btn-sm btn-ghost" onclick="app.shopDetail(\'' + esc(s.id) + '\')">明细</button>' +
-        '<button class="btn btn-sm btn-ghost" onclick="app.viewShopTrace(\'' + esc(s.id) + '\',\'' + esc(s.name) + '\')">轨迹</button></div></td></tr>';
+        '<button class="btn btn-sm btn-ghost" onclick="app.shopDetail(' + jsStr(s.id) + ')">明细</button>' +
+        '<button class="btn btn-sm btn-ghost" onclick="app.viewShopTrace(' + jsStr(s.id) + ',' + jsStr(s.name) + ')">轨迹</button>' +
+        '<button class="btn btn-sm btn-ghost" onclick="app.editShopTags(' + jsStr(s.id) + ',' + jsStr(s.name) + ')" title="店铺标签分组"><span data-ic="tag" data-size="14"></span></button></div></td></tr>';
     }).join('');
     updateShopsSelUI();
+  }
+
+  /* ---------- 常用店铺收藏 + 店铺标签(本地存储, 按用户) ---------- */
+  function loadFavShops() {
+    try { return JSON.parse(localStorage.getItem('tanyu_fav_shops') || '{}'); } catch (e) { return {}; }
+  }
+  function saveFavShops(f) {
+    try { localStorage.setItem('tanyu_fav_shops', JSON.stringify(f)); } catch (e) {}
+  }
+  function loadShopTags() {
+    try { return JSON.parse(localStorage.getItem('tanyu_shop_tags') || '{}'); } catch (e) { return {}; }
+  }
+  function saveShopTags(t) {
+    try { localStorage.setItem('tanyu_shop_tags', JSON.stringify(t)); } catch (e) {}
+  }
+  function toggleFavShop(id, name, platform) {
+    var f = loadFavShops();
+    if (f[id]) { delete f[id]; toast('已取消收藏: ' + name); }
+    else { f[id] = { name: name || id, platform: platform || '' }; toast('已收藏 ' + name); }
+    saveFavShops(f);
+    renderShopsTable();
+    if (currentViewName() === 'dashboard') renderFavShops();
+  }
+  function editShopTags(id, name) {
+    var tags = loadShopTags();
+    var cur = (tags[id] || []).join(', ');
+    var v = prompt('为店铺「' + name + '」设置标签(逗号分隔, 如: 重点店, 新店):', cur);
+    if (v === null) return;
+    var list = v.split(/[,，;；]/).map(function (x) { return x.trim(); }).filter(Boolean);
+    if (list.length) tags[id] = list; else delete tags[id];
+    saveShopTags(tags);
+    refreshTagFilter();
+    renderShopsTable();
+  }
+  /* 标签筛选下拉选项(从全部店铺标签去重生成) */
+  function refreshTagFilter() {
+    var sel = $('shopsTagFilter');
+    if (!sel) return;
+    var prev = sel.value;
+    var all = {};
+    Object.keys(loadShopTags()).forEach(function (sid) {
+      (loadShopTags()[sid] || []).forEach(function (t) { all[t] = true; });
+    });
+    var names = Object.keys(all).sort();
+    var html = '<option value="">全部店铺</option><option value="_fav">已收藏</option>' +
+      names.map(function (t) { return '<option value="' + esc(t) + '">' + esc(t) + '</option>'; }).join('') +
+      '<option value="_none">未设标签</option>';
+    sel.innerHTML = html;
+    if (prev) sel.value = prev;
   }
 
   /* ---------- 核算店铺勾选(旧版"核算所选"功能) ---------- */
@@ -1711,10 +2370,12 @@
     if (state.shopsSort.key === key) state.shopsSort.dir *= -1; else state.shopsSort = { key: key, dir: -1 };
     renderShopsTable();
   }
-  function shopsPage(d) { state.shopsPage += d; renderShopsTable(); }
+  function shopsPage(d) { state.shopsPage = Math.max(1, state.shopsPage + d); renderShopsTable(); }
 
   /* 店铺明细弹窗(参考旧看板抽屉: 汇总 + 按日趋势图 + 明细表) */
+  var shopDetailRun = 0;
   async function shopDetail(id) {
+    var run = ++shopDetailRun;
     var s = shopsCache.find(function (x) { return x.id === id; });
     var shopName = s ? s.name : id;
     $('mShopTitle').textContent = shopName;
@@ -1724,6 +2385,7 @@
     showModal('mShopDetail');
     try {
       var d = await api('/api/trace/shop/' + encodeURIComponent(id) + '?days=7');
+      if (run !== shopDetailRun) return;   // 已打开其他店铺明细, 丢弃本次
       var stat = d.stat || {};
       var daily = stat.daily || [];
       var rate = stat.total ? (stat.adopted / stat.total * 100) : 0;
@@ -1734,7 +2396,7 @@
         '<span class="text-secondary small">采纳条数 <b class="text-body">' + fmt(stat.adopted || 0) + '</b></span>' +
         '<span class="text-secondary small">采纳率 <b class="text-body">' + pct(rate) + '</b></span>' +
         '<span class="text-secondary small">区间 <b class="text-body">' + ((stat.startDate || d.startDate) + ' ~ ' + (stat.endDate || d.endDate)) + '</b></span>' +
-        '<button class="btn btn-sm btn-outline-primary ms-auto" onclick="app.viewShopTraceFromModal(\'' + esc(id) + '\',\'' + esc(shopName) + '\')">查看消息轨迹</button></div>';
+        '<button class="btn btn-sm btn-outline-primary ms-auto" onclick="app.viewShopTraceFromModal(' + jsStr(id) + ',' + jsStr(shopName) + ')">查看消息轨迹</button></div>';
       // 罗盘扩展: 销售额趋势(近7天) + 客服经营汇总
       var trend = null, salesHtml = '', csHtml = '';
       try {
@@ -1791,7 +2453,8 @@
       if (daily.length && window.Chart) drawShopDetailChart(daily);
       if ($('mShopSalesChart') && window.Chart && trend) drawShopSalesChart(trend);
     } catch (e) {
-      $('mShopBody').innerHTML = '<div class="empty-hint py-4 text-center">加载失败: ' + esc(e.message) + '<br><button class="btn btn-sm btn-outline-primary mt-3" onclick="app.shopDetail(\'' + esc(id) + '\')">重试</button></div>';
+      if (run !== shopDetailRun) return;   // 过期请求的错误也丢弃
+      $('mShopBody').innerHTML = '<div class="empty-hint py-4 text-center">加载失败: ' + esc(e.message) + '<br><button class="btn btn-sm btn-outline-primary mt-3" onclick="app.shopDetail(' + jsStr(id) + ')">重试</button></div>';
     }
   }
   function drawShopSalesChart(trend) {
@@ -1865,12 +2528,15 @@
     var rows = [['店铺', '平台', '消息总条数', '采纳条数', '采纳率']].concat(shopsCache.map(function (s) {
       return [s.name, s.platformName || s.platform, s.total, s.adopted, s.rate.toFixed(2) + '%'];
     }));
-    downloadCSV('店铺核算_' + (state.platform || '全部') + '.csv', rows);
+    downloadCSV('店铺核算_' + (currentPlatform() || '全部') + '.csv', rows);
   }
 
   /* ---------- 客服账号池 ---------- */
+  var staffRun = 0;
   async function renderStaff() {
+    var run = ++staffRun;
     $('staffGrid').innerHTML = '<span class="empty-hint">加载中…</span>';
+    var wb = $('staffWarn'); if (wb) wb.innerHTML = '';
     // 今日抓取结束时刻默认当前时间(秒级)
     if ($('staffTodayEnd') && !$('staffTodayEnd').value) {
       var now = new Date();
@@ -1892,6 +2558,7 @@
       : ('days=' + (daysSel ? daysSel.value : '7'));
     try {
       var d = await api('/api/trace/staff?' + q + '&platform=' + (pf || ''));
+      if (run !== staffRun) return;   // 已有更新的渲染, 丢弃本次
       staffCache = (d.byStaff || []).map(function (x) {
         return {
           name: (x.nick || x.name) || x.accountShort || x.account || '?',
@@ -1904,11 +2571,30 @@
       });
       renderStaffGrid();
       var range = (d.startDate || '') + ' ~ ' + (d.endDate || '');
+      var warn = '';
+      if (d.coverage === 'partial') {
+        // 数据不全提示: 缺天明细(夜间抓取失败/新店未补历史等)
+        var days = d.missingDays || {};
+        var dl = Object.keys(days);
+        var cnt = d.missingCount != null ? d.missingCount : (dl.length ? Object.keys(days).length : 0);
+        warn = '<div class="alert alert-warning py-2 px-3 mt-2 mb-0" style="font-size:.78rem">' +
+          '<b>数据可能不全:</b> 区间内部分店铺/天未抓取' +
+          (dl.length ? ' · 缺 ' + dl.join(', ') : '') +
+          (cnt ? ' · 约缺 ' + cnt + ' 店天' : '') +
+          (d.coveredFrom ? ' · 实际覆盖 ' + d.coveredFrom + ' ~ ' + d.coveredTo : '') +
+          '。可在「系统设置 → 手动补抓数据」补抓。</div>';
+      } else if (d.coverage === 'none') {
+        warn = '<div class="alert alert-warning py-2 px-3 mt-2 mb-0" style="font-size:.78rem">' +
+          '<b>该区间数据未抓取:</b> 可在「系统设置 → 手动补抓数据」补抓后查看。</div>';
+      }
+      $('staffWarn').innerHTML = warn;
       $('staffSummary').textContent = '共 ' + staffCache.length + ' 人' + (range ? ' · ' + range : '');
       var badgeEl = $('staffRangeBadge');
       if (badgeEl) { badgeEl.style.display = range ? '' : 'none'; badgeEl.textContent = '数据范围 ' + range; }
     } catch (e) {
+      if (run !== staffRun) return;   // 过期请求的错误也丢弃
       $('staffGrid').innerHTML = '<span class="empty-hint">加载失败: ' + esc(e.message) + '</span>';
+      var wb = $('staffWarn'); if (wb) wb.innerHTML = '';
     }
   }
 
@@ -1955,7 +2641,7 @@
         '<div class="drow"><span>采纳条数</span><b>' + fmt(x.adopted) + '</b></div>' +
         '<div class="drow"><span>采纳占比</span><b>' + pct(x.total ? x.adopted / x.total * 100 : 0) + '</b></div>';
     };
-    return '<div class="staff-chip' + zeroCls + '" onclick="app.toggleStaffChip(this,\'' + seqKey + '\')" title="点击展开占比明细">' +
+    return '<div class="staff-chip' + zeroCls + '" onclick="app.toggleStaffChip(this,' + jsStr(seqKey) + ')" title="点击展开占比明细">' +
       '<div class="staff-chip-top">' +
       '<span class="staff-avatar" style="background:' + av + '">' + esc(initial) + '</span>' +
       '<span class="staff-chip-name"><span class="sc-n">' + esc(x.name) + '</span><span class="sc-a">' + esc(x.acct) + '</span></span>' +
@@ -2056,40 +2742,64 @@
     var rows = [['客服', '账号', '店铺', '消息总条数', '采纳数', '采纳率']].concat(staffCache.map(function (x) {
       return [x.name, x.acct, x.shop, x.total, x.adopted, x.rate.toFixed(2) + '%'];
     }));
-    downloadCSV('客服账号池_' + (state.platform || '全部') + '.csv', rows);
+    downloadCSV('客服账号池_' + (currentPlatform() || '全部') + '.csv', rows);
   }
 
   /* ---------- 消息轨迹 ---------- */
-  async function loadTraceShops() {
+  var traceShopPlatform = null;   // 下拉当前对应的平台(平台切换后强制重建)
+  async function loadTraceShops(force) {
     var sel = $('traceShop');
-    if (sel && sel.options.length > 1) return;  // 已填充过, 不再重建(避免重置用户选择)
-    if (allShops.length) { fillTraceShopSelect(); return; }
-    try {
-      var d = await api('/api/shops');
-      allShops = d.shops || [];
-      fillTraceShopSelect();
-    } catch (e) {}
+    // 已按当前平台填充过则不重建(避免重置用户选择); 平台变化时强制重建
+    if (!force && traceShopPlatform === state.platform && sel && sel.options.length > 1) return;
+    if (!allShops.length) {
+      try {
+        var d = await api('/api/shops');
+        allShops = d.shops || [];
+      } catch (e) {}
+    }
+    fillTraceShopSelect();
   }
   function fillTraceShopSelect() {
     var sel = $('traceShop');
-    var prev = sel.value;  // 保留当前选择(联动跳转/用户选择)
-    sel.innerHTML = '<option value="">选择店铺…</option>' + allShops.map(function (s) {
+    var prev = sel.value;  // 保留当前选择(若仍属于当前平台)
+    // 店铺下拉跟随平台: 只显示当前平台的店铺
+    var list = allShops.filter(function (s) {
+      return !state.platform || String(s.platform) === String(state.platform);
+    });
+    sel.innerHTML = '<option value="">选择店铺…</option>' + list.map(function (s) {
       return '<option value="' + esc(s.thirdShopId) + '">' + esc(s.shopName || s.thirdShopId) + '</option>';
     }).join('');
     if (prev && Array.prototype.some.call(sel.options, function (o) { return o.value === prev; })) {
       sel.value = prev;
     }
+    traceShopPlatform = state.platform;
   }
+  /* 消息轨迹周期切换(与店铺核算同款控件) */
+  function traceRangeChange() {
+    toggleRangeControls('trace', $('traceRange').value);
+    renderTrace();
+  }
+  var traceRun = 0;
   async function renderTrace() {
+    var run = ++traceRun;
     var sel = $('traceShop');
     await loadTraceShops();
+    if (run !== traceRun) return;   // 期间又发起了新的渲染
     var id = sel.value;
     $('traceBody').innerHTML = '<tr><td colspan="5" class="text-center empty-hint py-4">' + (id ? '加载中…' : '请先选择店铺') + '</td></tr>';
     $('traceSummary').textContent = '';
     if (!id) return;
     var rng = $('traceRange').value;
+    var q;
+    if (rng === '7' || rng === '14' || rng === '30') {
+      q = 'days=' + rng;
+    } else {
+      var rd = pickRangeDates('trace', rng);
+      q = 'start=' + rd.start + '&end=' + rd.end;
+    }
     try {
-      var d = await api('/api/trace/shop/' + encodeURIComponent(id) + '?days=' + rng);
+      var d = await api('/api/trace/shop/' + encodeURIComponent(id) + '?' + q);
+      if (run !== traceRun) return;   // 已有更新的渲染, 丢弃本次
       var stat = d.stat || {};
       var daily = stat.daily || [];
       $('traceSummary').textContent = (stat.startDate || d.startDate || '') + ' ~ ' + (stat.endDate || d.endDate || '') + ' · 共 ' + fmt(stat.total || 0) + ' 条 · 采纳率 ' + pct(stat.rate || 0);
@@ -2100,9 +2810,10 @@
         var rate = total ? adopted / total * 100 : 0;
         return '<tr><td class="fw-semibold">' + esc(date) + '</td><td class="text-end">' + fmt(total) + '</td>' +
           '<td class="text-end">' + fmt(adopted) + '</td><td class="text-end">' + ratePill(rate) + '</td>' +
-          '<td class="text-end"><button class="btn btn-sm btn-ghost" onclick="app.viewMessages(\'' + esc(date) + '\')">原始消息</button></td></tr>';
+          '<td class="text-end"><button class="btn btn-sm btn-ghost" onclick="app.viewMessages(' + jsStr(date) + ')">原始消息</button></td></tr>';
       }).join('');
     } catch (e) {
+      if (run !== traceRun) return;   // 过期请求的错误也丢弃
       $('traceBody').innerHTML = '<tr><td colspan="5" class="text-center empty-hint py-4">加载失败: ' + esc(e.message) + '</td></tr>';
     }
   }
@@ -2159,15 +2870,19 @@
     } catch (e) { msgState.days = []; }
     fillMsgDaySel();
   }
+  var msgRun = 0;
   async function loadMsgData() {
+    var run = ++msgRun;
     msgState.loaded = false;
     $('msgList').innerHTML = '<div class="empty-hint py-4 text-center"><div class="spinner-border spinner-border-sm me-2"></div>正在加载当日消息…</div>';
     try {
       var d = await api('/api/trace/messages/' + encodeURIComponent(msgState.shopId) + '?start=' + msgState.date + '&end=' + msgState.date);
+      if (run !== msgRun) return;   // 已切换到其他日期, 丢弃本次
       msgState.messages = d.messages || [];
       msgState.loaded = true;
       renderMsgList();
     } catch (e) {
+      if (run !== msgRun) return;   // 过期请求的错误也丢弃
       $('msgList').innerHTML = '<div class="empty-hint py-3 text-center">加载失败: ' + esc(e.message) + '</div>';
     }
   }
@@ -2222,6 +2937,15 @@
   }
   function msgLoadMore() { appendMsgBatch(); }
   function viewShopTrace(id, name) {
+    // 联动: 把全局平台同步为该店铺的平台, 保证消息轨迹下拉包含该店铺
+    var shop = allShops.find(function (x) { return x.thirdShopId === id; });
+    if (shop && shop.platform != null) {
+      state.platform = String(shop.platform);
+      var ts = $('topPlatformSel'); if (ts) ts.value = state.platform;
+      var ss = $('shopsPlatform'); if (ss) ss.value = state.platform;
+      var st = $('staffPlatform'); if (st) st.value = state.platform;
+    }
+    traceShopPlatform = null;   // 强制店铺下拉按(可能更新的)平台重建
     location.hash = '#/trace';
     var sel = $('traceShop');
     if (sel.options.length <= 1) {
@@ -2302,7 +3026,7 @@
     }).join('');
     updateTaskSelUI();
   }
-  function tasksPage(d) { state.tasksPage += d; renderTasks(); }
+  function tasksPage(d) { state.tasksPage = Math.max(1, state.tasksPage + d); renderTasks(); }
 
   /* ---------- 任务勾选删除(管理员) ---------- */
   function taskSelCount() {
@@ -2396,6 +3120,8 @@
     }).join('') : '<tr><td colspan="6" class="text-center empty-hint py-4">暂无任务记录</td></tr>';
   }
   function renderSysLogs(logs, tags) {
+    var fb = $('logFilterBox');
+    if (fb) fb.style.display = state.logTab === 'sys' ? '' : 'none';
     var tagSel = $('sysTagSel');
     var tag = tagSel ? tagSel.value : '';
     var list = tag ? (logs || []).filter(function (l) { return l.tag === tag; }) : (logs || []);
@@ -2418,6 +3144,9 @@
     $('logPaneOp').classList.toggle('d-none', tab !== 'op');
     $('logPaneTask').classList.toggle('d-none', tab !== 'task');
     $('logPaneSys').classList.toggle('d-none', tab !== 'sys');
+    // 标签筛选框仅 sys tab 显示
+    var fb = $('logFilterBox');
+    if (fb) fb.style.display = tab === 'sys' ? '' : 'none';
   }
   async function pruneLogs() {
     if (!isAdmin) return;
@@ -2475,7 +3204,7 @@
   }
 
   /* ---------- 微信扫码登录(二维码, 免浏览器) ---------- */
-  var wxQrTimer = null, wxQrActive = false, wxQrConfirmed = false;
+  var wxQrTimer = null, wxQrActive = false, wxQrConfirmed = false, wxQrBusy = false;
   async function wxQrStart() {
     var box = $('wxQrBox'), tip = $('wxQrTip'), panel = $('wxQrPanel');
     if (!box) return;
@@ -2491,16 +3220,18 @@
       panel.innerHTML = '<span class="text-danger">' + esc(e.message) + '</span>';
       return;
     }
-    box.innerHTML = '<img src="' + (d.qrImage || esc(d.qrCodeUrl)) + '" style="width:178px;height:178px;border-radius:6px" alt="微信扫码登录二维码">';
+    box.innerHTML = '<img src="' + esc(d.qrImage || d.qrCodeUrl) + '" style="width:178px;height:178px;border-radius:6px" alt="微信扫码登录二维码">';
     tip.textContent = '有效期约 ' + (d.expiresIn || 150) + ' 秒, 请尽快扫码';
     panel.innerHTML = '<span class="text-secondary">等待扫码…</span>';
     clearInterval(wxQrTimer);
     wxQrTimer = setInterval(wxQrPoll, 2000);
   }
   async function wxQrPoll() {
-    if (!wxQrActive) return;
+    if (!wxQrActive || wxQrBusy) return;   // 防重入: 上次请求未返回不发起新的
+    wxQrBusy = true;
     var d;
-    try { d = await api('/api/wx-qr/status'); } catch (e) { return; }
+    try { d = await api('/api/wx-qr/status'); } catch (e) { wxQrBusy = false; return; }
+    wxQrBusy = false;
     var panel = $('wxQrPanel'), box = $('wxQrBox'), tip = $('wxQrTip');
     if (!panel) { wxQrActive = false; return; }
     if (d.phase === 'waiting') return;
@@ -2509,19 +3240,19 @@
       if (infos.length && !wxQrConfirmed) {
         wxQrConfirmed = true;
         tip.textContent = '已扫码, 请选择集团';
-        panel.innerHTML = '<div class="text-success fw-semibold mb-2">✓ 扫码成功, 请选择要进入的集团</div>' +
+        panel.innerHTML = '<div class="text-success fw-semibold mb-2">扫码成功, 请选择要进入的集团</div>' +
           infos.map(function (g, i) {
             var name = g.groupName || g.accountName || ('集团 ' + (i + 1));
             return '<div class="d-flex align-items-center justify-content-between border rounded-2 px-3 py-2 mb-2">' +
               '<span class="fw-semibold">' + esc(name) + '</span>' +
-              '<button class="btn btn-sm btn-primary" onclick="app.wxQrSelect(\'' + esc(String(g.accountId)) + '\',\'' + esc(String(g.accountType == null ? 3 : g.accountType)) + '\')">进入</button></div>';
+              '<button class="btn btn-sm btn-primary" onclick="app.wxQrSelect(' + jsStr(String(g.accountId)) + ',' + jsStr(String(g.accountType == null ? 3 : g.accountType)) + ')">进入</button></div>';
           }).join('') || '<span class="text-danger">未返回可进入的集团</span>';
       }
       return;
     }
     if (d.phase === 'done') {
       clearInterval(wxQrTimer); wxQrTimer = null; wxQrActive = false;
-      box.innerHTML = '<div class="text-success" style="font-size:2.4rem;line-height:1">✓</div>';
+      box.innerHTML = '<div class="text-success" style="font-size:2.4rem;line-height:1"><span data-ic="check" data-size="38"></span></div>';
       tip.textContent = 'Cookie 已更新';
       panel.innerHTML = '<span class="text-success fw-semibold">登录成功, Cookie 已自动保存</span>';
       loadCookieExpiry();
@@ -2550,7 +3281,7 @@
         body: JSON.stringify({ account_id: String(accountId), account_type: Number(accountType || 3) })
       });
       var box = $('wxQrBox'), tip = $('wxQrTip');
-      box.innerHTML = '<div class="text-success" style="font-size:2.4rem;line-height:1">✓</div>';
+      box.innerHTML = '<div class="text-success" style="font-size:2.4rem;line-height:1"><span data-ic="check" data-size="38"></span></div>';
       tip.textContent = 'Cookie 已更新';
       panel.innerHTML = '<span class="text-success fw-semibold">登录成功' + (d.group && d.group.name ? ' · ' + esc(d.group.name) : '') + '</span>' +
         '<div class="text-secondary mt-1">Cookie 已自动保存, 店铺列表已同步</div>';
@@ -2566,7 +3297,7 @@
   function renderGroups() {
     $('groupsBody').innerHTML = (groupsData && groupsData.groups ? groupsData.groups : []).map(function (g) {
       var cur = g.current ? badge('当前', 'bg-blue') : '';
-      var sw = g.current ? '' : '<button class="btn btn-sm btn-outline-primary" onclick="app.switchGroup(\'' + esc(g.groupId) + '\')">切换</button>';
+      var sw = g.current ? '' : '<button class="btn btn-sm btn-outline-primary" onclick="app.switchGroup(' + jsStr(g.groupId) + ')">切换</button>';
       return '<div class="list-group-item"><div class="row align-items-center">' +
         '<div class="col-auto">' + (g.platform != null ? pfBadge(g.platform) : '') + '</div>' +
         '<div class="col"><div class="fw-semibold" style="font-size:.9rem">' + esc(g.groupName || g.groupId) + '</div>' +
@@ -2668,6 +3399,262 @@
     } catch (e) { toast('更新失败: ' + e.message, 'danger'); }
   }
 
+  /* ---------- 数据洞察(自动日报 / 客服生物钟 / 数据完整性哨兵) ---------- */
+  var insState = { days: 1, heatDays: 7, heatPlatform: '', gridPlatform: '', gridDays: 30 };
+  function insightDays(d) {
+    insState.days = d;
+    var btns = document.querySelectorAll('#insightTabs .btn');
+    for (var i = 0; i < btns.length; i++) btns[i].classList.toggle('active', btns[i].dataset.idays === String(d));
+    renderInsights();
+  }
+  function heatDays(d) {
+    insState.heatDays = d;
+    var btns = document.querySelectorAll('#heatTabs .btn');
+    for (var i = 0; i < btns.length; i++) btns[i].classList.toggle('active', btns[i].dataset.hdays === String(d));
+    renderHeatmap();
+  }
+  async function renderInsights() {
+    var list = $('insightList');
+    list.innerHTML = '<span class="empty-hint">加载中…</span>';
+    try {
+      var d = await api('/api/insights?days=' + insState.days);
+      var items = d.items || [];
+      var lvlMap = { success: 'bg-green-lt text-success', info: 'bg-blue-lt text-blue', warning: 'bg-yellow-lt text-yellow', danger: 'bg-red-lt text-danger' };
+      var html = items.length ? '<div class="d-flex flex-column gap-2">' + items.map(function (it) {
+        var lc = lvlMap[it.level] || 'bg-secondary-lt';
+        return '<div class="d-flex align-items-start gap-3 py-2 px-3 rounded-2" style="background:var(--tblr-border-color-translucent)">' +
+          '<span class="mt-1" style="flex:none">' + icon(it.level === 'danger' ? 'alert' : it.level === 'warning' ? 'zap' : it.level === 'success' ? 'check' : 'activity', 16) + '</span>' +
+          '<div class="flex-fill small">' + it.text + '</div><span class="badge ' + lc + '" style="flex:none">' + (it.level === 'danger' ? '需关注' : it.level === 'warning' ? '波动' : it.level === 'success' ? '良好' : '信息') + '</span></div>';
+      }).join('') + '</div>' : '<span class="empty-hint">暂无洞察(数据未抓取)</span>';
+      list.innerHTML = html;
+    } catch (e) {
+      list.innerHTML = '<span class="empty-hint">洞察加载失败: ' + esc(e.message) + '</span>';
+    }
+  }
+  async function renderHeatmap() {
+    var box = $('heatmapBox');
+    box.innerHTML = '<span class="empty-hint">加载中…</span>';
+    var sel = $('heatPlatSel');
+    var pf = sel ? sel.value : '';
+    try {
+      var d = await api('/api/trace/hourly-heatmap?days=' + insState.heatDays + (pf ? '&platform=' + pf : ''));
+      var days = d.days || [], counts = d.counts || {};
+      if (!days.length) { box.innerHTML = '<span class="empty-hint">暂无数据</span>'; return; }
+      // 分位数着色: 按全局最大值的比例分 5 档
+      var mx = 1;
+      days.forEach(function (day) { var m = counts[day] || {}; for (var h = 0; h < 24; h++) if (m[h] > mx) mx = m[h]; });
+      var colors = ['rgba(6,111,209,.08)', 'rgba(6,111,209,.22)', 'rgba(6,111,209,.42)', 'rgba(6,111,209,.66)', 'rgba(6,111,209,.92)'];
+      var rowLabel = days.map(function (day) {
+        var m = day.slice(5).replace('-', '/');
+        var wd = new Date(day + 'T00:00:00').getDay();
+        var wdTxt = ['日', '一', '二', '三', '四', '五', '六'][wd];
+        return '<div class="text-secondary" style="font-size:.68rem;width:74px;padding-top:2px">' + m + ' 周' + wdTxt + '</div>';
+      }).join('');
+      var cells = days.map(function (day) {
+        var m = counts[day] || {};
+        var inner = '';
+        for (var h = 0; h < 24; h++) {
+          var n = m[h] || 0;
+          var ci = n <= 0 ? -1 : Math.min(4, Math.floor((n / mx) * 5));
+          var bg = ci < 0 ? 'background:rgba(0,0,0,.045)' : 'background:' + colors[ci];
+          inner += '<div class="heat-cell" style="' + bg + '" title="' + day + ' ' + String(h).padStart(2, '0') + ':00 — ' + fmt(n) + ' 条"></div>';
+        }
+        return '<div class="d-flex gap-1" style="margin-bottom:3px">' + inner + '</div>';
+      }).join('');
+      var hourHead = '';
+      for (var h = 0; h < 24; h++) hourHead += '<div class="text-secondary" style="font-size:.6rem;width:18px;text-align:center">' + h + '</div>';
+      box.innerHTML = '<div class="d-flex gap-3 flex-wrap">' +
+        '<div><div class="d-flex gap-1 mb-1">' + hourHead + '</div>' + cells + '</div>' +
+        '<div class="align-self-center text-secondary small" style="min-width:150px">' +
+        '<div class="mb-1">高峰时段:</div>' + topHours(counts) + '</div></div>';
+    } catch (e) {
+      box.innerHTML = '<span class="empty-hint">热力图加载失败: ' + esc(e.message) + '</span>';
+    }
+  }
+  function topHours(counts) {
+    // 全部天合计后取 TOP3 小时
+    var agg = {};
+    Object.keys(counts).forEach(function (day) {
+      var m = counts[day] || {};
+      for (var h = 0; h < 24; h++) agg[h] = (agg[h] || 0) + (m[h] || 0);
+    });
+    var top = Object.keys(agg).map(function (h) { return { h: +h, n: agg[h] }; })
+      .sort(function (a, b) { return b.n - a.n; }).slice(0, 3);
+    if (!top.length || !top[0].n) return '<span class="text-secondary">暂无数据</span>';
+    return top.map(function (t) {
+      return '<div class="d-flex align-items-center gap-2 mb-1">' +
+        '<span class="badge bg-blue-lt text-blue" style="width:52px">' + String(t.h).padStart(2, '0') + ':00</span>' +
+        '<span class="text-secondary">' + fmt(t.n) + ' 条</span>' +
+        '<div class="progress flex-fill" style="height:.35rem"><div class="progress-bar bg-blue" style="width:' + Math.round(t.n / top[0].n * 100) + '%"></div></div></div>';
+    }).join('');
+  }
+  async function renderCoverageGrid() {
+    var sel = $('gridPlatSel'), daysSel = $('gridDaysSel');
+    var pf = sel ? sel.value : '';
+    var days = daysSel ? parseInt(daysSel.value, 10) : 30;
+    $('gridStats').innerHTML = '<span class="empty-hint">加载中…</span>';
+    $('gridHead').innerHTML = '';
+    $('gridBody').innerHTML = '';
+    try {
+      var d = await api('/api/trace/coverage-grid?days=' + days + (pf ? '&platform=' + pf : ''));
+      var shops = d.shops || [], cells = d.cells || {}, dayList = d.days || [];
+      if (!shops.length) { $('gridStats').innerHTML = '<span class="empty-hint">该平台暂无店铺</span>'; return; }
+      var missing = d.missingCells || 0, total = d.totalCells || 1;
+      var pct = Math.round((total - missing) / total * 100);
+      var statColor = pct >= 98 ? 'text-success' : pct >= 90 ? 'text-warning' : 'text-danger';
+      // 每店缺格数(找最缺的店)
+      var shopMissing = shops.map(function (s) {
+        var sc = cells[s.id] || {};
+        var miss = dayList.filter(function (day) { return !sc[day]; }).length;
+        return { s: s, miss: miss };
+      }).sort(function (a, b) { return b.miss - a.miss; });
+      var worst = shopMissing.filter(function (x) { return x.miss > 0; }).slice(0, 3);
+      $('gridStats').innerHTML =
+        '<span class="text-secondary small">' + dayList.length + ' 天 × ' + shops.length + ' 家店 = ' + total + ' 格</span>' +
+        '<span class="badge bg-green-lt text-success">完整 ' + (total - missing) + '</span>' +
+        '<span class="badge bg-red-lt text-danger">缺抓 ' + missing + '</span>' +
+        '<span class="fw-semibold ' + statColor + '" style="font-size:.95rem">完整率 ' + pct + '%</span>' +
+        (worst.length ? '<span class="text-secondary small">最缺: ' + worst.map(function (x) {
+          return esc(x.s.name) + '(缺' + x.miss + '天)';
+        }).join('、') + '</span>' : '<span class="text-success small">全部店铺覆盖完整</span>');
+      // 表头: 店名 + 日期(MM-DD, 周末标红)
+      var head = '<tr><th class="sticky-col" style="min-width:180px">店铺 \\ 日期</th>';
+      dayList.forEach(function (day) {
+        var wd = new Date(day + 'T00:00:00').getDay();
+        var cls = (wd === 0 || wd === 6) ? ' text-danger' : '';
+        head += '<th class="text-center" style="min-width:34px;font-size:.65rem' + cls + '">' + day.slice(5).replace('-', '/') + '</th>';
+      });
+      head += '</tr>';
+      $('gridHead').innerHTML = head;
+      // 行: 店铺名 + 单元格
+      var body = shopMissing.map(function (x) {
+        var s = x.s, sc = cells[s.id] || {};
+        var tds = dayList.map(function (day) {
+          var cell = sc[day];
+          if (cell) {
+            var totalN = cell.total || 0;
+            var hot = totalN >= 1000;
+            var mid = totalN >= 100;
+            return '<td class="text-center" style="padding:2px"><span class="d-inline-block" style="width:22px;height:14px;border-radius:3px;background:' +
+              (hot ? '#2fb344' : mid ? '#7fd88f' : '#cdeed3') + '" title="' + esc(s.name) + ' ' + day + ': ' + fmt(totalN) + ' 条"></span></td>';
+          }
+          return '<td class="text-center" style="padding:2px"><span class="d-inline-block" style="width:22px;height:14px;border-radius:3px;background:#e35d5d" title="' + esc(s.name) + ' ' + day + ': 缺抓"></span></td>';
+        }).join('');
+        return '<tr><td class="sticky-col" style="font-size:.75rem;white-space:nowrap">' + esc(s.name) + '</td>' + tds + '</tr>';
+      }).join('');
+      $('gridBody').innerHTML = body;
+    } catch (e) {
+      $('gridStats').innerHTML = '<span class="empty-hint">加载失败: ' + esc(e.message) + '</span>';
+    }
+  }
+  /* 数据洞察页: 填充平台下拉后渲染三个卡 */
+  async function renderInsightsPage() {
+    var hsel = $('heatPlatSel'), gsel = $('gridPlatSel'), rsel = $('rankPlatSel'), csel = $('cmpPlatSel');
+    [hsel, gsel, rsel, csel].forEach(function (s) { if (s && !s.options.length) fillPlatformSelect(s, true); });
+    if (hsel) hsel.value = insState.heatPlatform;
+    if (gsel) gsel.value = insState.gridPlatform;
+    renderInsights();
+    renderHeatmap();
+    renderCoverageGrid();
+    renderRanking();
+    renderCompare();
+  }
+  /* 客服排行榜: 近7天/30天 处理量榜 + 采纳率榜(跨店合并同名客服) */
+  var rankState = { days: 7 };
+  function rankDays(d) {
+    rankState.days = d;
+    var btns = document.querySelectorAll('#rankTabs .btn');
+    for (var i = 0; i < btns.length; i++) btns[i].classList.toggle('active', btns[i].dataset.rank === String(d));
+    renderRanking();
+  }
+  async function renderRanking() {
+    var box = $('rankBox');
+    box.innerHTML = '<span class="empty-hint">加载中…</span>';
+    var sel = $('rankPlatSel');
+    var pf = sel ? sel.value : '';
+    try {
+      var d = await api('/api/trace/staff?days=' + rankState.days + (pf ? '&platform=' + pf : ''));
+      var byStaff = d.byStaff || [];
+      // 跨店合并同名客服(优先昵称, 回退短账号/全账号)
+      var agg = {};
+      byStaff.forEach(function (x) {
+        var name = (x.nick || x.name || x.accountShort || x.account || '?');
+        var e = agg[name] || (agg[name] = { total: 0, adopted: 0 });
+        e.total += x.total || 0;
+        e.adopted += x.adopted || 0;
+      });
+      var list = Object.keys(agg).map(function (k) {
+        return { name: k, total: agg[k].total, adopted: agg[k].adopted,
+                 rate: agg[k].total ? (agg[k].adopted / agg[k].total * 100) : 0 };
+      }).filter(function (x) { return x.total > 0; });
+      list.sort(function (a, b) { return b.total - a.total; });
+      var byVol = list.slice(0, 10);
+      var byRate = list.filter(function (x) { return x.total >= 30; })
+        .sort(function (a, b) { return b.rate - a.rate; }).slice(0, 10);
+      function rankRow(x, i) {
+        var rank = String(i + 1).padStart(2, '0');
+        var rankCls = i === 0 ? 'text-primary' : i < 3 ? 'text-secondary' : 'text-secondary-lt';
+        return '<div class="d-flex align-items-center gap-2 py-1" style="border-bottom:1px solid var(--tblr-border-color-translucent)">' +
+          '<span class="fw-semibold font-monospace ' + rankCls + '" style="width:26px;font-size:.8rem">' + rank + '</span>' +
+          '<span class="fw-semibold small flex-fill" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(x.name) + '</span>' +
+          '<span class="text-secondary small">' + fmt(x.total) + ' 条</span>' +
+          '<span class="badge ' + rateCls(x.rate) + '" style="width:64px;text-align:center">' + x.rate.toFixed(1) + '%</span></div>';
+      }
+      function rankList(title, rows, sub) {
+        return '<div class="col-md-6"><div class="d-flex align-items-center mb-2">' +
+          '<div class="fw-semibold" style="font-size:.9rem">' + title + '</div>' +
+          '<span class="text-secondary small ms-2">' + (sub || '') + '</span></div>' +
+          (rows.length ? rows.map(rankRow).join('') : '<span class="empty-hint">暂无数据</span>') + '</div>';
+      }
+      box.innerHTML = '<div class="row g-3">' +
+        rankList('处理量 TOP10', byVol, '近' + rankState.days + '天') +
+        rankList('采纳率 TOP10', byRate, '近' + rankState.days + '天 · 需≥30条') + '</div>';
+    } catch (e) {
+      box.innerHTML = '<span class="empty-hint">排行榜加载失败: ' + esc(e.message) + '</span>';
+    }
+  }
+  /* 周期对比: 本周vs上周 / 本月vs上月 */
+  var cmpState = { mode: 'week' };
+  function cmpMode(m) {
+    cmpState.mode = m;
+    var btns = document.querySelectorAll('#cmpTabs .btn');
+    for (var i = 0; i < btns.length; i++) btns[i].classList.toggle('active', btns[i].dataset.cmp === m);
+    renderCompare();
+  }
+  async function renderCompare() {
+    var sel = $('cmpPlatSel');
+    var pf = sel ? sel.value : '';
+    var box = $('cmpBody');
+    box.innerHTML = '<tr><td colspan="7" class="text-center empty-hint py-3">加载中…</td></tr>';
+    try {
+      var d = await api('/api/trace/compare?mode=' + cmpState.mode + (pf ? '&platform=' + pf : ''));
+      var rows = d.rows || [];
+      var labelC = cmpState.mode === 'week' ? '本周' : '本月';
+      var labelP = cmpState.mode === 'week' ? '上周' : '上月';
+      $('cmpSummary').textContent = (d.curStart || '') + ' ~ ' + (d.curEnd || '') + ' vs ' + (d.prevStart || '') + ' ~ ' + (d.prevEnd || '') +
+        ' · 总量 ' + fmt(d.curTotal) + ' vs ' + fmt(d.prevTotal);
+      if (!rows.length) { box.innerHTML = '<tr><td colspan="7" class="text-center empty-hint py-3">该平台暂无对比数据</td></tr>'; return; }
+      box.innerHTML = rows.map(function (r) {
+        var dt = r.deltaTotal;
+        var dtCls = dt > 10 ? 'text-success' : dt < -10 ? 'text-danger' : 'text-secondary';
+        var dtTxt = (dt > 0 ? '▲ +' : dt < 0 ? '▼ ' : '— ') + (dt === 0 ? '' : Math.abs(dt).toFixed(1) + '%');
+        var dr = r.deltaRatePP;
+        var drCls = dr > 1 ? 'text-success' : dr < -1 ? 'text-danger' : 'text-secondary';
+        var drTxt = (dr > 0 ? '▲ +' : dr < 0 ? '▼ ' : '— ') + (dr === 0 ? '' : Math.abs(dr).toFixed(2) + 'pp');
+        return '<tr>' +
+          '<td class="small fw-semibold">' + esc(r.name) + '</td>' +
+          '<td class="text-end small">' + fmt(r.curTotal) + '</td>' +
+          '<td class="text-end small text-secondary">' + fmt(r.prevTotal) + '</td>' +
+          '<td class="text-end small fw-semibold ' + dtCls + '">' + dtTxt + '</td>' +
+          '<td class="text-end small">' + r.curRate.toFixed(2) + '%</td>' +
+          '<td class="text-end small text-secondary">' + r.prevRate.toFixed(2) + '%</td>' +
+          '<td class="text-end small fw-semibold ' + drCls + '">' + drTxt + '</td></tr>';
+      }).join('');
+    } catch (e) {
+      box.innerHTML = '<tr><td colspan="7" class="text-center empty-hint py-3">加载失败: ' + esc(e.message) + '</td></tr>';
+    }
+  }
+
   /* ---------- 更多板块(预留 + 用户管理, 含旧版看板开关) ---------- */
   async function renderMore() {
     renderUsers();  // 用户管理卡片: 行内含"旧版看板"访问开关(仅管理员可见表格)
@@ -2725,10 +3712,11 @@
   async function renderSettings() {
     renderGroups();
     // 普通用户: 不展示 Cookie 管理 / 微信扫码登录 / 钉钉机器人(管理员专属运维配置)
-    var show = $('cookieCard'), ding = $('dingtalkCard'), wxq = $('wxQrCard');
+    var show = $('cookieCard'), ding = $('dingtalkCard'), wxq = $('wxQrCard'), impc = $('importCard');
     if (show) show.style.display = isAdmin ? '' : 'none';
     if (ding) ding.style.display = isAdmin ? '' : 'none';
     if (wxq) wxq.style.display = isAdmin ? '' : 'none';
+    if (impc) impc.style.display = isAdmin ? '' : 'none';
     var jobs = [loadTraceConfig()];
     if (isAdmin) { jobs.push(loadCookieExpiry()); jobs.push(renderDingtalk()); }
     await Promise.all(jobs);
@@ -2795,7 +3783,7 @@
   }
   async function startBrowserLogin() {
     try {
-      var d = await api('/api/login/start');
+      var d = await api('/api/login/start', { method: 'POST' });
       toast(d.message || (d.ok ? '浏览器已启动' : '登录流程已在运行'), d.ok ? 'success' : 'warning');
     } catch (e) { toast('启动失败: ' + e.message, 'danger'); }
   }
@@ -2803,7 +3791,9 @@
   /* ---------- 快捷操作 / 风控 / 通知 / 主题 ---------- */
   async function startAudit(selOnly) {
     var params = [];
-    if (state.platform) params.push('platform=' + state.platform);
+    // 用当前视图实际选择的平台(页面内下拉可能尚未同步到 state.platform)
+    var plat = currentPlatform();
+    if (plat) params.push('platform=' + plat);
     var sel = Object.keys(state.selShops).filter(function (k) { return state.selShops[k]; });
     if (selOnly && sel.length) params.push('shop_ids=' + sel.join(','));
     params.push('mode=audit');
@@ -2816,7 +3806,16 @@
   }
   function gotoPrefetch() { location.hash = '#/settings'; setTimeout(function () { $('pfStart').focus(); }, 300); }
   async function syncShops() {
-    try { var r = await api('/api/shops/sync', { method: 'POST' }); toast('店铺同步完成: ' + (r.shops ? r.shops.length + ' 家' : ''), 'success'); loadGroups(); }
+    try {
+      var r = await api('/api/shops/sync', { method: 'POST' });
+      toast('店铺同步完成: ' + (r.shops ? r.shops.length + ' 家' : ''), 'success');
+      // 店铺列表可能已变化: 缓存失效强制重建
+      allShops = [];
+      traceShopPlatform = null;
+      state.selShops = {};
+      clearShopsSel();
+      loadGroups();
+    }
     catch (e) { toast('同步失败: ' + e.message, 'danger'); }
   }
   async function loadRisk() {
@@ -2833,17 +3832,18 @@
     try {
       var d = await api('/api/notifications?limit=20');
       var items = d.items || [];
+      lastUnread = d.unread || 0;   // 记住未读数(paintIcons 重建铃铛后恢复红点)
       var bell = $('btnBell');
       if (bell) {
         var dot = bell.querySelector('.dot');
-        if (dot) dot.style.display = d.unread > 0 ? '' : 'none';
-        bell.title = d.unread > 0 ? ('通知 (' + d.unread + ' 条未读)') : '通知';
+        if (dot) dot.style.display = lastUnread > 0 ? '' : 'none';
+        bell.title = lastUnread > 0 ? ('通知 (' + lastUnread + ' 条未读)') : '通知';
       }
       $('bellList').innerHTML = items.length ? items.map(function (n) {
         var un = n.read ? '' : '<span class="badge bg-red ms-1">未读</span>';
         var ic = n.level === 'danger' ? 'alert' : n.level === 'success' ? 'check' : 'bell';
         var tc = n.level === 'danger' ? 'danger' : n.level === 'success' ? 'success' : 'secondary';
-        return '<div class="list-group-item' + (n.read ? '' : ' bg-blue-lt') + '" style="cursor:pointer" onclick="app.notifyRead(\'' + esc(n.id) + '\')">' +
+        return '<div class="list-group-item' + (n.read ? '' : ' bg-blue-lt') + '" style="cursor:pointer" onclick="app.notifyRead(' + jsStr(n.id) + ')">' +
           '<div class="d-flex align-items-start gap-2">' +
           '<span class="text-' + tc + '" style="flex:none">' + icon(ic, 16) + '</span>' +
           '<div class="flex-fill"><div class="fw-semibold" style="font-size:.8rem">' + esc(n.title) + un + '</div>' +
@@ -2856,6 +3856,14 @@
     try {
       await api('/api/notifications/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: [id] }) });
     } catch (e) {}
+    loadRiskForBell();
+  }
+  async function notifyReadAll(ev) {
+    if (ev) ev.preventDefault();
+    try {
+      await api('/api/notifications/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: [] }) });
+      toast('全部已读', 'success');
+    } catch (e) { toast('操作失败: ' + e.message, 'danger'); }
     loadRiskForBell();
   }
   async function notifyClearAll() {
@@ -2872,6 +3880,8 @@
   }
   async function logout(ev) {
     if (ev) ev.preventDefault();
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    if (tasksTimer) { clearInterval(tasksTimer); tasksTimer = null; }
     try { await api('/api/auth/logout', { method: 'POST' }); } catch (e) {}
     localStorage.removeItem('tanyu_token');
     localStorage.removeItem('tanyu_user');
@@ -2902,6 +3912,7 @@
   }
 
   /* ---------- 图标渲染 ---------- */
+  var lastUnread = 0;   // 最近一次轮询的未读数(paintIcons 重建铃铛后恢复红点)
   function paintIcons() {
     var nodes = document.querySelectorAll('[data-ic]');
     for (var i = 0; i < nodes.length; i++) {
@@ -2909,7 +3920,7 @@
       n.innerHTML = icon(n.dataset.ic, n.dataset.size || 18);
     }
     $('btnTheme').innerHTML = icon(state.theme === 'dark' ? 'sun' : 'moon', 18);
-    $('btnBell').innerHTML = icon('bell', 18) + '<span class="dot" style="display:none"></span>';
+    $('btnBell').innerHTML = icon('bell', 18) + '<span class="dot" style="display:' + (lastUnread > 0 ? '' : 'none') + '"></span>';
     $('brandLogo').innerHTML = icon('chart', 18);
   }
 
@@ -2933,11 +3944,7 @@
     var fl = document.querySelector('.legacyLink');
     if (fl) fl.style.display = isAdmin ? '' : 'none';
     $('topPlatformSel').addEventListener('change', function (e) {
-      state.platform = e.target.value;
-      clearShopsSel();  // 切平台清空店铺勾选(核算范围随平台重置)
-      var ss = $('shopsPlatform'); if (ss) ss.value = state.platform;
-      var st = $('staffPlatform'); if (st) st.value = state.platform;
-      reloadCurrent();
+      applyPlatform(e.target.value);
     });
     $('topGroupSel').addEventListener('change', function (e) {
       if (e.target.value && e.target.value !== state.groupId) switchGroup(e.target.value);
@@ -2951,38 +3958,56 @@
     route();
     loadRisk();
     loadRiskForBell();
-    setInterval(function () {
+    pollTimer = setInterval(function () {
+      if (document.hidden) return;  // 后台标签页不轮询
       loadRisk();
       loadRiskForBell();
     }, 30000);
-    setInterval(function () {
+    tasksTimer = setInterval(function () {
+      if (document.hidden) return;  // 后台标签页不轮询
       if (currentViewName() === 'tasks') renderTasks();
     }, 5000);
+    // 页面隐藏时暂停全部轮询(恢复后由 visibilitychange 重建)
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } if (tasksTimer) { clearInterval(tasksTimer); tasksTimer = null; } }
+      else if (!pollTimer || !tasksTimer) {
+        if (!pollTimer) pollTimer = setInterval(function () { if (document.hidden) return; loadRisk(); loadRiskForBell(); }, 30000);
+        if (!tasksTimer) tasksTimer = setInterval(function () { if (document.hidden) return; if (currentViewName() === 'tasks') renderTasks(); }, 5000);
+      }
+    });
   }
 
   /* ---------- 暴露 ---------- */
   window.app = {
     refresh: refresh, toggleTheme: toggleTheme, logout: logout, searchHint: searchHint,
+    debouncedShops: debouncedShops, debouncedStaff: debouncedStaff, debouncedMsg: debouncedMsg,
     trendDays: trendDays, salesTrendDays: salesTrendDays,
     renderShops: renderShops, renderShopsTable: renderShopsTable, sortShops: sortShops, shopsPage: shopsPage, exportShops: exportShops,
+    shopsRangeChange: shopsRangeChange, importExcelPick: importExcelPick, importExcelPick2: importExcelPick2,
+    doImportExcel: doImportExcel, downloadImportTemplate: downloadImportTemplate,
+    applyPlatform: applyPlatform,
     shopDetail: shopDetail, viewShopTraceFromModal: viewShopTraceFromModal,
     toggleShopSel: toggleShopSel, toggleShopsSelAll: toggleShopsSelAll, clearShopsSel: clearShopsSel,
     renderStaff: renderStaff, renderStaffGrid: renderStaffGrid, staffMode: staffMode, exportStaff: exportStaff,
     startStaffToday: startStaffToday,
     staffLoadMore: staffLoadMore, toggleStaffChip: toggleStaffChip,
-    renderTrace: renderTrace, viewMessages: viewMessages, viewShopTrace: viewShopTrace,
+    renderTrace: renderTrace, traceRangeChange: traceRangeChange, viewMessages: viewMessages, viewShopTrace: viewShopTrace,
     renderMsgList: renderMsgList, msgDayChange: msgDayChange, msgLoadMore: msgLoadMore,
     tasksPage: tasksPage, toggleTaskSel: toggleTaskSel, toggleTasksSelAll: toggleTasksSelAll, delSelectedTasks: delSelectedTasks,
     switchLogs: switchLogs, renderSysLogs: function () { renderLogs(); }, pruneLogs: pruneLogs,
     saveCookies: saveCookies, switchGroup: switchGroup, startPrefetch: startPrefetch,
     wxQrStart: wxQrStart, wxQrSelect: wxQrSelect,
-    notifyRead: notifyRead, notifyClearAll: notifyClearAll,
+    notifyRead: notifyRead, notifyReadAll: notifyReadAll, notifyClearAll: notifyClearAll,
     pushDingtalk: pushDingtalk, editDingtalk: editDingtalk,
     toggleRegister: toggleRegister, createUser: createUser, doCreateUser: doCreateUser,
     resetPwd: resetPwd, setUserStatus: setUserStatus, setUserExpire: setUserExpire,
     saveTraceConfig: saveTraceConfig, startCalibrate: startCalibrate, startBrowserLogin: startBrowserLogin,
     renderMore: renderMore, editUserNote: editUserNote, toggleUserLegacy: toggleUserLegacy,
-    startAudit: startAudit, gotoPrefetch: gotoPrefetch, syncShops: syncShops
+    insightDays: insightDays, heatDays: heatDays, renderHeatmap: renderHeatmap, renderCoverageGrid: renderCoverageGrid,
+    rankDays: rankDays, renderRanking: renderRanking, cmpMode: cmpMode, renderCompare: renderCompare,
+    toggleFavShop: toggleFavShop, editShopTags: editShopTags, refreshTagFilter: refreshTagFilter, renderFavShops: renderFavShops,
+    startAudit: startAudit, gotoPrefetch: gotoPrefetch, syncShops: syncShops,
+    fetchTodayPlatforms: fetchTodayPlatforms, renderTodayPlatforms: renderTodayPlatforms
   };
 
   document.addEventListener('DOMContentLoaded', boot);

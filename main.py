@@ -50,7 +50,7 @@ except ImportError:
 import uvicorn
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
 import openpyxl  # 导入平台 Excel 解析(openpyxl 3.1.5, 环境已装; pandas/xlrd 未装勿依赖)
@@ -148,6 +148,8 @@ _prefetch_state = {
     "triggered_by": None,   # 谁发起的补抓(操作者用户名/昵称), 供状态展示
 }
 _lock = threading.Lock()
+_rate_lock = threading.Lock()  # 限速窗口专用锁(独立于 _lock, 避免限速等待阻塞状态读写)
+_config_lock = threading.Lock()  # config.json 读改写串行化(防多写者丢更新)
 
 # ---------- 多用户任务队列(并发请求排队, 单并发串行执行) ----------
 # 看板多人共用: 有人抓取时, 其他客服的抓取请求不再 409 拒绝, 而是入队显示"排队中",
@@ -247,7 +249,10 @@ def _task_scheduler():
         finally:
             task["finished_at"] = time.time()
             with _tasks_lock:
-                _running_task_id = None
+                # 只清自己登记的任务 id: 交互请求可能刚登记了新任务(direct), 无条件
+                # 清空会把它误判为无任务, 提前弹出队尾任务
+                if _running_task_id == tid:
+                    _running_task_id = None
             log_store.upsert_task(task)  # 调度器收尾持久化(状态已 done/queued/error)
 
 
@@ -590,7 +595,8 @@ def _infer_group_platform(group):
     return None
 
 
-def load_config():
+def _load_config_unlocked():
+    """不加锁读取 config(调用方必须已持有 _config_lock 或确信无并发写)"""
     if CONFIG_FILE.exists():
         try:
             cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
@@ -609,13 +615,36 @@ def load_config():
             except Exception:
                 pass
     cfg = default_config()
-    save_config(cfg)
     return cfg
 
 
+def load_config():
+    if not CONFIG_FILE.exists():
+        cfg = _load_config_unlocked()
+        save_config(cfg)
+        return cfg
+    return _load_config_unlocked()
+
+
 def save_config(cfg):
-    # 原子写入: 先写临时文件再 os.replace, 读取方不会读到半截 JSON
-    _atomic_write_text(CONFIG_FILE, json.dumps(cfg, ensure_ascii=False, indent=2))
+    # 原子写入: 先写临时文件再 os.replace, 读取方不会读到半截 JSON。
+    # 锁内写: 多个 config 写者(switch_group/登录/扫码/cookie 更新)串行化,
+    # 配合 mutate_config 的读改写整体持锁, 消除丢更新。
+    with _config_lock:
+        _atomic_write_text(CONFIG_FILE, json.dumps(cfg, ensure_ascii=False, indent=2))
+
+
+def mutate_config(fn, default=True):
+    """config 读-改-写整体持锁: fn(cfg) 修改后原子落盘, 返回 cfg。
+
+    所有"load_config → 修改 → save_config"路径都应改用本函数, 防止并发写者
+    互相覆盖(登录 worker 保存 cookie 与 switch_group 保存集团 cookie 竞争)。
+    """
+    with _config_lock:
+        cfg = _load_config_unlocked()
+        fn(cfg)
+        _atomic_write_text(CONFIG_FILE, json.dumps(cfg, ensure_ascii=False, indent=2))
+        return cfg
 
 
 # ---------- 夜间抓取跨进程标志 ----------
@@ -938,9 +967,10 @@ def load_all_shops(platform=None):
 
 
 def date_range(days=7, end=None):
-    """生成近 N 天日期区间(截至昨天)"""
+    """生成近 N 天日期区间(截至昨天); days 统一钳制 1~35(滚动窗口上限, 防滥用)"""
     import datetime
 
+    days = max(1, min(int(days), 35))
     end = end or (datetime.date.today() - datetime.timedelta(days=1))
     start = end - datetime.timedelta(days=days - 1)
     return start.isoformat(), end.isoformat()
@@ -1202,6 +1232,18 @@ def _split_bounds(start, end):
     return start_ms, end_ms, s.date().isoformat(), e.date().isoformat(), has_time
 
 
+def _check_span_limit(start, end, max_days=35):
+    """校验自定义区间跨度 ≤ max_days(滚动窗口上限, 防参数滥用触发海量抓取)"""
+    import datetime as dt
+    try:
+        s = dt.datetime.fromisoformat(start)
+        e = dt.datetime.fromisoformat(end)
+    except (TypeError, ValueError):
+        return
+    if (e - s).days > max_days:
+        raise HTTPException(400, f"区间跨度不能超过 {max_days} 天: {start} ~ {end}")
+
+
 def _stat_type_range(stat_type, ref=None):
     """统计口径对应的主值区间(与前端 statTypeRange 语义一致)。
 
@@ -1393,12 +1435,7 @@ def refresh_all_groups_async(start, end):
                     log_line("refresh", f"集团「{g.get('groupName')}」无抓取平台店铺, 跳过")
                     continue
                 # 用该集团店铺子集跑一次刷新(不带新线程, 直接在当前 worker 内循环)
-                with _lock:
-                    if _refresh_state["running"]:
-                        log_line("refresh", "已有刷新任务进行中, 跳过")
-                        return
-                    _refresh_state["running"] = True
-                    _refresh_state["error"] = None
+                # running 已由端点同步置位; 单并发由队列保证, worker 内不再自检
                 try:
                     total = len(group_shops)
                     _refresh_state["progress"] = {"done": 0, "total": total, "current": ""}
@@ -1436,20 +1473,24 @@ def refresh_all_groups_async(start, end):
                         _refresh_state["progress"]["done"] = i
                     log_line("refresh", f"集团[{g.get('groupName')}] 刷新完成: 成功 {ok} 家, 失败 {fail} 家")
                     _refresh_state["last_run"] = time.time()
-                finally:
-                    _refresh_state["running"] = False
+                except Exception as e:
+                    log_line("refresh", f"集团[{g.get('groupName')}] 刷新异常: {e}")
             log_line("refresh", "全部集团刷新完成")
         finally:
-            # 恢复原激活集团(风控时不强行切换, 仅告警)
-            if orig_gid and not _risk_state.get("triggered"):
-                try:
+            # 先恢复原激活集团(耗时数秒), 完成后再清 running —— 恢复期间保持
+            # running=True, 防止新 worker 在恢复窗口内启动互踩集团 cookie
+            try:
+                if orig_gid and not _risk_state.get("triggered"):
                     if orig_gid != load_config().get("cookies", {}).get("tanyu-group-id"):
                         switch_group(orig_gid)
                         log_line("refresh", f"已恢复原激活集团 {orig_gid}")
-                except Exception as e:
-                    log_line("refresh", f"⚠️ 恢复原集团失败: {e}")
-            elif _risk_state.get("triggered"):
-                log_line("refresh", "⚠️ 风控触发, 未恢复原集团(需重新登录后手工切换)")
+                elif _risk_state.get("triggered"):
+                    log_line("refresh", "⚠️ 风控触发, 未恢复原集团(需重新登录后手工切换)")
+            except Exception as e:
+                log_line("refresh", f"⚠️ 恢复原集团失败: {e}")
+            finally:
+                with _lock:
+                    _refresh_state["running"] = False
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -1484,14 +1525,13 @@ def get_group_list():
     groups = cfg.get("groups") or []
     cur = get_current_group()
     if cur and cur["id"]:
-        # 当前集团不在列表时自动补上
+        # 当前集团不在列表时自动补上(锁内读改写, 防并发写者丢更新)
         if not any(g.get("groupId") == cur["id"] for g in groups):
             new_g = {"groupId": cur["id"], "groupName": cur["name"],
                      "accountId": None, "accountType": None, "current": True}
             new_g["platform"] = _infer_group_platform(new_g)  # 新集团落盘带平台, 避免再走推断
             groups = [new_g] + groups
-            cfg["groups"] = groups
-            save_config(cfg)
+            mutate_config(lambda c: c.__setitem__("groups", groups))
         for g in groups:
             g["current"] = g.get("groupId") == cur["id"]
         # 给 current 对象补上平台字段(前端集团→平台联动不再需要从列表猜测)
@@ -1560,8 +1600,7 @@ def _capture_cookie_expiry(resp):
     只存 'YYYY-MM-DD' 日期字符串, 绝不存 cookie 值/凭据。
     """
     try:
-        cfg = load_config()
-        expires_map = dict(cfg.get("cookie_expires") or {})
+        expires_map = dict((load_config().get("cookie_expires") or {}))
         changed = False
         now = time.time()
         # 可能有多条 Set-Cookie 头: 用底层 getlist 逐个解析
@@ -1577,8 +1616,8 @@ def _capture_cookie_expiry(resp):
                     expires_map[name] = day
                     changed = True
         if changed:
-            cfg["cookie_expires"] = expires_map
-            save_config(cfg)
+            # 锁内读改写落盘, 不覆盖其他写者的更新
+            mutate_config(lambda c: c.update({"cookie_expires": expires_map}))
     except Exception as e:
         log_line("auth", f"cookie 到期时间解析失败(不影响使用): {e}")
 
@@ -1604,11 +1643,9 @@ def switch_group(group_id):
         raise RuntimeError(f"风控/登录失效: {d.get('msg', resp.status_code)}")
     if d.get("success") is False:
         raise RuntimeError(d.get("msg", "切换集团失败"))
-    # 捕获 Set-Cookie 并保存
-    for name, value in resp.cookies.items():
-        if name.startswith("tanyu-"):
-            cfg["cookies"][name] = value
-    save_config(cfg)
+    # 捕获 Set-Cookie 并保存(锁内读改写, 防与其他 config 写者丢更新)
+    mutate_config(lambda c: c["cookies"].update(
+        {n: v for n, v in resp.cookies.items() if n.startswith("tanyu-")}))
     # 记录各 cookie 到期日(仅日期, 无 cookie 值)
     _capture_cookie_expiry(resp)
     # 同步店铺列表
@@ -1905,15 +1942,17 @@ def _sync_staff_names_worker(start_day, end_day):
     except Exception as e:
         _staff_sync_state["error"] = str(e)
     finally:
-        _staff_sync_state["running"] = False
-        # 恢复原激活集团(风控时不强行切换)
-        if orig_gid and not _risk_state.get("triggered"):
-            try:
-                if orig_gid != load_config().get("cookies", {}).get("tanyu-group-id"):
-                    switch_group(orig_gid)
-                    log_line("staff", f"已恢复原激活集团 {orig_gid}")
-            except Exception as e:
-                log_line("staff", f"⚠️ 恢复原集团失败: {e}")
+        # 先恢复原激活集团(耗时数秒), 完成后再清 running(防止恢复窗口内双启动)
+        try:
+            if orig_gid and not _risk_state.get("triggered"):
+                try:
+                    if orig_gid != load_config().get("cookies", {}).get("tanyu-group-id"):
+                        switch_group(orig_gid)
+                        log_line("staff", f"已恢复原激活集团 {orig_gid}")
+                except Exception as e:
+                    log_line("staff", f"⚠️ 恢复原集团失败: {e}")
+        finally:
+            _staff_sync_state["running"] = False
 
 
 def _fetch_staff_table_rows(shop, start_day, end_day):
@@ -2051,6 +2090,11 @@ class RiskTriggered(RuntimeError):
     except RuntimeError 能统一兜底(返回 502/503), 避免漏网 500"""
 
 
+class TraceTruncatedError(RuntimeError):
+    """区间内消息数超过 tanyu 接口单区间硬上限且细分后仍触顶:
+    返回的数据不完整, 调用方不得将其落缓存/落库(避免残缺天被永久固化)"""
+
+
 def _set_risk(reason, code=None):
     need_push = False
     with _lock:
@@ -2170,21 +2214,25 @@ def _sleep_random(lo, hi):
 
 
 def _rate_limit():
-    """滑动窗口限速: 超限则排队等待, 避免短时间大量请求"""
+    """滑动窗口限速: 超限则排队等待, 避免短时间大量请求(独立锁, 防多线程竞态)"""
     global _request_times
     now = time.time()
-    _request_times = [t for t in _request_times if now - t < 60]
-    if len(_request_times) >= RISK_MAX_RPM:
-        wait = 60 - (now - _request_times[0]) + random.uniform(0.3, 1.2)
-        print(f"[rate] 已达限速(>={RISK_MAX_RPM}次/分), 等待 {wait:.1f}s")
-        time.sleep(wait)
-    _request_times.append(time.time())
+    with _rate_lock:
+        _request_times = [t for t in _request_times if now - t < 60]
+        if len(_request_times) >= RISK_MAX_RPM:
+            wait = 60 - (now - _request_times[0]) + random.uniform(0.3, 1.2)
+            print(f"[rate] 已达限速(>={RISK_MAX_RPM}次/分), 等待 {wait:.1f}s")
+            time.sleep(wait)
+            now = time.time()
+            _request_times = [t for t in _request_times if now - t < 60]
+        _request_times.append(time.time())
 
 
 def _rate_limit_available():
-    """限速槽位是否可用(不占用): 供交互式请求判断是否需要立即返回"""
+    """限速槽位是否可用(不占用): 供交互式请求判断是否需要立即返回(独立锁)"""
     now = time.time()
-    return len([t for t in _request_times if now - t < 60]) < RISK_MAX_RPM
+    with _rate_lock:
+        return len([t for t in _request_times if now - t < 60]) < RISK_MAX_RPM
 
 
 def _check_risk(resp, data=None):
@@ -2545,12 +2593,16 @@ def _fetch_trace_range(shop_id, begin, end):
         if b and e and (e - b).total_seconds() > 4 * 3600:
             for start in _time_slices(b, e, 4):
                 sleep_trace_page()
+                seg_end = min(start + datetime.timedelta(hours=4), e)  # 最后一段不越出原始 end
                 sub_results.extend(
                     _fetch_trace_range(shop_id, start.strftime("%Y-%m-%d %H:%M:%S"),
-                                       (start + datetime.timedelta(hours=4) - datetime.timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S"))
+                                       (seg_end - datetime.timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S"))
                 )
             return sub_results
-        return first_batch  # 已是 4 小时以内仍触顶: 接口极端限制, 接受截断
+        # 已是 4 小时以内仍触顶: 数据不完整, 抛出信号让调用方不落缓存/库
+        raise TraceTruncatedError(
+            f"{shop_id} {begin[:10]}~{end[:10]} 消息数 ≥ {TRACE_QUERY_CAP} 条(接口单区间硬上限), "
+            f"细分后仍截断, 该段数据未入库")
     # 未触顶: 正常翻页补齐
     results = first_batch
     page = 2
@@ -2671,6 +2723,10 @@ def stat_trace_daily(shop_id, start, end, force=False, force_days=None, trim_ms=
             raise
         except BusyQueueError:
             raise  # 夜间抓取占用激活集团 cookie: 不得吞掉(否则门控被绕过返回空结果)
+        except TraceTruncatedError as e:
+            # 该天数据超接口上限且细分后仍截断: 不落缓存/库, 记日志供人工补抓
+            log_line("trace", f"⚠️ {shop_id} {ds} 数据超上限未入库: {e}")
+            continue
         except Exception as e:
             log_line("trace", f"{shop_id} {ds} 抓取失败: {e}")
             continue
@@ -3080,8 +3136,9 @@ def _parse_roster_sheet(ws, warnings, roster_rows, is_excluded):
 
 
 @app.post("/api/import/trace")
-def import_trace(file: UploadFile = File(...), platform: int = Form(10)):
-    """上传 Excel 文档导入天猫1/2 平台聚合数据。仅接受 IMPORT_PLATFORMS 内平台。
+def import_trace(file: UploadFile = File(...), platform: int = Form(10),
+                 _: dict = Depends(auth.require_admin)):
+    """上传 Excel 文档导入天猫1/2 平台聚合数据。仅管理员可导入。
 
     同步端点(FastAPI 自动放线程池): openpyxl 解析 + 全量落库是重活, async def
     会占事件循环数秒~数十秒, 期间健康检查/其它 async 处理全部停滞。
@@ -3161,6 +3218,50 @@ def import_trace(file: UploadFile = File(...), platform: int = Form(10)):
         "warnings": warnings[:50],
         "warningCount": len(warnings),
     }
+
+
+@app.get("/api/import/template")
+def import_template(platform: int = 10, _: dict = Depends(auth.require_admin)):
+    """下载天猫1/2 Excel 导入模板(表头与解析规则一致, 附该平台已登记店铺名供填写)
+
+    只生成结构: sheet 名/表头与 import_trace 解析器严格对应; 含 1 行示例。
+    """
+    if platform not in IMPORT_PLATFORMS:
+        raise HTTPException(400, f"platform={platform} 非导入平台(仅 {IMPORT_PLATFORMS})")
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "明细数据 1"
+    ws.append(["时间段", "店铺", "店铺消息总量", "采纳数", "生成率"])
+    ws.append([f"{datetime.date.today() - datetime.timedelta(days=1)} 00:00:00", "星科数码专营", 1200, 800, 0.65])
+    ws2 = wb.create_sheet("客服数据抓取")
+    ws2.append(["时间段", "店铺", "客服", "客服消息总量", "采纳数"])
+    ws2.append([f"{datetime.date.today() - datetime.timedelta(days=1)} 00:00:00", "星科数码专营", "客服A", 300, 200])
+    ws3 = wb.create_sheet("后台客服数据抓取")
+    ws3.append(["时间段", "店铺", "客服", "接待量", "询单量", "下单量", "转化", "满意率"])
+    ws3.append(["5.1-5.7", "星科数码专营", "客服A", 100, 60, 30, 0.5, 0.95])
+    ws4 = wb.create_sheet("要抓的客服账号")
+    ws4.append(["店铺", "账号"])
+    ws4.append(["星科数码专营", "客服A"])
+    ws5 = wb.create_sheet("剔除账号登记")
+    ws5.append(["店铺", "账号"])
+    # 该平台已登记店铺名(附录 sheet, 供复制填写; 解析器会跳过未知 sheet)
+    shops = [s for s in IMPORT_SHOPS if s["platform"] == platform]
+    if shops:
+        ws6 = wb.create_sheet("已登记店铺(参考)")
+        ws6.append(["店铺名(必须完全一致)"])
+        for s in shops:
+            ws6.append([s["shopName"]])
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    # 文件名保持 ASCII(HTTP 头 latin-1 限制); 前端下载时用中文名
+    name = "tianmao_import_template.xlsx"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{name}"',
+                 **_NO_CACHE_HEADERS},
+    )
 
 
 @app.get("/api/groups")
@@ -3985,6 +4086,10 @@ def refresh(request: Request):
             return {"status": "queued", "taskId": _task["id"],
                     "queuePosition": _queue_position(_task["id"]), "task": _task_public(_task)}
         _refresh_state["triggered_by"] = _operator_label(request)
+        # 同步置位 running: 不等 worker 首个 switch_group 完成, 杜绝窗口期双启动
+        _refresh_state["running"] = True
+        _refresh_state["error"] = None
+        _refresh_state["progress"] = {"done": 0, "total": 0, "current": "准备中"}
     refresh_all_groups_async(start, end)
     # 直接启动(非调度器)也登记任务列表: 前端显示"谁发起的 + 进度条"
     if request.headers.get("x-scheduler-task") != "1":
@@ -4280,20 +4385,21 @@ def trace_config_get(_: dict = Depends(auth.require_admin)):
 @app.post("/api/config/trace")
 def trace_config_set(payload: dict = Body(...), _: dict = Depends(auth.require_admin)):
     """保存抓取配置(管理员): prefetch_force_days(0~7) / prefetch_days(1~35)"""
-    cfg = load_config()
-    v = payload.get("prefetch_force_days")
-    if v is not None:
-        v = int(v)
-        if not (0 <= v <= 7):
-            raise HTTPException(400, "prefetch_force_days 需为 0~7(0=不强制重抓)")
-        cfg["prefetch_force_days"] = v
-    v = payload.get("prefetch_days")
-    if v is not None:
-        v = int(v)
-        if not (1 <= v <= 35):
-            raise HTTPException(400, "prefetch_days 需为 1~35")
-        cfg["prefetch_days"] = v
-    save_config(cfg)
+    def _apply(cfg):
+        v = payload.get("prefetch_force_days")
+        if v is not None:
+            v = int(v)
+            if not (0 <= v <= 7):
+                raise HTTPException(400, "prefetch_force_days 需为 0~7(0=不强制重抓)")
+            cfg["prefetch_force_days"] = v
+        v = payload.get("prefetch_days")
+        if v is not None:
+            v = int(v)
+            if not (1 <= v <= 35):
+                raise HTTPException(400, "prefetch_days 需为 1~35")
+            cfg["prefetch_days"] = v
+
+    cfg = mutate_config(_apply)
     return {"ok": True,
             "prefetch_force_days": cfg["prefetch_force_days"],
             "prefetch_days": cfg["prefetch_days"]}
@@ -4317,6 +4423,7 @@ def trace_shop(shop_id: str, days: int = 7, force: int = 0, start: str | None = 
         raise HTTPException(400, f"end 格式非法: {end}")
     if start and end and start > end:
         raise HTTPException(400, f"开始时间不能晚于结束时间: {start} > {end}")
+    _check_span_limit(start, end)
     _sms, _ems, _sday, _eday, _ht = _split_bounds(start, end)
     today_str = datetime.date.today().isoformat()
     # 导入平台(天猫1/2)店: 纯 DB 天级聚合, 无原始消息, 绝不发 tanyu 请求
@@ -4719,6 +4826,7 @@ def trace_overview(request: Request, days: int = 7, platform: int | None = None,
     if start and end and start > end:
         # ISO 串(含 'T')字典序即时间序; 否则 start>end 时 _split_bounds 负区间静默空结果
         raise HTTPException(400, f"开始时间不能晚于结束时间: {start} > {end}")
+    _check_span_limit(start, end)
     # 区间统一归一化: 唯一事实源(ms 边界 + day 边界 + 是否带时间), 下游一律用它取值
     _sms, _ems, sday, eday, has_time = _split_bounds(start, end)
     # 店铺子集核算不复用全量缓存(勾选不同店铺结果不同)
@@ -4982,18 +5090,21 @@ def trace_overview(request: Request, days: int = 7, platform: int | None = None,
         except Exception as e:
             _trace_state["error"] = str(e)
         finally:
-            _trace_state["running"] = False
-            # 运行已结束: 清掉暂停标记, 避免下次查询/再核算时遗留 paused=True
-            _trace_state["paused"] = False
-            _trace_resume_evt.clear()  # 清事件, 避免后续暂停 wait() 立即返回造成忙等
-            # 恢复核算前激活集团(仅当确实切换过且未风控; 风控下 switch_group 会被拦)
-            if orig_gid and not _risk_state.get("triggered"):
-                try:
-                    if load_config().get("cookies", {}).get("tanyu-group-id") != orig_gid:
-                        switch_group(orig_gid)
-                        log_line("trace", f"已恢复原激活集团 {orig_gid}")
-                except Exception as e:
-                    log_line("trace", f"⚠️ 恢复原集团失败: {e}")
+            # 先恢复核算前激活集团(耗时数秒), 完成后再清 running —— 恢复窗口内
+            # 保持 running=True, 防止新 worker 启动互踩集团 cookie
+            try:
+                if orig_gid and not _risk_state.get("triggered"):
+                    try:
+                        if load_config().get("cookies", {}).get("tanyu-group-id") != orig_gid:
+                            switch_group(orig_gid)
+                            log_line("trace", f"已恢复原激活集团 {orig_gid}")
+                    except Exception as e:
+                        log_line("trace", f"⚠️ 恢复原集团失败: {e}")
+            finally:
+                _trace_state["running"] = False
+                # 运行已结束: 清掉暂停标记, 避免下次查询/再核算时遗留 paused=True
+                _trace_state["paused"] = False
+                _trace_resume_evt.clear()  # 清事件, 避免后续暂停 wait() 立即返回造成忙等
 
     threading.Thread(target=worker, daemon=True).start()
     return {"status": "running", "startDate": start, "endDate": end,
@@ -5055,6 +5166,7 @@ def trace_staff(days: int = 7, start: str | None = None, end: str | None = None,
         raise HTTPException(400, f"end 格式非法: {end}")
     if start and end and start > end:
         raise HTTPException(400, f"开始时间不能晚于结束时间: {start} > {end}")
+    _check_span_limit(start, end)
     _sms, _ems, sday, eday, has_time = _split_bounds(start, end)
     shop_filter = {s for s in shop_ids.split(",") if s.strip()} if shop_ids else None
     result = {"startDate": start, "endDate": end, "platform": platform,
@@ -5106,13 +5218,264 @@ def trace_staff(days: int = 7, start: str | None = None, end: str | None = None,
     return result
 
 
+@app.get("/api/trace/compare")
+def trace_compare(mode: str = "week", platform: int | None = None):
+    """周期对比: 本周 vs 上周 / 本月 vs 上月, 逐店消息量/采纳率变化
+
+    mode=week: 本周一~昨天 vs 上周一~上周日; mode=month: 本月1日~昨天 vs 上月全月。
+    返回每店 {name, platform, cur/prev 的 total/adopted/rate, deltaTotal%(消息量), deltaRatePP(采纳率百分点)}。
+    数据源 trace_daily(本地聚合, 零上游请求)。
+    """
+    today = datetime.date.today()
+    yesterday = today - datetime.timedelta(days=1)
+    if mode == "month":
+        cur_start = today.replace(day=1)
+        prev_end = cur_start - datetime.timedelta(days=1)
+        prev_start = prev_end.replace(day=1)
+    else:  # week: 本周一 ~ 昨天(周一当天昨天在上周, 退化为近7天)
+        cur_start = today - datetime.timedelta(days=today.weekday())
+        if cur_start > yesterday:
+            cur_start = yesterday - datetime.timedelta(days=6)
+        prev_end = cur_start - datetime.timedelta(days=1)
+        prev_start = prev_end - datetime.timedelta(days=6)
+    cur_shops = trace_store.shop_totals(cur_start.isoformat(), yesterday.isoformat(), platform=platform)
+    prev_shops = trace_store.shop_totals(prev_start.isoformat(), prev_end.isoformat(), platform=platform)
+    rows = []
+    for sid, cs in cur_shops.items():
+        ps = prev_shops.get(sid)
+        if not ps:
+            continue
+        delta_total = ((cs["total"] - ps["total"]) / ps["total"] * 100) if ps["total"] else 0
+        cur_rate = (cs["adopted"] / cs["total"] * 100) if cs["total"] else 0
+        prev_rate = (ps["adopted"] / ps["total"] * 100) if ps["total"] else 0
+        rows.append({
+            "id": sid, "name": cs["name"], "platform": cs["platform"],
+            "curTotal": cs["total"], "curAdopted": cs["adopted"], "curRate": round(cur_rate, 2),
+            "prevTotal": ps["total"], "prevAdopted": ps["adopted"], "prevRate": round(prev_rate, 2),
+            "deltaTotal": round(delta_total, 1),
+            "deltaRatePP": round(cur_rate - prev_rate, 2),
+        })
+    rows.sort(key=lambda x: x["curTotal"], reverse=True)
+    return {"mode": mode,
+            "curStart": cur_start.isoformat(), "curEnd": yesterday.isoformat(),
+            "prevStart": prev_start.isoformat(), "prevEnd": prev_end.isoformat(),
+            "rows": rows,
+            "curTotal": sum(r["curTotal"] for r in rows),
+            "prevTotal": sum(r["prevTotal"] for r in rows)}
+
+
+# ---------- 数据洞察(哨兵日历 / 客服生物钟 / AI 洞察日报) ----------
+@app.get("/api/trace/coverage-grid")
+def trace_coverage_grid(days: int = 35, platform: int | None = None):
+    """数据完整性哨兵: 完整日窗口 × 店铺 覆盖矩阵(数据洞察页)
+
+    绿=该天已抓取(含 0 消息, upsert_shop_day 已写行); 红=缺抓; 今天未定型不展示。
+    """
+    days = max(1, min(int(days), 35))
+    end = datetime.date.today() - datetime.timedelta(days=1)
+    start = end - datetime.timedelta(days=days - 1)
+    # 店铺清单: 跨集团全部(trace_store.get_shops), 可平台过滤
+    try:
+        shop_rows = trace_store.get_shops(platform=platform)
+    except Exception:
+        shop_rows = []
+    shops = [{"id": r["thirdShopId"], "name": r["shopName"], "platform": r["platform"]}
+             for r in shop_rows]
+    cells = trace_store.coverage_grid(start.isoformat(), end.isoformat(), platform=platform)
+    # 该平台店铺数(用于缺格统计)
+    day_list = [(start + datetime.timedelta(days=i)).isoformat() for i in range(days)]
+    missing = 0
+    total_cells = len(shops) * days
+    for sid in shops:
+        s_cells = cells.get(sid["id"], {})
+        for d in day_list:
+            if d not in s_cells:
+                missing += 1
+    return {"start": start.isoformat(), "end": end.isoformat(),
+            "days": day_list, "shops": shops, "cells": cells,
+            "missingCells": missing, "totalCells": total_cells}
+
+
+@app.get("/api/trace/hourly-heatmap")
+def trace_hourly_heatmap(days: int = 7, platform: int | None = None):
+    """客服生物钟: 近 N 个完整日 × 24 小时的消息量热力分布"""
+    days = max(1, min(int(days), 30))
+    end = datetime.date.today() - datetime.timedelta(days=1)
+    start = end - datetime.timedelta(days=days - 1)
+    start_ms = int(datetime.datetime(start.year, start.month, start.day).timestamp() * 1000)
+    end_ms = int((datetime.datetime(end.year, end.month, end.day) + datetime.timedelta(days=1)).timestamp() * 1000) - 1
+    rows = trace_store.hourly_counts(start_ms, end_ms, platform=platform)
+    counts = {}  # day -> {hour: n}
+    for d, h, n in rows:
+        counts.setdefault(d, {})[h] = n
+    day_list = [d for d in counts.keys()]
+    day_list.sort()
+    # 补全空天(缺抓的天也显示, 便于一眼看出哪天没数据)
+    full = [(start + datetime.timedelta(days=i)).isoformat() for i in range(days)]
+    for d in full:
+        counts.setdefault(d, {})
+    return {"start": start.isoformat(), "end": end.isoformat(),
+            "days": full, "hours": list(range(24)), "counts": counts}
+
+
+@app.get("/api/insights")
+def insights(days: int = 1, platform: int | None = None):
+    """AI 洞察日报(规则引擎, 非大模型): 基于 trace_daily 本地聚合自动生成
+    自然语言洞察: 总量环比 / 平台分解 / 采纳率 / 客服 TOP / 异常店铺 / 缺抓警告。
+    days=1 只对比昨天 vs 前天; days=3/7 对比区间 vs 前同等长度区间。
+    """
+    days = max(1, min(int(days), 30))
+    today = datetime.date.today()
+    # 区间 A: 最近 N 个完整日(不含今天); 区间 B: 更早的同等长度区间
+    a_end = today - datetime.timedelta(days=1)
+    a_start = a_end - datetime.timedelta(days=days - 1)
+    b_end = a_start - datetime.timedelta(days=1)
+    b_start = b_end - datetime.timedelta(days=days - 1)
+    items = []
+    # 1) 区间内每店聚合(对比用)
+    a_shops = trace_store.shop_totals(a_start.isoformat(), a_end.isoformat(), platform=platform)
+    b_shops = trace_store.shop_totals(b_start.isoformat(), b_end.isoformat(), platform=platform)
+    a_total = sum(s["total"] for s in a_shops.values())
+    a_adopted = sum(s["adopted"] for s in a_shops.values())
+    b_total = sum(s["total"] for s in b_shops.values())
+    b_adopted = sum(s["adopted"] for s in b_shops.values())
+    a_rate = (a_adopted / a_total * 100) if a_total else 0
+    b_rate = (b_adopted / b_total * 100) if b_total else 0
+    label_a = "昨日" if days == 1 else f"近{days}天"
+    label_b = "前日" if days == 1 else f"前{days}天"
+    # 2) 总量洞察
+    def _fmt(n):
+        """千分位格式化(前端 fmt 的 Python 版)"""
+        try:
+            return f"{int(n):,}"
+        except Exception:
+            return str(n)
+
+    import html as _html_mod
+    _html = _html_mod.escape
+
+    if a_total:
+        diff = (a_total - b_total) / b_total * 100 if b_total else 0
+        arrow = "▲" if diff >= 0 else "▼"
+        items.append({
+            "level": "success" if diff > 0 else ("info" if diff == 0 else "warning"),
+            "text": f"{arrow} {label_a}消息量 <b>{_fmt(a_total)}</b> 条, 环比{label_b} "
+                    f"{'+' if diff >= 0 else ''}{diff:.1f}%({_fmt(b_total)} 条)"})
+    # 3) 采纳率洞察
+    if a_total:
+        rdiff = a_rate - b_rate
+        items.append({
+            "level": "success" if rdiff >= 0 else "warning",
+            "text": f"采纳率 <b>{a_rate:.2f}%</b>({_fmt(a_adopted)}/{_fmt(a_total)}), "
+                    f"环比{'+' if rdiff >= 0 else ''}{rdiff:.2f} 个百分点"})
+    # 4) 平台分解(仅当未指定平台)
+    if platform is None:
+        pf_totals = {}
+        for s in a_shops.values():
+            pf = s["platform"]
+            e = pf_totals.setdefault(pf, {"total": 0, "adopted": 0, "shops": 0})
+            e["total"] += s["total"]
+            e["adopted"] += s["adopted"]
+            e["shops"] += 1
+        if len(pf_totals) > 1:
+            top_pf = max(pf_totals.items(), key=lambda x: x[1]["total"])
+            share = (top_pf[1]["total"] / a_total * 100) if a_total else 0
+            pname = PLATFORM_NAMES.get(top_pf[0], f"平台{top_pf[0]}")
+            items.append({
+                "level": "info",
+                "text": f"平台占比: <b>{pname}</b> 居首({share:.1f}%), "
+                        f"{top_pf[1]['total']} 条 / {top_pf[1]['shops']} 家店"})
+    # 5) 客服 TOP(采纳数 / 采纳率, 来自 trace_daily.by_staff_json)
+    try:
+        shop_names = {}
+        for s in load_all_shops():
+            shop_names[s["thirdShopId"]] = s.get("shopName", "")
+        staff_totals = {}
+        cells_a = trace_store.coverage_grid(a_start.isoformat(), a_end.isoformat(), platform=platform)
+        for sid, days_map in cells_a.items():
+            for d in days_map:
+                # 从 trace_daily 读 by_staff_json
+                staff_rows = trace_store.shop_staff_json(sid, d)
+                for acct, v in (staff_rows or []):
+                    e = staff_totals.setdefault(f"{acct}@{shop_names.get(sid, '')}",
+                                                {"total": 0, "adopted": 0, "acct": acct})
+                    e["total"] += v.get("total", 0)
+                    e["adopted"] += v.get("adopted", 0)
+        if staff_totals:
+            top = max(staff_totals.items(), key=lambda x: x[1]["total"])
+            top_rate = max(
+                (x for x in staff_totals.items() if x[1]["total"] >= 20),
+                key=lambda x: (x[1]["adopted"] / x[1]["total"] if x[1]["total"] else 0),
+                default=None)
+            msg = f"客服处理量第一: <b>{_html(top[1]['acct'])}</b> 处理 {_fmt(top[1]['total'])} 条"
+            if top_rate and top_rate[0] != top[0]:
+                msg += (f" · 采纳率第一: <b>{_html(top_rate[1]['acct'])}</b> "
+                        f"({top_rate[1]['adopted']/top_rate[1]['total']*100:.1f}%)")
+            items.append({"level": "success", "text": msg})
+    except Exception:
+        pass
+    # 6) 异常店铺(环比变化 > ±50% 且总量 ≥ 100)
+    if a_shops and b_shops:
+        swings = []
+        for sid, sa in a_shops.items():
+            sb = b_shops.get(sid)
+            if not sb or sb["total"] < 50:
+                continue
+            if sa["total"] < 50:
+                continue
+            d = (sa["total"] - sb["total"]) / sb["total"] * 100
+            if abs(d) >= 50:
+                swings.append((d, sa["name"]))
+        swings.sort(reverse=True)
+        for d, name in swings[:3]:
+            items.append({
+                "level": "danger" if d < 0 else "info",
+                "text": f"店铺「{_html(name)}」消息量 "
+                        f"{'+' if d >= 0 else ''}{d:.0f}%"})
+    # 7) 缺抓警告(覆盖矩阵缺格)
+    try:
+        cells_b = trace_store.coverage_grid(a_start.isoformat(), a_end.isoformat(), platform=platform)
+        missing = 0
+        for sid in a_shops:
+            s_cells = cells_b.get(sid, {})
+            for i in range(days):
+                d = (a_start + datetime.timedelta(days=i)).isoformat()
+                if d not in s_cells:
+                    missing += 1
+        if missing:
+            items.append({
+                "level": "danger",
+                "text": f"数据缺口: 区间内有 <b>{missing}</b> 个 (店×天) 未抓到, "
+                        f"可在「系统设置 → 手动补抓数据」补齐"})
+        else:
+            items.append({
+                "level": "success",
+                "text": f"数据完整性: 区间内 {len(a_shops)} 家店全部抓取完整, 无缺口"})
+    except Exception:
+        pass
+    return {"items": items, "start": a_start.isoformat(), "end": a_end.isoformat(),
+            "label": label_a, "compare": label_b, "total": a_total, "adopted": a_adopted,
+            "rate": round(a_rate, 2)}
+
+
+def _shop_name(shop_id):
+    """店铺名(洞察客服行展示用)"""
+    try:
+        shops = {s["thirdShopId"]: s["shopName"] for s in load_all_shops()}
+        return shops.get(shop_id, "")
+    except Exception:
+        return ""
+
+
 # ---------- 今日实时抓取(核算/人工客服「抓取今日数据」) ----------
 def _parse_hhmm(ts, default="00:00"):
-    """解析 HH:MM 或 HH:MM:SS(秒级今日抓取用), 非法返回 default"""
+    """解析 HH:MM 或 HH:MM:SS(秒级今日抓取用), 非法或越界返回 default"""
     try:
         parts = str(ts).strip().split(":")
         h, m = int(parts[0]), int(parts[1])
         s = int(parts[2]) if len(parts) > 2 else 0
+        if not (0 <= h <= 23 and 0 <= m <= 59 and 0 <= s <= 59):
+            return default
         if s:
             return f"{h:02d}:{m:02d}:{s:02d}"
         return f"{h:02d}:{m:02d}"
@@ -5124,7 +5487,11 @@ def _ts_seconds(ts):
     """HH:MM 或 HH:MM:SS → 当日秒数(用于秒级起止比较), 非法返回 None"""
     try:
         p = str(ts).split(":")
-        return int(p[0]) * 3600 + int(p[1]) * 60 + (int(p[2]) if len(p) > 2 else 0)
+        h, m = int(p[0]), int(p[1])
+        s = int(p[2]) if len(p) > 2 else 0
+        if not (0 <= h <= 23 and 0 <= m <= 59 and 0 <= s <= 59):
+            return None
+        return h * 3600 + m * 60 + s
     except Exception:
         return None
 
@@ -5245,6 +5612,7 @@ def trace_today(request: Request, platform: int | None = None, shop_ids: str | N
             shop_list = []
             staff_shop_agg = {}
             agg_total = agg_adopted = 0
+            by_plat = {}   # {platform: {"total","adopted","shops"}} 按平台拆分, 供前端"今日各平台"展示
             done = 0
             for gid, g, shops in groups_target:
                 if _risk_state.get("triggered"):
@@ -5284,6 +5652,11 @@ def trace_today(request: Request, platform: int | None = None, shop_ids: str | N
                         )
                         agg_total += stat["total"]
                         agg_adopted += stat["adopted"]
+                        p = shop.get("platform", 0)
+                        agg_p = by_plat.setdefault(p, {"total": 0, "adopted": 0, "shops": 0})
+                        agg_p["total"] += stat["total"]
+                        agg_p["adopted"] += stat["adopted"]
+                        agg_p["shops"] += 1
                         for st in stat.get("byStaff", []):
                             shop_agg = staff_shop_agg.setdefault(shop["thirdShopId"], {})
                             entry = shop_agg.setdefault(st["account"], {"total": 0, "adopted": 0})
@@ -5310,6 +5683,12 @@ def trace_today(request: Request, platform: int | None = None, shop_ids: str | N
                             "startTs": start_ts, "endTs": end_ts, "platform": platform,
                             "total": agg_total, "adopted": agg_adopted,
                             "rate": round(agg_adopted / agg_total * 100, 2) if agg_total else 0,
+                            "byPlatform": {
+                                str(p): {"total": v["total"], "adopted": v["adopted"],
+                                         "rate": round(v["adopted"] / v["total"] * 100, 2) if v["total"] else 0,
+                                         "shops": v["shops"]}
+                                for p, v in by_plat.items()
+                            },
                             "shopList": list(shop_list),
                             "byStaff": _staff_list_per_shop(staff_shop_agg, platform, shop_filter),
                             "live": True,
@@ -5319,15 +5698,17 @@ def trace_today(request: Request, platform: int | None = None, shop_ids: str | N
         except Exception as e:
             _today_state["error"] = str(e)
         finally:
-            _today_state["running"] = False
-            # 恢复原激活集团(风控时不强行切换)
-            if orig_gid and not _risk_state.get("triggered"):
-                try:
-                    if orig_gid != load_config().get("cookies", {}).get("tanyu-group-id"):
-                        switch_group(orig_gid)
-                        log_line("today", f"已恢复原激活集团 {orig_gid}")
-                except Exception as e:
-                    log_line("today", f"⚠️ 恢复原集团失败: {e}")
+            # 先恢复原激活集团(耗时数秒), 完成后再清 running(防止恢复窗口内双启动)
+            try:
+                if orig_gid and not _risk_state.get("triggered"):
+                    try:
+                        if orig_gid != load_config().get("cookies", {}).get("tanyu-group-id"):
+                            switch_group(orig_gid)
+                            log_line("today", f"已恢复原激活集团 {orig_gid}")
+                    except Exception as e:
+                        log_line("today", f"⚠️ 恢复原集团失败: {e}")
+            finally:
+                _today_state["running"] = False
 
     threading.Thread(target=worker, daemon=True).start()
     return {"status": "running", "startDate": today_str, "endDate": today_str,
@@ -5429,6 +5810,7 @@ def trace_messages(shop_id: str, days: int = 7, force: int = 0,
         raise HTTPException(400, f"end 格式非法: {end}")
     if start and end and start > end:
         raise HTTPException(400, f"开始时间不能晚于结束时间: {start} > {end}")
+    _check_span_limit(start, end)
     _sms, _ems, sday, eday, has_time = _split_bounds(start, end)
     today_str = datetime.date.today().isoformat()
     # 导入平台(天猫1/2)店: 无原始消息, 返回天级 daily + 空 messages, 绝不请求 tanyu
@@ -5546,6 +5928,11 @@ def _maybe_prune_tasks():
         _last_task_prune_ts[0] = now
         try:
             log_store.prune_tasks(days=log_store.TASK_RETENTION_HOURS / 24)
+        except Exception:
+            pass
+        # 操作日志保留 90 天(每条非轮询请求一行, 无限膨胀拖慢查询/写放大)
+        try:
+            trace_store.prune_operation_log(keep_days=90)
         except Exception:
             pass
 
@@ -5733,8 +6120,8 @@ def auth_register(body: AuthRegisterBody, request: Request):
     username = (body.username or "").strip()
     if not auth.valid_username(username):
         raise HTTPException(status_code=400, detail="用户名需为 3~64 位字母/数字/下划线/@/.(支持邮箱格式)")
-    if not auth.valid_password(body.password):
-        raise HTTPException(status_code=400, detail="密码至少 6 位")
+    if not auth.valid_password_strong(body.password):
+        raise HTTPException(status_code=400, detail="密码需 8 位以上, 且同时包含字母和数字")
     try:
         user = trace_store.create_user(username, auth.hash_password(body.password), role="user")
     except ValueError as e:
@@ -5883,10 +6270,8 @@ def admin_set_register(enabled: bool = Body(True), _: dict = Depends(auth.requir
 
 
 @app.post("/api/cookies")
-def update_cookies(body: CookieUpdate):
-    cfg = load_config()
-    cfg["cookies"] = body.cookies
-    save_config(cfg)
+def update_cookies(body: CookieUpdate, _: dict = Depends(auth.require_admin)):
+    mutate_config(lambda c: c.__setitem__("cookies", body.cookies))
     return {"ok": True}
 
 
@@ -5955,28 +6340,36 @@ def _login_worker():
                 cks = ctx.cookies()
                 found = {c["name"]: c["value"] for c in cks if c["name"] in LOGIN_COOKIE_NAMES}
                 if len(found) >= 3:  # 至少3个关键 cookie
-                    cfg = load_config()
-                    cfg["cookies"].update(found)
                     # 记录各 cookie 到期日(playwright expires 是 epoch 秒; -1=SESSION 不记录)
                     try:
-                        expires_map = dict(cfg.get("cookie_expires") or {})
+                        expires_map = {}
                         for c in cks:
                             if c["name"] in LOGIN_COOKIE_NAMES and c.get("expires", -1) not in (-1, None):
                                 day = datetime.datetime.fromtimestamp(c["expires"]).strftime("%Y-%m-%d")
                                 expires_map[c["name"]] = day
-                        cfg["cookie_expires"] = expires_map
                     except Exception:
-                        pass
+                        expires_map = {}
                     # 尝试读取扫码登录时写入 localStorage 的集团列表
                     try:
                         group_list = page.evaluate("() => localStorage.getItem('groupList')")
-                        if group_list:
-                            groups = json.loads(group_list)
-                            if isinstance(groups, list) and groups:
-                                cfg["groups"] = groups
+                        new_groups = json.loads(group_list) if group_list else None
                     except Exception:
-                        pass
-                    save_config(cfg)
+                        new_groups = None
+
+                    def _apply_login_cfg(c):
+                        c["cookies"].update(found)
+                        if expires_map:
+                            c["cookie_expires"] = expires_map
+                        # 集团列表: 只保留与现有 config.groups 匹配的集团(groupId 相同),
+                        # 按 groupId 合并更新 —— 与扫码登录一致, 防止换成其他账号后
+                        # groupList 全量覆盖导致"突然多出其他平台"
+                        if isinstance(new_groups, list) and new_groups:
+                            scanned = _scan_groups_allowed(new_groups)
+                            _merge_scan_groups(c, scanned)
+
+                    # 锁内读改写: cookie + 到期日 + 集团列表一次落盘, 不覆盖并发写者
+                    mutate_config(_apply_login_cfg)
+                    cfg = load_config()
                     # 新凭证已保存, 自动解除风控停止状态
                     _reset_risk()
                     group_note = ""
@@ -5985,7 +6378,7 @@ def _login_worker():
                     with _login_lock:
                         _login_state["phase"] = "got_cookie"
                         _login_state["message"] = (
-                            "已获取 Cookie 并保存 ✅ " + ", ".join(found.keys()) + group_note
+                            "已获取 Cookie 并保存 " + ", ".join(found.keys()) + group_note
                         )
                     browser.close()
                     return
@@ -6066,21 +6459,70 @@ def _wx_headers():
 def _capture_wx_cookies(resp):
     """从微信登录相关响应的 Set-Cookie 捕获 tanyu-* cookie 并持久化(仅登录链路)"""
     try:
-        cfg = load_config()
         got = {}
         for name, value in resp.cookies.items():
             if name.startswith("tanyu-"):
                 got[name] = value
         if not got:
             return False
-        cfg.setdefault("cookies", {}).update(got)
-        save_config(cfg)
+        # 锁内读改写, 不覆盖并发写者
+        mutate_config(lambda c: c.setdefault("cookies", {}).update(got))
         _capture_cookie_expiry(resp)
         log_line("auth", f"二维码登录捕获 cookie: {', '.join(sorted(got))}")
         return True
     except Exception as e:
         log_line("auth", f"捕获 cookie 失败: {e}")
         return False
+
+
+def _scan_groups_allowed(infos):
+    """扫码返回的账号列表 → 仅保留与现有 config.groups 匹配的集团(groupId 相同)
+
+    需求: 换微信扫码登录时保留当前这几个集团; 新微信上出现的其他平台/新集团
+    一律不加载, 防止 config.groups 被整体替换成微信账号全量绑定导致"突然多出
+    其他平台"。匹配键用集团维度 id(groupId, 同一集团无论谁登录都不变)。
+    返回构造好的集团列表(字段与 wx_qr_select 原逻辑一致)。
+    """
+    cfg = load_config()
+    existing = {g.get("groupId") for g in (cfg.get("groups") or []) if g.get("groupId")}
+    groups = []
+    for g in infos or []:
+        if not g.get("accountId"):
+            continue
+        gid = g.get("groupId") or g.get("chatbotGroupId") or ""
+        if not gid or gid not in existing:
+            continue  # 新集团/其他平台: 不加载
+        ng = {
+            "groupId": gid,
+            "groupName": g.get("groupName") or g.get("accountName") or "未知集团",
+            "accountId": g.get("accountId"),
+            "accountType": g.get("accountType", 3),
+            "ifEnable": g.get("ifEnable", True),
+            "platform": g.get("platform"),
+        }
+        if not ng["platform"]:
+            ng["platform"] = _infer_group_platform(ng)
+        groups.append(ng)
+    return groups
+
+
+def _merge_scan_groups(cfg, scanned):
+    """把扫码/登录得到的集团合并进 config.groups
+
+    - 现有 groups 为空: 全量采用 scanned(首次初始化, 无既有集团可保留);
+    - 非空: 仅更新 groupId 匹配的条目, 其余现有条目原样保留; 新出现的集团
+      (含其他平台)一律不加入 —— 换微信后集团列表既不丢也不"多出平台"。
+    """
+    old = cfg.get("groups") or []
+    if not old:
+        cfg["groups"] = list(scanned)
+        return
+    by_id = {g.get("groupId"): g for g in scanned if g.get("groupId")}
+    merged = []
+    for g in old:
+        upd = by_id.pop(g.get("groupId"), None)
+        merged.append(upd if upd else g)
+    cfg["groups"] = merged
 
 
 @app.post("/api/wx-qr/start")
@@ -6124,8 +6566,11 @@ def wx_qr_status():
     with _wx_qr_lock:
         st = dict(_wx_qr_state)
     if st["phase"] == "confirmed":
-        return {"phase": "confirmed",
-                "accountInfos": (st["info"] or {}).get("accountInfos") or []}
+        # 只返回与现有 config.groups 匹配的账号(集团), 新平台/新集团不展示,
+        # 前端不会出现"其他平台"可选项; 全被过滤时前端显示"未返回可进入的集团"
+        infos = (st["info"] or {}).get("accountInfos") or []
+        allowed = _scan_groups_allowed(infos)
+        return {"phase": "confirmed", "accountInfos": allowed}
     if st["phase"] not in ("waiting",):
         return {"phase": st["phase"], "error": st["error"]}
     if time.time() - st["created"] > WX_QR_TTL:
@@ -6170,8 +6615,10 @@ class WxQrSelectBody(BaseModel):
 def wx_qr_select(body: WxQrSelectBody):
     """扫码确认后选择集团: 调 login-by-wx 获取 tanyu-* cookie 并自动保存
 
-    完成后: 保存集团列表 → 捕获 cookie → 同步店铺 → 解除风控停止。
-    login-by-wx 未下发集团 cookie 时, 用 switch-group-by-wx 补齐(同 switch_group)。
+    完成后: 合并保存集团列表(仅保留现有集团, 新平台不加载) → 捕获 cookie →
+    强制切到选中账号的集团并同步店铺 → 解除风控停止。
+    强制切换: 无论 login-by-wx 是否下发 tanyu-group-id, 都以选中账号所属集团
+    为准切换, 防止 config 里残留旧微信的 tanyu-group-id 导致串集团。
     """
     with _wx_qr_lock:
         st = dict(_wx_qr_state)
@@ -6190,47 +6637,47 @@ def wx_qr_select(body: WxQrSelectBody):
     if d.get("success") is False:
         raise HTTPException(502, d.get("msg") or "登录失败")
     _capture_wx_cookies(r)
+    # 集团列表: 只保留与现有 config.groups 匹配的集团(新平台/新集团不加载),
+    # 并按 groupId 合并更新(未匹配的现有集团原样保留, 不整体替换)
+    scanned = _scan_groups_allowed(info.get("accountInfos") or [])
+
+    def _apply_login_groups(c):
+        _merge_scan_groups(c, scanned)
+
+    mutate_config(_apply_login_groups)
     cfg = load_config()
-    # 集团列表(与扫码登录写 localStorage 的 groupList 同源)
-    infos = info.get("accountInfos") or []
-    groups = []
-    for g in infos:
-        if not g.get("accountId"):
-            continue
-        ng = {
-            "groupId": g.get("groupId") or g.get("chatbotGroupId") or "",
-            "groupName": g.get("groupName") or g.get("accountName") or "未知集团",
-            "accountId": g.get("accountId"),
-            "accountType": g.get("accountType", 3),
-            "ifEnable": g.get("ifEnable", True),
-            "platform": g.get("platform"),
-        }
-        if not ng["platform"]:
-            ng["platform"] = _infer_group_platform(ng)
-        groups.append(ng)
-    if groups:
-        cfg["groups"] = groups
-        save_config(cfg)
-    # login-by-wx 未带集团 cookie 时用 switch-group-by-wx 补齐并同步店铺
-    if not cfg.get("cookies", {}).get("tanyu-group-id"):
-        g = next((x for x in groups if x.get("accountId") == body.account_id), None)
-        if g and g.get("groupId"):
-            try:
-                switch_group(g["groupId"])
-            except Exception as e:
-                log_line("auth", f"登录后切换集团失败: {e}")
-    else:
-        try:
+    # 选中的账号必须属于保留集团(前端只展示这些, 此处兜底拦截误选)
+    sel = next((g for g in (cfg.get("groups") or [])
+                if g.get("accountId") == body.account_id), None)
+    if not sel or not sel.get("groupId"):
+        _reset_risk()
+        with _wx_qr_lock:
+            _wx_qr_state["phase"] = "done"
+            _wx_qr_state["error"] = None
+        log_line("auth", f"二维码登录: 账号 {body.account_id} 不属于看板保留集团, 已保存 Cookie 未切换集团")
+        return {"ok": True, "group": None,
+                "warning": "该账号所属集团不在看板支持的集团内, 已保存 Cookie 但未切换集团"}
+    # 强制把激活集团切到选中账号的集团(拉取该集团 cookie), 而非仅当 config
+    # 缺少 tanyu-group-id 才切 —— 覆盖"新微信 cookie + 残留旧微信 group-id"的串集团场景
+    switched = False
+    try:
+        if cfg.get("cookies", {}).get("tanyu-group-id") != sel["groupId"]:
+            switch_group(sel["groupId"])
+        else:
             sync_shops_from_tanyu()
-        except Exception as e:
-            log_line("auth", f"登录后同步店铺失败: {e}")
+        switched = True
+    except Exception as e:
+        log_line("auth", f"登录后切换集团失败: {e}")
     _reset_risk()
     with _wx_qr_lock:
         _wx_qr_state["phase"] = "done"
         _wx_qr_state["error"] = None
     cur = get_current_group()
     log_line("auth", f"二维码登录成功: {cur.get('name') if cur else ''} ({body.account_id})")
-    return {"ok": True, "group": cur}
+    resp = {"ok": True, "group": cur}
+    if not switched:
+        resp["warning"] = "Cookie 已保存, 但切换集团失败, 请检查该集团账号在新微信下是否可用"
+    return resp
 
 
 _NO_CACHE_HEADERS = {"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"}
