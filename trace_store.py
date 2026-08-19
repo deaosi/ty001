@@ -1130,7 +1130,7 @@ def overview_aggregate(start, end, platform=None, shop_filter=None):
             where += f" AND d.third_shop_id IN ({placeholders})"
             args.extend(shop_filter)
         rows = c.execute(
-            f"""SELECT d.third_shop_id, d.day, d.total, d.adopted, d.by_staff_json
+            f"""SELECT d.third_shop_id, d.day, d.total, d.adopted, d.by_staff_json, d.by_type_json
                 FROM trace_daily d
                 JOIN shops s ON s.third_shop_id = d.third_shop_id
                 WHERE {where}
@@ -1141,9 +1141,23 @@ def overview_aggregate(start, end, platform=None, shop_filter=None):
         staff_agg = {}
         for r in rows:
             sid = r["third_shop_id"]
-            sm = shop_map.setdefault(sid, {"total": 0, "adopted": 0})
+            sm = shop_map.setdefault(sid, {"total": 0, "adopted": 0, "replies": 0,
+                                           "_rate_sum": 0.0, "_reply_rate_sum": 0.0, "_days": 0})
             sm["total"] += r["total"]
             sm["adopted"] += r["adopted"]
+            # 客服回复数: 逐日 by_type_json 里的 CONSULT_REPLY 累加
+            bt_replies = 0
+            try:
+                bt = json.loads(r["by_type_json"] or "{}")
+                bt_replies = int(bt.get("CONSULT_REPLY", 0) or 0)
+                sm["replies"] += bt_replies
+            except Exception:
+                pass
+            # 每天采纳率/回复率的累加(平均采纳率/平均回复率: 有消息的天才计入)
+            if r["total"] > 0:
+                sm["_rate_sum"] += r["adopted"] / r["total"] * 100
+                sm["_reply_rate_sum"] += bt_replies / r["total"] * 100
+                sm["_days"] += 1
             try:
                 staff_rows = json.loads(r["by_staff_json"])
             except Exception:
@@ -1152,6 +1166,10 @@ def overview_aggregate(start, end, platform=None, shop_filter=None):
                 e = staff_agg.setdefault(acct, {"total": 0, "adopted": 0})
                 e["total"] += v["total"]
                 e["adopted"] += v["adopted"]
+        for sm in shop_map.values():
+            n = sm.pop("_days", 0)
+            sm["avgAdoptRate"] = round(sm.pop("_rate_sum", 0.0) / n, 2) if n else 0
+            sm["avgReplyRate"] = round(sm.pop("_reply_rate_sum", 0.0) / n, 2) if n else 0
         return {"shop_list": list(shop_map.items()), "staff_agg": staff_agg}
     except Exception:
         return {"shop_list": [], "staff_agg": {}}
@@ -1178,7 +1196,7 @@ def overview_aggregate_ms(start_ms, end_ms, platform=None, shop_filter=None):
             where += f" AND m.third_shop_id IN ({placeholders})"
             args.extend(shop_filter)
         rows = c.execute(
-            f"""SELECT m.third_shop_id, m.send_type, m.seller_account
+            f"""SELECT m.third_shop_id, m.send_type, m.seller_account, m.type, m.msg_time
                 FROM messages m
                 WHERE {where}
                 ORDER BY m.third_shop_id, m.msg_time""",
@@ -1188,16 +1206,38 @@ def overview_aggregate_ms(start_ms, end_ms, platform=None, shop_filter=None):
         staff_agg = {}
         for r in rows:
             sid = r["third_shop_id"]
-            sm = shop_map.setdefault(sid, {"total": 0, "adopted": 0})
+            sm = shop_map.setdefault(sid, {"total": 0, "adopted": 0, "replies": 0,
+                                           "_days": {}})
             sm["total"] += 1
             st = r["send_type"]
             if st in ADOPTED_SEND_TYPES:
                 sm["adopted"] += 1
+            if r["type"] == "CONSULT_REPLY":
+                sm["replies"] += 1
+            # 按天分桶, 供平均采纳率/平均回复率(每天率值的算术平均)
+            day = r["msg_time"] and datetime.datetime.fromtimestamp(r["msg_time"] / 1000).strftime("%Y-%m-%d")
+            dd = sm["_days"].setdefault(day, [0, 0, 0])
+            dd[0] += 1
+            if st in ADOPTED_SEND_TYPES:
+                dd[1] += 1
+            if r["type"] == "CONSULT_REPLY":
+                dd[2] += 1
             acct = r["seller_account"] or "未知"
             e = staff_agg.setdefault(acct, {"total": 0, "adopted": 0})
             e["total"] += 1
             if st in ADOPTED_SEND_TYPES:
                 e["adopted"] += 1
+        for sm in shop_map.values():
+            days = sm.pop("_days", {})
+            n = 0
+            rs = rr = 0.0
+            for total, adopted, replies in days.values():
+                if total > 0:
+                    n += 1
+                    rs += adopted / total * 100
+                    rr += replies / total * 100
+            sm["avgAdoptRate"] = round(rs / n, 2) if n else 0
+            sm["avgReplyRate"] = round(rr / n, 2) if n else 0
         return {"shop_list": list(shop_map.items()), "staff_agg": staff_agg}
     except Exception:
         return {"shop_list": [], "staff_agg": {}}

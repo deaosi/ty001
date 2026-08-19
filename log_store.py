@@ -82,6 +82,9 @@ def init_db():
             cols = [r[1] for r in c.execute("PRAGMA table_info(tasks)").fetchall()]
             if "requested_role" not in cols:
                 c.execute("ALTER TABLE tasks ADD COLUMN requested_role TEXT")
+            # 旧库补列(任务参数, 供前端"查看"按钮跳回对应平台+时间段视图)
+            if "params_json" not in cols:
+                c.execute("ALTER TABLE tasks ADD COLUMN params_json TEXT")
             c.commit()
         finally:
             c.close()
@@ -92,7 +95,7 @@ def upsert_task(task: dict):
     """插入新任务或更新已有任务(id 存在则覆盖)。
 
     task 需含: id/type/label/requested_by/status/created_at + 可选 progress/result/error/started_at/finished_at
-    progress/result 序列化为 JSON 存储。
+    progress/result/params 序列化为 JSON 存储。
     """
     try:
         with _lock:
@@ -101,15 +104,15 @@ def upsert_task(task: dict):
                 c.execute(
                     """INSERT INTO tasks(id, type, label, requested_by, requested_role, status,
                                          progress_json, result_json, error,
-                                         created_at, started_at, finished_at)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                                         created_at, started_at, finished_at, params_json)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                        ON CONFLICT(id) DO UPDATE SET
                          type=excluded.type, label=excluded.label, requested_by=excluded.requested_by,
                          requested_role=excluded.requested_role,
                          status=excluded.status, progress_json=excluded.progress_json,
                          result_json=excluded.result_json, error=excluded.error,
                          created_at=excluded.created_at, started_at=excluded.started_at,
-                         finished_at=excluded.finished_at""",
+                         finished_at=excluded.finished_at, params_json=excluded.params_json""",
                     (
                         int(task["id"]), task.get("type"), task.get("label"),
                         task.get("requested_by"), task.get("requested_role"),
@@ -119,6 +122,7 @@ def upsert_task(task: dict):
                         task.get("error"),
                         task.get("created_at", time.time()),
                         task.get("started_at"), task.get("finished_at"),
+                        json.dumps(task.get("params") or {}, ensure_ascii=False),
                     ),
                 )
                 c.commit()
@@ -138,6 +142,10 @@ def _task_row(row) -> dict:
         d["result"] = json.loads(d.pop("result_json") or "null")
     except Exception:
         d["result"] = None
+    try:
+        d["params"] = json.loads(d.pop("params_json") or "{}")
+    except Exception:
+        d["params"] = {}
     return d
 
 

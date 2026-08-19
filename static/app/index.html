@@ -590,7 +590,8 @@
                   <div class="btn-list">
                     <button class="btn btn-outline-primary" id="btnImportExcel" style="display:none" onclick="app.importExcelPick()"><span class="me-1" data-ic="box"></span>导入 Excel</button>
                     <button class="btn btn-outline-primary" onclick="app.exportShops()"><span class="me-1" data-ic="download"></span>导出</button>
-                    <button class="btn btn-primary" onclick="app.startAudit()"><span class="me-1" data-ic="play"></span>开始核算</button>
+                    <button class="btn btn-outline-secondary" onclick="app.refreshShops()" title="重新读取当前平台+时间段的核算结果(任务完成后可点此刷新)"><span class="me-1" data-ic="refresh"></span>刷新</button>
+                    <button class="btn btn-primary" onclick="app.startRangeAudit()"><span class="me-1" data-ic="play"></span>开始核算</button>
                   </div>
                 </div>
               </div>
@@ -598,7 +599,13 @@
             <div class="card">
               <div class="card-header">
                 <div class="row g-2 align-items-center w-100">
-                  <div class="col-12 col-md-auto"><select id="shopsPlatform" class="form-select form-select-sm" onchange="app.applyPlatform(this.value)"></select></div>
+                  <div class="col-12 col-md-auto">
+                    <select id="shopsPlatform" class="form-select form-select-sm" style="display:none"></select>
+                    <div class="d-flex align-items-center gap-1 flex-wrap" id="shopsPlatBox">
+                      <span class="text-secondary small me-1">平台</span>
+                      <span id="shopsPlatChips" class="d-inline-flex align-items-center gap-1 flex-wrap"></span>
+                    </div>
+                  </div>
                   <div class="col-12 col-md-auto">
                     <select id="shopsRange" class="form-select form-select-sm" onchange="app.shopsRangeChange()">
                       <option value="yesterday" selected>昨日</option>
@@ -634,7 +641,7 @@
                   <div class="col-12 col-md-auto text-md-end">
                     <div class="d-flex align-items-center gap-2 justify-content-md-end flex-wrap">
                       <span class="badge bg-blue-lt" id="shopsSelLabel" style="display:none"></span>
-                      <button class="btn btn-sm btn-primary" id="btnAuditSel" style="display:none" onclick="app.startAudit(true)"><span class="me-1" data-ic="play"></span>核算所选</button>
+                      <button class="btn btn-sm btn-primary" id="btnAuditSel" style="display:none" onclick="app.startRangeAudit(true)"><span class="me-1" data-ic="play"></span>核算所选</button>
                       <button class="btn btn-sm btn-ghost" id="btnClearSel" style="display:none" onclick="app.clearShopsSel()">清除</button>
                       <span class="text-secondary small" id="shopsSummary"></span>
                     </div>
@@ -650,9 +657,14 @@
                     <th class="table-sortable text-end" data-key="total" onclick="app.sortShops('total')">消息总条数<span class="sort-arrow">↕</span></th>
                     <th class="table-sortable text-end" data-key="adopted" onclick="app.sortShops('adopted')">采纳条数<span class="sort-arrow">↕</span></th>
                     <th class="table-sortable text-end" data-key="rate" onclick="app.sortShops('rate')">采纳率<span class="sort-arrow">↕</span></th>
+                    <th class="table-sortable text-end" data-key="avgAdopted" onclick="app.sortShops('avgAdopted')" title="采纳条数 ÷ 区间天数">平均采纳<span class="sort-arrow">↕</span></th>
+                    <th class="table-sortable text-end" data-key="avgReplies" onclick="app.sortShops('avgReplies')" title="客服回复条数 ÷ 区间天数">平均回复<span class="sort-arrow">↕</span></th>
+                    <th class="table-sortable text-end" data-key="avgAdoptRate" onclick="app.sortShops('avgAdoptRate')" title="区间内每天采纳率的算术平均">平均采纳率<span class="sort-arrow">↕</span></th>
+                    <th class="table-sortable text-end" data-key="avgReplyRate" onclick="app.sortShops('avgReplyRate')" title="区间内每天回复率(回复数÷消息数)的算术平均">平均回复率<span class="sort-arrow">↕</span></th>
                     <th class="text-end">操作</th>
                   </tr></thead>
                   <tbody id="shopsBody"></tbody>
+                  <tfoot id="shopsTotalRow" class="table-light"></tfoot>
                 </table>
               </div>
               <input type="file" id="importFile" accept=".xlsx" style="display:none" onchange="app.doImportExcel()">
@@ -1402,6 +1414,8 @@
   var isAdmin = false;
   var rendered = {};
   var pollTimer = null, tasksTimer = null;   // 全局轮询定时器(logout/页面隐藏时清理)
+  var shopsPlats = [];                        // 店铺核算多选平台(空=全部抓取平台)
+  var shopsDays = 1;                          // 当前核算结果区间天数(合计行日均用)
 
   /* ---------- 路由 ---------- */
   function route() {
@@ -1413,6 +1427,7 @@
     for (var j = 0; j < links.length; j++) links[j].classList.toggle('active', links[j].dataset.page === name);
     document.title = PAGES[name].title + ' · 统一数据看板';
     if (name === 'dashboard') { if (!rendered.dashboard) { rendered.dashboard = true; renderDashboard(); } }
+    else if (name === 'shops') { rendered.shops = true; renderShops(); }  // 每次进入都刷新(任务完成后回来即见最新结果)
     else if (name !== 'login' && !rendered[name]) { rendered[name] = true; renderPage(name); }
     window.scrollTo(0, 0);
     var sb = $('sidebar-menu');
@@ -1438,12 +1453,50 @@
     var ts = $('topPlatformSel'); if (ts) ts.value = state.platform;
     var ss = $('shopsPlatform'); if (ss) ss.value = state.platform;
     var st = $('staffPlatform'); if (st) st.value = state.platform;
+    // 店铺核算平台 chips 跟随(单选联动: 只选该平台)
+    if (val) setShopsPlats([String(val)]);
     reloadCurrent();
+  }
+  /* 店铺核算多选平台 chips */
+  function fillShopsPlatChips() {
+    var box = $('shopsPlatChips');
+    if (!box) return;
+    var fetchList = (platformInfo && platformInfo.fetch) || [{ id: 1, name: '拼多多' }, { id: 5, name: '抖音' }, { id: 7, name: '京东' }];
+    var html = '<button class="btn btn-sm ' + (shopsPlats.length ? 'btn-outline-primary' : 'btn-primary') + '" onclick="app.toggleShopsPlat(\'all\')">全部</button>';
+    html += fetchList.map(function (p) {
+      var on = shopsPlats.indexOf(String(p.id)) >= 0;
+      return '<button class="btn btn-sm ' + (on ? 'btn-primary' : 'btn-outline-primary') + '" onclick="app.toggleShopsPlat(' + p.id + ')">' + esc(p.name) + '</button>';
+    }).join('');
+    box.innerHTML = html;
+  }
+  function setShopsPlats(list) {
+    shopsPlats = list || [];
+    var ss = $('shopsPlatform');
+    if (ss) ss.value = shopsPlats.length === 1 ? shopsPlats[0] : '';
+    fillShopsPlatChips();
+  }
+  function toggleShopsPlat(p) {
+    if (p === 'all') { setShopsPlats([]); }
+    else {
+      var i = shopsPlats.indexOf(String(p));
+      var next = shopsPlats.slice();
+      if (i >= 0) next.splice(i, 1); else next.push(String(p));
+      setShopsPlats(next);   // 空=全部
+    }
+    clearShopsSel();
+    renderShops();
+  }
+  function shopsPlatQuery() {
+    return shopsPlats.join(',');
   }
   /* 当前视图实际生效的平台(页面内下拉优先, 兜底全局): 核算/导出等发请求前用 */
   function currentPlatform() {
     var v = currentViewName();
-    var el = v === 'shops' ? $('shopsPlatform') : v === 'staff' ? $('staffPlatform') : null;
+    if (v === 'shops') {
+      // 店铺核算页: 多选 chips 只选一个时返回该平台, 否则空(全部)
+      return shopsPlats.length === 1 ? shopsPlats[0] : '';
+    }
+    var el = v === 'staff' ? $('staffPlatform') : null;
     if (el && el.value) return el.value;
     return state.platform;
   }
@@ -1464,6 +1517,7 @@
     try { platformInfo = await api('/api/platforms'); } catch (e) { platformInfo = null; }
     fillPlatformSelect($('topPlatformSel'), true);
     fillPlatformSelect($('shopsPlatform'), true);
+    fillShopsPlatChips();
     fillPlatformSelect($('staffPlatform'), true);
   }
   async function loadGroups() {
@@ -2182,34 +2236,47 @@
     sel.innerHTML = html;
   }
   var shopsRun = 0;
+  function rangeDays(a, b) {
+    if (!a || !b) return 1;
+    var da = new Date(String(a).slice(0, 10) + 'T00:00:00');
+    var db = new Date(String(b).slice(0, 10) + 'T00:00:00');
+    return Math.max(1, Math.round((db - da) / 86400000) + 1);
+  }
+  function fmt1(n) { return (n == null ? 0 : n).toLocaleString('zh-CN', { maximumFractionDigits: 1 }); }
   async function renderShops() {
     var run = ++shopsRun;
     refreshTagFilter();
     var body = $('shopsBody');
-    body.innerHTML = '<tr><td colspan="7" class="text-center empty-hint py-4">加载中…</td></tr>';
-    var rng = $('shopsRange').value, pf = $('shopsPlatform').value || state.platform;
+    body.innerHTML = '<tr><td colspan="11" class="text-center empty-hint py-4">加载中…</td></tr>';
+    var rng = $('shopsRange').value;
+    var pf = currentPlatform();
     // 导入平台(天猫1/2)且管理员才显示"导入 Excel"入口
     var pfNum = Number(pf);
     var btnImp = $('btnImportExcel');
     if (btnImp) btnImp.style.display = (isAdmin && (pfNum === 10 || pfNum === 11)) ? '' : 'none';
     var rd = shopsRangeDates(rng);
     try {
-      var d = await api('/api/trace/overview?start=' + rd.start + '&end=' + rd.end + '&platform=' + (pf || '') + '&from_cache=1');
+      var platParam = shopsPlatQuery();
+      var d = await api('/api/trace/overview?start=' + rd.start + '&end=' + rd.end + '&platform=' + (platParam || '') + '&from_cache=1');
       if (run !== shopsRun) return;   // 已有更新的渲染, 丢弃本次
       var res = d.result;
       if (!res || !res.shopList) {
-        body.innerHTML = '<tr><td colspan="7" class="text-center empty-hint py-4">该平台/区间暂无核算缓存, 点击右上角"开始核算"生成</td></tr>';
+        body.innerHTML = '<tr><td colspan="11" class="text-center empty-hint py-4">该平台/区间暂无核算缓存, 点击右上角"开始核算"生成</td></tr>';
         $('shopsSummary').textContent = rd.start + ' ~ ' + rd.end + ' · 暂无核算缓存(点击右上角「开始核算」生成)';
         return;
       }
+      shopsDays = rangeDays(res.startDate, res.endDate);
       shopsCache = res.shopList.map(function (s) {
+        var total = s.total || 0, adopted = s.adopted || 0, replies = s.replies || 0;
         return {
           name: (s.shop && s.shop.shopName) || '未知',
           platform: (s.shop && s.shop.platform) || '',
           platformName: (s.shop && s.shop.platformName) || '',
           id: (s.shop && s.shop.thirdShopId) || '',
-          total: s.total || 0, adopted: s.adopted || 0,
-          rate: s.total ? (s.adopted / s.total * 100) : 0
+          total: total, adopted: adopted, replies: replies,
+          avgAdopted: adopted / shopsDays, avgReplies: replies / shopsDays,
+          avgAdoptRate: s.avgAdoptRate, avgReplyRate: s.avgReplyRate,
+          rate: total ? (adopted / total * 100) : 0
         };
       });
       // 清理已不在当前列表中的勾选
@@ -2221,7 +2288,7 @@
       $('shopsSummary').textContent = (res.startDate || '') + ' ~ ' + (res.endDate || '') + ' · 共 ' + fmt(res.total || 0) + ' 条 · 采纳率 ' + pct(res.rate || 0);
     } catch (e) {
       if (run !== shopsRun) return;   // 过期请求的错误也丢弃
-      body.innerHTML = '<tr><td colspan="7" class="text-center empty-hint py-4">加载失败: ' + esc(e.message) + '</td></tr>';
+      body.innerHTML = '<tr><td colspan="11" class="text-center empty-hint py-4">加载失败: ' + esc(e.message) + '</td></tr>';
     }
   }
   function renderShopsTable() {
@@ -2248,7 +2315,7 @@
     var start = (state.shopsPage - 1) * state.shopsPageSize;
     var page = list.slice(start, start + state.shopsPageSize);
     $('shopsFooter').textContent = '第 ' + state.shopsPage + ' / ' + pages + ' 页 · 共 ' + list.length + ' 家';
-    if (!page.length) { $('shopsBody').innerHTML = '<tr><td colspan="7" class="text-center empty-hint py-4">没有符合条件的店铺</td></tr>'; return; }
+    if (!page.length) { $('shopsBody').innerHTML = '<tr><td colspan="11" class="text-center empty-hint py-4">没有符合条件的店铺</td></tr>'; return; }
     $('shopsBody').innerHTML = page.map(function (s) {
       var rate = s.rate || 0;
       var rateBar = rate >= 70 ? 'bg-success' : rate >= 40 ? 'bg-warning' : 'bg-danger';
@@ -2271,12 +2338,47 @@
         '<td class="text-end">' + fmt(s.adopted) + '</td>' +
         '<td class="text-end"><div class="rate-cell">' + ratePill(rate) +
         '<div class="progress"><div class="progress-bar ' + rateBar + '" style="width:' + Math.min(100, rate) + '%"></div></div></div></td>' +
+        '<td class="text-end">' + fmt1(s.avgAdopted) + '</td>' +
+        '<td class="text-end">' + fmt1(s.avgReplies) + '</td>' +
+        '<td class="text-end">' + (s.avgAdoptRate != null ? pct(s.avgAdoptRate) : '—') + '</td>' +
+        '<td class="text-end">' + (s.avgReplyRate != null ? pct(s.avgReplyRate) : '—') + '</td>' +
         '<td class="text-end"><div class="btn-list justify-content-end">' +
         '<button class="btn btn-sm btn-ghost" onclick="app.shopDetail(' + jsStr(s.id) + ')">明细</button>' +
         '<button class="btn btn-sm btn-ghost" onclick="app.viewShopTrace(' + jsStr(s.id) + ',' + jsStr(s.name) + ')">轨迹</button>' +
         '<button class="btn btn-sm btn-ghost" onclick="app.editShopTags(' + jsStr(s.id) + ',' + jsStr(s.name) + ')" title="店铺标签分组"><span data-ic="tag" data-size="14"></span></button></div></td></tr>';
     }).join('');
+    renderShopsTotal();
     updateShopsSelUI();
+  }
+  /* 合计行: 当前核算范围(所选平台+店铺集合)整体汇总 */
+  function renderShopsTotal() {
+    var tf = $('shopsTotalRow');
+    if (!tf) return;
+    if (!shopsCache.length) { tf.innerHTML = ''; return; }
+    var t = 0, a = 0, r = 0, wa = 0, wr = 0, w = 0;
+    shopsCache.forEach(function (s) {
+      t += s.total || 0; a += s.adopted || 0; r += s.replies || 0;
+      if ((s.total || 0) > 0) {
+        w += s.total;
+        if (s.avgAdoptRate != null) wa += s.avgAdoptRate * s.total;
+        if (s.avgReplyRate != null) wr += s.avgReplyRate * s.total;
+      }
+    });
+    var days = Math.max(1, shopsDays || 1);
+    var scopeTxt = shopsPlats.length ? shopsPlats.map(function (p) {
+      var hit = (platformInfo && (platformInfo.fetch || []).filter(function (x) { return String(x.id) === String(p); })[0]);
+      return hit ? hit.name : p;
+    }).join('+') : '全部平台';
+    tf.innerHTML = '<tr class="fw-semibold">' +
+      '<td colspan="3" class="text-secondary">合计 · ' + esc(scopeTxt) + ' · ' + esc(shopsCache.length) + ' 家店铺</td>' +
+      '<td class="text-end">' + fmt(t) + '</td>' +
+      '<td class="text-end">' + fmt(a) + '</td>' +
+      '<td class="text-end">' + (t ? pct(a / t * 100) : '—') + '</td>' +
+      '<td class="text-end">' + fmt1(a / days) + '</td>' +
+      '<td class="text-end">' + fmt1(r / days) + '</td>' +
+      '<td class="text-end">' + (w ? pct(wa / w) : '—') + '</td>' +
+      '<td class="text-end">' + (w ? pct(wr / w) : '—') + '</td>' +
+      '<td></td></tr>';
   }
 
   /* ---------- 常用店铺收藏 + 店铺标签(本地存储, 按用户) ---------- */
@@ -2525,8 +2627,10 @@
   }
   function exportShops() {
     if (!shopsCache.length) { toast('暂无数据可导出'); return; }
-    var rows = [['店铺', '平台', '消息总条数', '采纳条数', '采纳率']].concat(shopsCache.map(function (s) {
-      return [s.name, s.platformName || s.platform, s.total, s.adopted, s.rate.toFixed(2) + '%'];
+    var rows = [['店铺', '平台', '消息总条数', '采纳条数', '采纳率', '平均采纳(日均)', '平均回复(日均)', '平均采纳率', '平均回复率']].concat(shopsCache.map(function (s) {
+      return [s.name, s.platformName || s.platform, s.total, s.adopted, s.rate.toFixed(2) + '%',
+        (s.avgAdopted != null ? s.avgAdopted.toFixed(1) : ''), (s.avgReplies != null ? s.avgReplies.toFixed(1) : ''),
+        (s.avgAdoptRate != null ? s.avgAdoptRate.toFixed(2) + '%' : ''), (s.avgReplyRate != null ? s.avgReplyRate.toFixed(2) + '%' : '')];
     }));
     downloadCSV('店铺核算_' + (currentPlatform() || '全部') + '.csv', rows);
   }
@@ -3005,7 +3109,7 @@
     $('btnDelTasks').style.display = 'none';
     updateTaskSelUI();
     $('tasksFooter').textContent = '第 ' + state.tasksPage + ' / ' + pages + ' 页 · 共 ' + total + ' 条 · 仅保留最近 6 小时, 超时自动清理';
-    if (!list.length) { $('tasksBody').innerHTML = '<tr><td colspan="9" class="text-center empty-hint py-4">暂无任务</td></tr>'; return; }
+    if (!list.length) { $('tasksBody').innerHTML = '<tr><td colspan="10" class="text-center empty-hint py-4">暂无任务</td></tr>'; return; }
     $('tasksBody').innerHTML = list.map(function (t) {
       var s = TASK_STATUS[t.status] || [t.status || '未知', 'bg-secondary'];
       var p = t.progress || {};
@@ -3013,6 +3117,10 @@
       var selCol = isAdmin && t.id != null
         ? '<td><label class="shop-check" onclick="event.stopPropagation()"><input type="checkbox" class="task-sel" value="' + t.id + '"' + (taskSel[t.id] ? ' checked' : '') + ' onchange="app.toggleTaskSel(this.value,this.checked)"></label></td>'
         : '<td></td>';
+      // 已完成/失败任务提供"查看"入口(跳回对应平台+时间段视图)
+      var viewBtn = (t.status === 'done' || t.status === 'error') && taskViewAction(t)
+        ? '<button class="btn btn-sm btn-ghost" onclick="app.viewTaskResult(' + t.id + ')"><span class="me-1" data-ic="search" data-size="14"></span>查看</button>'
+        : '';
       return '<tr>' + selCol +
         '<td class="text-secondary font-monospace">' + (t.id != null ? '#' + t.id : '') + '</td>' +
         '<td class="small fw-semibold">' + esc(t.label || t.type || '') + '</td>' +
@@ -3022,11 +3130,77 @@
         '<td><div class="d-flex align-items-center gap-2"><div class="progress prog-sm flex-fill"><div class="progress-bar" style="width:' + pctv + '%"></div></div>' +
         '<span class="prog-label">' + (p.done || 0) + '/' + (p.total || 0) + '</span></div></td>' +
         '<td class="small text-secondary">' + fmtTime(t.started_at) + '</td>' +
-        '<td class="text-end small text-secondary text-truncate" style="max-width:160px" title="' + esc(p.current || '') + '">' + esc(p.current || '') + '</td></tr>';
+        '<td class="text-end small text-secondary text-truncate" style="max-width:160px" title="' + esc(p.current || '') + '">' + esc(p.current || '') + '</td>' +
+        '<td class="text-end">' + viewBtn + '</td></tr>';
     }).join('');
     updateTaskSelUI();
   }
   function tasksPage(d) { state.tasksPage = Math.max(1, state.tasksPage + d); renderTasks(); }
+
+  /* ---------- 店铺核算刷新 + 任务"查看"跳转 ---------- */
+  function refreshShops() { renderShops(); }
+  function taskViewAction(t) {
+    var p = t.params || {};
+    var start = p.start, end = p.end, platform = p.platform;
+    // 旧任务(无 params 记录)从 label 兜底解析时间段/平台:
+    //   "核算采纳率 · 抖音 · 2026-08-01~2026-08-18" / "补抓历史数据 · 2026-08-01 ~ 2026-08-18"
+    if (!start || !end) {
+      var m = /(\d{4}-\d{2}-\d{2})\s*[~～-]\s*(\d{4}-\d{2}-\d{2})/.exec(t.label || '');
+      if (m) { start = m[1]; end = m[2]; }
+    }
+    if (!platform && platformInfo) {
+      var pm = /·\s*([^·]+?)\s*·/.exec(t.label || '');
+      if (pm) {
+        var pn = pm[1].trim();
+        var hit = (platformInfo.fetch || []).concat(platformInfo.import || [])
+          .filter(function (x) { return x.name === pn; })[0];
+        if (hit) platform = String(hit.id);
+      }
+    }
+    // 带时间段的抓取任务: 跳回店铺核算页并预填 平台+时间段(自定义)
+    if (t.type === 'overview' || t.type === 'prefetch' || t.type === 'calibrate') {
+      return { view: 'shops', shopIds: p.shop_ids, set: function () { setShopsRange(start, end, platform); } };
+    }
+    if (t.type === 'today') return { view: 'dashboard', set: null };      // 今日各平台卡片
+    if (t.type === 'refresh') return { view: 'dashboard', set: null };    // 首页看板
+    return null;
+  }
+  function setShopsRange(start, end, platform) {
+    // 平台参数可能是单平台或多平台("1,5"): 同步到多选 chips(空=全部)
+    if (platform) setShopsPlats(String(platform).split(',').filter(Boolean));
+    else setShopsPlats([]);
+    var rng = $('shopsRange');
+    if (rng) rng.value = 'custom';
+    toggleRangeControls('shops', 'custom');
+    if (start) $('shopsStart').value = String(start).slice(0, 10);
+    if (end) $('shopsEnd').value = String(end).slice(0, 10);
+  }
+  function viewTaskResult(id) {
+    var t = null;
+    for (var i = 0; i < taskCache.length; i++) if (taskCache[i].id === id) { t = taskCache[i]; break; }
+    if (!t) { toast('找不到该任务'); return; }
+    var a = taskViewAction(t);
+    if (!a) { toast('该任务类型暂无可跳转的查看页面'); return; }
+    var isShops = a.view === 'shops';
+    if (isShops) {
+      if (a.set) a.set();
+      // 核算所选(子集)任务: 预填勾选店铺, 保证重算/查看的口径一致
+      if (a.shopIds) {
+        state.selShops = {};
+        a.shopIds.split(',').forEach(function (s) { if (s) state.selShops[s] = true; });
+      }
+    }
+    if (currentViewName() === a.view) {
+      if (isShops) startRangeAudit(!!a.shopIds);
+      else renderTodayPlatforms();
+    } else {
+      location.hash = '#/' + a.view;
+      // hash 切换触发 route→renderShops(只读); 随后发起范围核算:
+      // 有缓存(内存/磁盘/DB 快路径)秒回直接出表, 无缓存则后台抓取+轮询出结果
+      if (isShops) setTimeout(function () { startRangeAudit(!!a.shopIds); }, 400);
+    }
+    toast('已跳转到' + (isShops ? '店铺核算' : '首页看板'), 'success');
+  }
 
   /* ---------- 任务勾选删除(管理员) ---------- */
   function taskSelCount() {
@@ -3790,6 +3964,8 @@
 
   /* ---------- 快捷操作 / 风控 / 通知 / 主题 ---------- */
   async function startAudit(selOnly) {
+    // 注意: 此函数只用于"抓取今日数据"(仪表盘/溯源页的今日实时抓取, 走 /api/trace/today, 不写库)。
+    // 店铺核算页的"开始核算/核算所选"必须走 startRangeAudit(带所选时间段), 见下。
     var params = [];
     // 用当前视图实际选择的平台(页面内下拉可能尚未同步到 state.platform)
     var plat = currentPlatform();
@@ -3803,6 +3979,109 @@
       toast('已发起「' + scopeTxt + '」抓取核算任务, 正在跳转任务中心…', 'success');
       location.hash = '#/tasks';
     } catch (e) { toast('发起失败: ' + e.message, 'danger'); }
+  }
+  /* 店铺核算页「开始核算/核算所选」: 按当前选择的平台+时间段发起范围核算
+     走 GET /api/trace/overview?start&end&platform[&shop_ids](不带 from_cache),
+     由后端 worker 逐集团切换抓取该区间并写 SQLite + 核算缓存;
+     完成后用返回结果直接渲染店铺表(核算所选的结果只存 subset_result, 不落盘,
+     不能靠 renderShops 的 from_cache 读回, 必须用 status 的结果直接渲染)。 */
+  var rangeAuditTimer = null;
+  function renderShopsResult(res) {
+    if (!res || !res.shopList) return;
+    shopsDays = rangeDays(res.startDate, res.endDate);
+    shopsCache = res.shopList.map(function (s) {
+      var total = s.total || 0, adopted = s.adopted || 0, replies = s.replies || 0;
+      return {
+        name: (s.shop && s.shop.shopName) || '未知',
+        platform: (s.shop && s.shop.platform) || '',
+        platformName: (s.shop && s.shop.platformName) || '',
+        id: (s.shop && s.shop.thirdShopId) || '',
+        total: total, adopted: adopted, replies: replies,
+        avgAdopted: adopted / shopsDays, avgReplies: replies / shopsDays,
+        avgAdoptRate: s.avgAdoptRate, avgReplyRate: s.avgReplyRate,
+        rate: total ? (adopted / total * 100) : 0
+      };
+    });
+    var valid = {};
+    shopsCache.forEach(function (s) { if (state.selShops[s.id]) valid[s.id] = true; });
+    state.selShops = valid;
+    renderShopsTable();
+    updateShopsSelUI();
+    var el = $('shopsSummary');
+    if (el) el.textContent = (res.startDate || '') + ' ~ ' + (res.endDate || '') + ' · 共 ' + fmt(res.total || 0) + ' 条 · 采纳率 ' + pct(res.rate || 0);
+  }
+  function pollRangeAudit(start, end) {
+    if (rangeAuditTimer) clearInterval(rangeAuditTimer);
+    var tries = 0;
+    var idleWaits = 0;   // 连续轮询但任务未出结果的次数(排队/等待开始阶段)
+    rangeAuditTimer = setInterval(async function () {
+      tries++;
+      try {
+        var t = await api('/api/trace/overview/status');
+        var el = $('shopsSummary');
+        if (t.running) {
+          var p = t.progress || {};
+          if (el) el.textContent = '核算中: ' + (p.done || 0) + '/' + (p.total || '?') + ' 家 · ' + (p.current || '') + '…';
+          idleWaits = 0;
+          return;   // 继续轮询
+        }
+        var res = t.result || t.subsetResult;
+        if (res && res.shopList && (res.startDate || start) === start && (res.endDate || end) === end) {
+          // 结果属于本次核算区间才渲染(防止误渲染别的任务残留的旧结果)
+          clearInterval(rangeAuditTimer); rangeAuditTimer = null;
+          renderShopsResult(res);
+          toast('核算完成: ' + (res.startDate || start) + ' ~ ' + (res.endDate || end) + ' · 共 ' + fmt(res.total || 0) + ' 条', 'success');
+          return;
+        }
+        idleWaits++;
+        if (idleWaits > 240) {   // 约 10 分钟仍未出结果(排队过久/任务卡住): 放弃, 提示去任务中心
+          clearInterval(rangeAuditTimer); rangeAuditTimer = null;
+          if (el) el.textContent = start + ' ~ ' + end + ' · 核算任务等待过久, 请到任务中心查看进度';
+          toast('核算任务等待过久, 请到任务中心查看进度', 'warning');
+          return;
+        }
+        if (el) el.textContent = '核算排队中/等待开始: ' + start + ' ~ ' + end + '…(任务中心可看进度)';
+      } catch (e) {
+        if (tries > 12) {   // 连续 12 次请求失败放弃轮询(api 自身 30s 超时)
+          clearInterval(rangeAuditTimer); rangeAuditTimer = null;
+          toast('核算状态获取失败: ' + e.message, 'danger');
+        }
+      }
+    }, 2500);
+  }
+  async function startRangeAudit(selOnly) {
+    var rng = $('shopsRange');
+    if (!rng) { toast('请在店铺核算页操作'); return; }
+    var rd = shopsRangeDates(rng.value);
+    if (!rd.start || !rd.end) { toast('请选择完整的开始和结束日期'); return; }
+    if (rd.start > rd.end) { toast('开始日期不能晚于结束日期'); return; }
+    if (rangeAuditTimer) { toast('核算任务进行中, 请稍候…'); return; }
+    var params = ['start=' + rd.start, 'end=' + rd.end];
+    // 多选平台 chips 作为核算范围(空=全部抓取平台), 与 renderShops 读缓存同一来源
+    var pf = shopsPlatQuery();
+    if (pf) params.push('platform=' + pf);
+    var sel = Object.keys(state.selShops).filter(function (k) { return state.selShops[k]; });
+    if (selOnly && sel.length) params.push('shop_ids=' + sel.join(','));
+    var scopeTxt = (selOnly && sel.length) ? '所选 ' + sel.length + ' 家店铺' : '全量店铺';
+    try {
+      var r = await api('/api/trace/overview?' + params.join('&'));
+      if (r.status === 'done' && r.result) {
+        renderShopsResult(r.result);
+        toast('核算完成: ' + rd.start + ' ~ ' + rd.end + ' · 共 ' + fmt(r.result.total || 0) + ' 条', 'success');
+      } else if (r.status === 'running') {
+        var el = $('shopsSummary');
+        if (el) el.textContent = '核算中: ' + rd.start + ' ~ ' + rd.end + ' (' + scopeTxt + ')…';
+        toast('已开始核算 ' + rd.start + ' ~ ' + rd.end + ' (' + scopeTxt + '), 完成后自动刷新', 'success');
+        pollRangeAudit(rd.start, rd.end);
+      } else if (r.status === 'queued') {
+        var el = $('shopsSummary');
+        if (el) el.textContent = '核算已排队(第' + (r.queuePosition != null ? r.queuePosition : '?') + '位), 轮到后自动开始: ' + rd.start + ' ~ ' + rd.end;
+        toast('核算已排队(第' + (r.queuePosition != null ? r.queuePosition : '?') + '位), 完成后自动刷新', 'success');
+        pollRangeAudit(rd.start, rd.end);
+      } else {
+        toast('核算未启动: ' + (r.message || r.status || '未知状态'), 'danger');
+      }
+    } catch (e) { toast('发起核算失败: ' + e.message, 'danger'); }
   }
   function gotoPrefetch() { location.hash = '#/settings'; setTimeout(function () { $('pfStart').focus(); }, 300); }
   async function syncShops() {
@@ -3982,7 +4261,9 @@
     refresh: refresh, toggleTheme: toggleTheme, logout: logout, searchHint: searchHint,
     debouncedShops: debouncedShops, debouncedStaff: debouncedStaff, debouncedMsg: debouncedMsg,
     trendDays: trendDays, salesTrendDays: salesTrendDays,
-    renderShops: renderShops, renderShopsTable: renderShopsTable, sortShops: sortShops, shopsPage: shopsPage, exportShops: exportShops,
+    renderShops: renderShops, renderShopsTable: renderShopsTable, sortShops: sortShops, shopsPage: shopsPage, exportShops: exportShops, refreshShops: refreshShops,
+    toggleShopsPlat: toggleShopsPlat,
+    viewTaskResult: viewTaskResult,
     shopsRangeChange: shopsRangeChange, importExcelPick: importExcelPick, importExcelPick2: importExcelPick2,
     doImportExcel: doImportExcel, downloadImportTemplate: downloadImportTemplate,
     applyPlatform: applyPlatform,
@@ -4006,7 +4287,7 @@
     insightDays: insightDays, heatDays: heatDays, renderHeatmap: renderHeatmap, renderCoverageGrid: renderCoverageGrid,
     rankDays: rankDays, renderRanking: renderRanking, cmpMode: cmpMode, renderCompare: renderCompare,
     toggleFavShop: toggleFavShop, editShopTags: editShopTags, refreshTagFilter: refreshTagFilter, renderFavShops: renderFavShops,
-    startAudit: startAudit, gotoPrefetch: gotoPrefetch, syncShops: syncShops,
+    startAudit: startAudit, startRangeAudit: startRangeAudit, gotoPrefetch: gotoPrefetch, syncShops: syncShops,
     fetchTodayPlatforms: fetchTodayPlatforms, renderTodayPlatforms: renderTodayPlatforms
   };
 

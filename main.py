@@ -341,10 +341,10 @@ def _await_state(state, task):
 
 
 def _task_public(task):
-    """任务列表对外字段(不含 params, 保持轻量)"""
+    """任务列表对外字段(含 params: 供前端"查看"按钮跳回对应平台+时间段视图)"""
     return {k: task.get(k) for k in ("id", "type", "label", "requested_by", "status",
                                      "created_at", "started_at", "finished_at",
-                                     "progress", "error", "result")}
+                                     "progress", "error", "result", "params")}
 
 
 def _queue_if_busy(request, task_type, label, params):
@@ -1482,7 +1482,8 @@ def refresh_all_groups_async(start, end):
             try:
                 if orig_gid and not _risk_state.get("triggered"):
                     if orig_gid != load_config().get("cookies", {}).get("tanyu-group-id"):
-                        switch_group(orig_gid)
+                        # invalidate=False: 恢复集团不清核算缓存(刷新任务不影响已算好的结果)
+                        switch_group(orig_gid, invalidate=False)
                         log_line("refresh", f"已恢复原激活集团 {orig_gid}")
                 elif _risk_state.get("triggered"):
                     log_line("refresh", "⚠️ 风控触发, 未恢复原集团(需重新登录后手工切换)")
@@ -1622,8 +1623,12 @@ def _capture_cookie_expiry(resp):
         log_line("auth", f"cookie 到期时间解析失败(不影响使用): {e}")
 
 
-def switch_group(group_id):
-    """切换到指定集团: 调 switch-group-by-wx 捕获 Set-Cookie 更新 config"""
+def switch_group(group_id, invalidate=True):
+    """切换到指定集团: 调 switch-group-by-wx 捕获 Set-Cookie 更新 config
+
+    invalidate=False: 跳过同步对核算缓存的失效(worker 自己恢复原集团时用,
+    否则刚算好的核算结果会在收尾时被 _invalidate_audit_caches 清空)。
+    """
     cfg = load_config()
     groups = cfg.get("groups") or []
     g = next((x for x in groups if x.get("groupId") == group_id), None)
@@ -1649,7 +1654,7 @@ def switch_group(group_id):
     # 记录各 cookie 到期日(仅日期, 无 cookie 值)
     _capture_cookie_expiry(resp)
     # 同步店铺列表
-    sync_shops_from_tanyu()
+    sync_shops_from_tanyu(invalidate=invalidate)
     log_line("group", f"已切换集团「{g.get('groupName')}」")
     return {"ok": True, "group": get_current_group(), "updated": True}
 
@@ -1693,22 +1698,27 @@ def _set_group_sync(phase, attempt=0, detail=""):
                          "detail": detail, "updated": time.time()}
 
 
-def sync_shops_from_tanyu():
+def sync_shops_from_tanyu(invalidate=True):
     """从探域 brief 接口抓取当前集团的全部店铺, 写入 shops.json
 
     可靠性: brief 请求带网络退避重试; 重试耗尽/接口异常时用本地 SQLite 该集团
     平台店铺兜底(shops.json 切到该集团店铺), 不抛异常 —— 多人频繁切换 + tanyu
     限流/断连下切换平台也不会有"加载失败"。同集团 SHOPS_SYNC_TTL 内重复切换
     复用上次结果不发请求(降限速)。风控/登录失效/夜间抓取占用不兜底, 仍抛异常。
+
+    invalidate=False: 跳过"取消运行中核算 + 清核算缓存"副作用(worker 内部
+    恢复原集团时用, 保留刚完成的核算结果)。用户/其他任务发起的切换保持默认
+    True, 取消旧 worker 防跨集团串数据。
     """
     # 集团/店铺集合将变化: 先取消进行中的核算(店铺数据即将失效, 旧 worker 结果会串组),
     # 避免旧 worker 继续抓取旧集团店铺。取消保留已完成店铺的部分结果供前端展示。
-    with _lock:
-        if _trace_state["running"]:
-            _trace_state["canceled"] = True
-            _trace_state["paused"] = False
-    if _trace_state.get("canceled"):
-        _trace_resume_evt.set()  # 若 worker 阻塞在暂停等待中, 唤醒使其退出
+    if invalidate:
+        with _lock:
+            if _trace_state["running"]:
+                _trace_state["canceled"] = True
+                _trace_state["paused"] = False
+        if _trace_state.get("canceled"):
+            _trace_resume_evt.set()  # 若 worker 阻塞在暂停等待中, 唤醒使其退出
     cfg = load_config()
     gid = cfg.get("cookies", {}).get("tanyu-group-id")
     g = next((x for x in cfg.get("groups", []) if x.get("groupId") == gid), None)
@@ -1719,7 +1729,8 @@ def sync_shops_from_tanyu():
         shops = load_all_shops(plat)
         if shops:
             _atomic_write_text(SHOPS_FILE, json.dumps({"data": shops}, ensure_ascii=False, indent=2))
-            _invalidate_audit_caches()
+            if invalidate:
+                _invalidate_audit_caches()
             _set_group_sync("done", 0, f"TTL 缓存 {len(shops)} 家")
             log_line("group", f"店铺同步(TTL 缓存): {len(shops)} 家")
             return {"count": len(shops),
@@ -1738,11 +1749,11 @@ def sync_shops_from_tanyu():
                     "retry", n, f"网络波动, 正在自动重试(第 {n}/{_NETWORK_RETRIES} 次, {d:.0f}s 后)…"))
             d = r.json()
         except (requests.exceptions.RequestException, ValueError) as e:
-            return _sync_shops_fallback(e)
+            return _sync_shops_fallback(e, invalidate=invalidate)
         if _check_risk(r, d):
             raise RuntimeError(f"风控/登录失效: {d.get('msg', r.status_code)}")
         if d.get("success") is False:
-            return _sync_shops_fallback(RuntimeError(d.get("msg", "店铺列表获取失败")))
+            return _sync_shops_fallback(RuntimeError(d.get("msg", "店铺列表获取失败")), invalidate=invalidate)
         data = d.get("data") or []
         if not isinstance(data, list):
             data = data.get("chatbotShops") or []
@@ -1769,7 +1780,8 @@ def sync_shops_from_tanyu():
             trace_store.upsert_shops(shops)
         except Exception as e:
             log_line("db", f"shops 同步失败: {e}")
-        _invalidate_audit_caches()
+        if invalidate:
+            _invalidate_audit_caches()
         _shops_sync_cache[gid] = {"ts": time.time(), "count": len(shops)}
         _set_group_sync("done", 0, f"同步完成 {len(shops)} 家")
         log_line("group", f"店铺同步完成: {len(shops)} 家")
@@ -1779,7 +1791,7 @@ def sync_shops_from_tanyu():
         raise RuntimeError(f"同步店铺失败: {e}")
 
 
-def _sync_shops_fallback(reason):
+def _sync_shops_fallback(reason, invalidate=True):
     """brief 同步失败降级: 用本地 SQLite 该集团平台店铺兜底, 切换不失败
 
     仅用于网络瞬时错误/接口返回空等可降级场景(风控/夜间占用不进来)。
@@ -1795,7 +1807,8 @@ def _sync_shops_fallback(reason):
         if not shops:
             raise RuntimeError(f"同步店铺失败且本地无该集团缓存店铺: {reason}")
         _atomic_write_text(SHOPS_FILE, json.dumps({"data": shops}, ensure_ascii=False, indent=2))
-        _invalidate_audit_caches()
+        if invalidate:
+            _invalidate_audit_caches()
         _set_group_sync("done", 0, f"网络异常, 已用本地缓存 {len(shops)} 家")
         log_line("group", f"⚠️ 同步店铺失败({type(reason).__name__}), 用本地缓存 {len(shops)} 家兜底"
                           f"(新增店铺将在下次成功同步出现)")
@@ -1947,7 +1960,8 @@ def _sync_staff_names_worker(start_day, end_day):
             if orig_gid and not _risk_state.get("triggered"):
                 try:
                     if orig_gid != load_config().get("cookies", {}).get("tanyu-group-id"):
-                        switch_group(orig_gid)
+                        # invalidate=False: 恢复集团不清核算缓存(客服同步不影响已算好的结果)
+                        switch_group(orig_gid, invalidate=False)
                         log_line("staff", f"已恢复原激活集团 {orig_gid}")
                 except Exception as e:
                     log_line("staff", f"⚠️ 恢复原集团失败: {e}")
@@ -2777,16 +2791,18 @@ def stat_trace_daily(shop_id, start, end, force=False, force_days=None, trim_ms=
         ts = r.get("time")
         if isinstance(ts, (int, float)):
             day = datetime.datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d")
-            de = daily.setdefault(day, {"total": 0, "adopted": 0})
+            de = daily.setdefault(day, {"total": 0, "adopted": 0, "replies": 0})
             de["total"] += 1
             if st in ADOPTED_SEND_TYPES:
                 de["adopted"] += 1
+            if t == "CONSULT_REPLY":
+                de["replies"] += 1
         total += 1
 
     adopted = sum(counts.get(s, 0) for s in ADOPTED_SEND_TYPES)
     rate = (adopted / total * 100) if total else 0
     daily_list = [
-        {"date": d, "total": v["total"], "adopted": v["adopted"],
+        {"date": d, "total": v["total"], "adopted": v["adopted"], "replies": v["replies"],
          "rate": round(v["adopted"] / v["total"] * 100, 2) if v["total"] else 0}
         for d, v in sorted(daily.items())
     ]
@@ -4660,15 +4676,17 @@ def _aggregate_stat_rows(results, start, end):
         ts = r.get("time")
         if isinstance(ts, (int, float)):
             day = datetime.datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d")
-            de = daily.setdefault(day, {"total": 0, "adopted": 0})
+            de = daily.setdefault(day, {"total": 0, "adopted": 0, "replies": 0})
             de["total"] += 1
             if st in ADOPTED_SEND_TYPES:
                 de["adopted"] += 1
+            if t == "CONSULT_REPLY":
+                de["replies"] += 1
         total += 1
     adopted = sum(counts.get(s, 0) for s in ADOPTED_SEND_TYPES)
     rate = (adopted / total * 100) if total else 0
     daily_list = [
-        {"date": d, "total": v["total"], "adopted": v["adopted"],
+        {"date": d, "total": v["total"], "adopted": v["adopted"], "replies": v["replies"],
          "rate": round(v["adopted"] / v["total"] * 100, 2) if v["total"] else 0}
         for d, v in sorted(daily.items())
     ]
@@ -4695,6 +4713,19 @@ def _aggregate_stat_rows(results, start, end):
         "daily": daily_list,
         "messages": raw_messages,
     }
+
+
+def _avg_daily_rates(daily):
+    """每天采纳率/回复率的算术平均(有消息的天才计入); 返回 (avgAdoptRate, avgReplyRate)"""
+    n = ar = rr = 0
+    for d in daily or []:
+        t = d.get("total") or 0
+        if t <= 0:
+            continue
+        n += 1
+        ar += (d.get("adopted") or 0) / t * 100
+        rr += (d.get("replies") or 0) / t * 100
+    return (round(ar / n, 2) if n else 0), (round(rr / n, 2) if n else 0)
 
 
 def _import_shop_stat(shop_id, start, end):
@@ -4742,6 +4773,40 @@ def _is_import_shop(shop):
     return bool(shop and shop.get("platform") in IMPORT_PLATFORMS)
 
 
+def _filtered_platforms(plats, shop_filter):
+    """子集核算时把覆盖判定平台收窄到勾选店铺所属的平台(避免未勾选平台拖垮判定)"""
+    if not shop_filter:
+        return plats
+    try:
+        have = {s.get("platform") for s in trace_store.get_shops()
+                if s.get("thirdShopId") in shop_filter}
+    except Exception:
+        return plats
+    sub = [p for p in plats if p in have]
+    return sub or plats
+
+
+def _trace_overview_from_db_multi(start, end, plats, shop_filter=None, has_time=False):
+    """跨平台 DB 聚合: 逐平台调用单平台聚合后合并(店铺列表拼接, 汇总累加)"""
+    merged = None
+    for p in plats:
+        part = _trace_overview_from_db(start, end, p, shop_filter, has_time=has_time)
+        if not part:
+            continue
+        if merged is None:
+            merged = part
+        else:
+            merged["shopList"] += part["shopList"]
+            merged["total"] += part["total"]
+            merged["adopted"] += part["adopted"]
+            merged["byStaff"] += part["byStaff"]
+    if merged is None:
+        return None
+    merged["rate"] = round(merged["adopted"] / merged["total"] * 100, 2) if merged["total"] else 0
+    merged["platform"] = ",".join(str(p) for p in sorted(plats))
+    return merged
+
+
 def _trace_overview_from_db(start, end, platform=None, shop_filter=None, has_time=False):
     """从 SQLite 聚合核算总览(与在线 worker 输出结构完全一致)
 
@@ -4771,9 +4836,12 @@ def _trace_overview_from_db(start, end, platform=None, shop_filter=None, has_tim
     shop_list = []
     agg_total = agg_adopted = 0
     for shop in scope:
-        v = data.get(shop["thirdShopId"], {"total": 0, "adopted": 0})
+        v = data.get(shop["thirdShopId"], {"total": 0, "adopted": 0, "replies": 0})
         shop_list.append({"shop": shop, "total": v["total"],
                           "adopted": v["adopted"],
+                          "replies": v.get("replies", 0),
+                          "avgAdoptRate": v.get("avgAdoptRate", 0),
+                          "avgReplyRate": v.get("avgReplyRate", 0),
                           "rate": round(v["adopted"] / v["total"] * 100, 2) if v["total"] else 0,
                           "startDate": start, "endDate": end})
         agg_total += v["total"]
@@ -4798,13 +4866,13 @@ def _trace_overview_from_db(start, end, platform=None, shop_filter=None, has_tim
 
 
 @app.get("/api/trace/overview")
-def trace_overview(request: Request, days: int = 7, platform: int | None = None, force: int = 0,
+def trace_overview(request: Request, days: int = 7, platform: str | None = None, force: int = 0,
                    start: str | None = None, end: str | None = None,
                    from_cache: int = 0, shop_ids: str | None = None):
     """核算总览(异步): 遍历抓取店铺统计核算采纳率
 
     支持自定义时间段(start/end, YYYY-MM-DD 或 YYYY-MM-DDTHH:MM 秒级); 不传则用近 N 天。
-    platform: 平台筛选(只核算该平台店铺)。
+    platform: 平台筛选, 支持逗号分隔多选(如 "1,5"), 空/省略=全部抓取平台。
     shop_ids: 逗号分隔的店铺 ID 子集(账号池勾选后只核算勾选店铺)。
     has_shop_filter: 勾选了店铺子集时强制走在线路径(不命中全平台缓存)。
     有缓存直接返回; 否则触发后台任务, 返回任务状态,
@@ -4816,6 +4884,20 @@ def trace_overview(request: Request, days: int = 7, platform: int | None = None,
     shop_filter = None
     if shop_ids and shop_ids.strip():
         shop_filter = {s for s in shop_ids.split(",") if s.strip()}
+    # 平台多选解析: "1,5" → [1,5]; 空/None → None(全部抓取平台)
+    plats = None
+    if platform and str(platform).strip():
+        try:
+            plats = sorted({int(x) for x in str(platform).split(",") if x.strip()})
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"平台参数非法: {platform}")
+        for p in plats:
+            if p not in PLATFORM_NAMES:
+                raise HTTPException(400, f"不支持的平台: {p}")
+    # 缓存/状态键: 单平台用 int(兼容旧缓存), 多平台用 "1,5" 串, 全平台 None
+    plat_key = plats[0] if plats and len(plats) == 1 else (",".join(str(p) for p in plats) if plats else None)
+    single_plat = plats[0] if plats and len(plats) == 1 else None
+    plat_label = "全平台" if not plats else "+".join(PLATFORM_NAMES.get(p, str(p)) for p in plats)
     # 并发互斥不在顶部拒绝: 缓存命中路径不需要任务槽; 真正要跑 worker 时才
     # 检查队列(有任务在跑则入队排队, 见启动点 _queue_if_busy)。
     start, end = date_range(days, end) if not start else (start, end or (datetime.date.today() - datetime.timedelta(days=1)).isoformat())
@@ -4835,30 +4917,30 @@ def trace_overview(request: Request, days: int = 7, platform: int | None = None,
     mem_result = _trace_state.get("result")
     if (not force and not no_subset_cache and mem_result
             and _trace_state["start_date"] == start and _trace_state["end_date"] == end
-            and _trace_state["platform"] == platform
+            and _trace_state["platform"] == plat_key
             and mem_result.get("startDate") == start and mem_result.get("endDate") == end
             and _trace_state.get("last_run")
             and time.time() - _trace_state["last_run"] < TRACE_OVERVIEW_CACHE_TTL):
         return {"status": "done", "startDate": start, "endDate": end, "result": mem_result}
     # 磁盘缓存命中(服务重启后同时间段重复核算零请求); 秒级区间不走盘(单文件会互相覆盖)
-    disk = load_trace_overview_cache(start, end, platform) if not force and not no_subset_cache else None
+    disk = load_trace_overview_cache(start, end, plat_key) if not force and not no_subset_cache else None
     if disk:
         _trace_state["result"] = disk
         _trace_state["start_date"] = start
         _trace_state["end_date"] = end
-        _trace_state["platform"] = platform
+        _trace_state["platform"] = plat_key
         _trace_state["last_run"] = time.time()
         print(f"[trace] 命中磁盘缓存 {start}~{end}, 跳过抓取 (共{disk.get('total', 0)}条)")
         return {"status": "done", "startDate": start, "endDate": end, "result": disk}
     # 导入平台(天猫1/2)分支: 数据靠 Excel 文档导入, 无 tanyu 抓取能力。
     # 永不触发 worker、不落盘、不发任何 tanyu 请求; 秒级自定义区间也强制按整天
     # (Excel 是天级粒度, 秒级边界只对 messages 有意义, 导入店无 messages)。
-    if platform in IMPORT_PLATFORMS:
+    if single_plat is not None and single_plat in IMPORT_PLATFORMS:
         # day 边界字符串(sday/eday)传给 DB 聚合——start/end 带 'T' 的秒级串会
         # 让 trace_daily.day 的 BETWEEN 字典序误匹配; has_time 恒 False 用 day 版。
-        result = _trace_overview_from_db(sday, eday, platform, shop_filter, has_time=False)
+        result = _trace_overview_from_db(sday, eday, single_plat, shop_filter, has_time=False)
         if result is None:
-            result = {"startDate": start, "endDate": end, "platform": platform,
+            result = {"startDate": start, "endDate": end, "platform": plat_key,
                       "fetched_at": time.time(), "total": 0, "adopted": 0, "rate": 0,
                       "shopList": [], "byStaff": []}
         else:
@@ -4871,22 +4953,26 @@ def trace_overview(request: Request, days: int = 7, platform: int | None = None,
             _trace_state["result"] = result
         _trace_state["start_date"] = start
         _trace_state["end_date"] = end
-        _trace_state["platform"] = platform
+        _trace_state["platform"] = plat_key
         _trace_state["shop_filter"] = shop_filter
         _trace_state["last_run"] = time.time()
-        print(f"[trace] 导入平台{platform} 纯DB聚合 {start}~{end} (共{result['total']}条)")
+        print(f"[trace] 导入平台{single_plat} 纯DB聚合 {start}~{end} (共{result['total']}条)")
         return {"status": "done", "startDate": start, "endDate": end, "result": result}
     # SQLite 快路径: 数据库已覆盖该区间 => 纯本地聚合, 零上游请求(核算提速主因)
     # 店铺子集/跨平台核算同样走 DB 快路径(预抓已把三集团数据都入库, 无需切集团)
     # 覆盖判定用 day 边界(datetime 串直接比会因 'T' 静默 miss)
     # 覆盖判定限该平台店铺集: 导入平台(10/11)无限期数据会撑大全库窗口, 全库口径
     # 会让抓取平台早于其窗口的自定义区间误判已覆盖、走 _trace_overview_from_db 全零短路
-    # 在线 worker(抓取平台更早区间的真实数据被藏成 0)。
-    if (not force and _use_sqlite_trace()
-            and trace_store.db_window_covers(sday, eday, platform=platform,
-                                             shop_filter=shop_filter)):
+    # 在线 worker(抓取平台更早区间的真实数据被藏成 0)。多平台时逐平台判定, 全过才算覆盖。
+    _db_plats = plats if plats else [p for p in FETCH_PLATFORMS]
+    if shop_filter:
+        # 子集核算只关心勾选店铺所属平台的覆盖情况, 避免未勾选平台拖垮判定
+        _db_plats = _filtered_platforms(_db_plats, shop_filter)
+    if (not force and _use_sqlite_trace() and _db_plats
+            and all(trace_store.db_window_covers(sday, eday, platform=p,
+                                                 shop_filter=shop_filter) for p in _db_plats)):
         try:
-            result = _trace_overview_from_db(start, end, platform, shop_filter, has_time=has_time)
+            result = _trace_overview_from_db_multi(start, end, _db_plats, shop_filter, has_time=has_time)
             if result:
                 if shop_filter:
                     # 店铺子集结果单独存, 不覆盖全量核算视图
@@ -4895,7 +4981,7 @@ def trace_overview(request: Request, days: int = 7, platform: int | None = None,
                     _trace_state["result"] = result
                 _trace_state["start_date"] = start
                 _trace_state["end_date"] = end
-                _trace_state["platform"] = platform
+                _trace_state["platform"] = plat_key
                 _trace_state["shop_filter"] = shop_filter
                 _trace_state["last_run"] = time.time()
                 print(f"[trace] SQLite 快路径 {start}~{end} (共{result['total']}条)")
@@ -4908,7 +4994,7 @@ def trace_overview(request: Request, days: int = 7, platform: int | None = None,
         return {"status": "idle", "startDate": start, "endDate": end,
                 "result": None, "latest": latest}
 
-    _task_label = f"核算采纳率 · {PLATFORM_NAMES.get(platform, '全平台')}"
+    _task_label = f"核算采纳率 · {plat_label}"
     if start != end:
         _task_label += f" · {start[:10]}~{end[:10]}"
     _task_params = {"days": days, "platform": platform, "force": force,
@@ -4957,36 +5043,19 @@ def trace_overview(request: Request, days: int = 7, platform: int | None = None,
     def worker():
         orig_gid = None
         try:
-            # 跨集团店铺集: 当前激活集团 ≠ 核算平台时, 用 load_shops()(仅当前集团)会
-            # 得到空列表、静默返回 0(历史 bug)。与 today-fetch 同源解析目标平台店铺;
-            # 且核算平台与当前激活集团不同时, 切换一次集团用对 cookie 抓取, 结束恢复。
+            # 跨平台/跨集团店铺集: 用 SQLite 店铺表按平台解析(不依赖当前激活集团),
+            # 逐集团切换抓取(trace API 以激活集团 cookie 为作用域)。与 today-fetch 同源。
             targets = []
-            if platform is not None:
-                targets = _today_target_shops(platform, shop_filter)
-                shops = [s for sl in (sl for _gid, _g, sl in targets) for s in sl]
+            if plats:
+                for p in plats:
+                    targets.extend(_today_target_shops(p, shop_filter))
             else:
-                shops = [s for s in load_shops() if s.get("platform") in FETCH_PLATFORMS]
-                if shop_filter is not None:
-                    shops = [s for s in shops if s["thirdShopId"] in shop_filter]
-            if platform is not None and targets:
-                cfg = load_config()
-                cur_gid = cfg.get("cookies", {}).get("tanyu-group-id")
-                tgt_gid = targets[0][0]
-                if cur_gid != tgt_gid:
-                    try:
-                        switch_group(tgt_gid)
-                        orig_gid = cur_gid
-                        # switch_group 内部 sync_shops_from_tanyu 会"取消运行中的核算"
-                        # (防旧 worker 串组)——但这里是本 worker 自己切集团, 取消的就是
-                        # 自己, 毫无意义; 复位取消/暂停标志, 否则核算平台≠当前集团时
-                        # worker 一进店铺循环就 canceled 退出(0/10 假完成)。
-                        with _lock:
-                            _trace_state["canceled"] = False
-                            _trace_state["paused"] = False
-                    except Exception as e:
-                        log_line("trace", f"⚠️ 切换核算平台集团失败, 停止: {e}")
-                        _trace_state["error"] = f"切换集团失败: {e}"
-                        return
+                targets = _today_target_shops(None, shop_filter)
+            # 导入平台(天猫1/2)无 tanyu 抓取能力, 由 DB 路径处理; worker 只抓抓取平台
+            targets = [(gid, g, [s for s in sl if s.get("platform") in FETCH_PLATFORMS])
+                       for gid, g, sl in targets]
+            targets = [t for t in targets if t[2]]
+            shops = [s for _gid, _g, sl in targets for s in sl]
             total = len(shops)
             today_str = datetime.date.today().isoformat()
             # 区间含今天 => 单店走"历史库 + 今天实时"合并(今天未定型不进库)
@@ -4996,76 +5065,113 @@ def trace_overview(request: Request, days: int = 7, platform: int | None = None,
             shop_list = []
             agg_total = agg_adopted = 0
             staff_shop_agg = {}
-            for i, shop in enumerate(shops, 1):
-                # 暂停/取消检查(在店铺边界, 请求间隙)
-                while _trace_state["paused"] and not _trace_state["canceled"]:
-                    _trace_state["progress"]["current"] = "已暂停, 等待恢复…"
-                    _trace_resume_evt.wait(timeout=1.0)
-                    _trace_resume_evt.clear()  # 事件用完即清, 防止残留置位导致 wait() 忙等
-                if _trace_state["canceled"]:
-                    log_line("trace", f"⏹ 已取消, 已核算 {i - 1}/{total} 家")
+            cur_gid = load_config().get("cookies", {}).get("tanyu-group-id")
+            done = 0
+            for gid, g, gshops in targets:
+                if _trace_state.get("canceled"):
+                    log_line("trace", f"⏹ 已取消, 已核算 {done}/{total} 家")
                     break
-                _trace_state["progress"]["current"] = f"{shop['platformName']} · {shop['shopName']} ({i}/{total})"
-                # 该店在区间内天数全部已缓存 => 纯聚合零请求, 无需限速停顿
-                if i > 1 and not days_all_cached(shop["thirdShopId"], sday, eday):
-                    sleep_trace_shop()
-                try:
-                    if range_has_today:
-                        # 含今天: 历史(库)+今天(实时) 合并, 不写库
-                        merged = _trace_shop_merged(shop["thirdShopId"], start, end,
-                                                    _sms, _ems, has_time)
-                        if not merged or not merged[0]:
-                            # 零消息店铺也保留在池中(total=0), 展示"无消息"
-                            shop_list.append(
-                                {"shop": shop, "total": 0, "adopted": 0, "rate": 0,
-                                 "startDate": start, "endDate": end}
-                            )
-                            _trace_state["progress"]["done"] = i
-                            continue
-                        stat = merged[0]
-                    else:
-                        # 不跨今天: 按天遍历抓取(历史已缓存的天零请求), 秒级区间聚合前按 ms 过滤
-                        stat = stat_trace_daily(shop["thirdShopId"], start, end, trim_ms=(_sms, _ems))
-                    shop_list.append(
-                        {"shop": shop, "total": stat["total"], "adopted": stat["adopted"],
-                         "rate": stat["rate"],
-                         "startDate": start, "endDate": end}
-                    )
-                    agg_total += stat["total"]
-                    agg_adopted += stat["adopted"]
-                    for st in stat.get("byStaff", []):
-                        shop_agg = staff_shop_agg.setdefault(shop["thirdShopId"], {})
-                        entry = shop_agg.setdefault(st["account"], {"total": 0, "adopted": 0})
-                        entry["total"] += st["total"]
-                        entry["adopted"] += st["adopted"]
-                except RiskTriggered as e:
-                    # 风控/登录失效: 立即停止, 不再请求剩余店铺
-                    log_line("trace", f"⛔ 风控触发, 停止剩余 {total - i} 家店铺: {e}")
-                    _trace_state["error"] = f"风控/登录失效, 已停止: {e}"
-                    _trace_state["progress"]["current"] = f"已停止: {e}"
+                if _risk_state.get("triggered"):
+                    log_line("trace", f"⛔ 风控/登录失效, 集团内停止: {_risk_state.get('reason')}")
+                    _trace_state["error"] = _risk_state.get("reason") or "风控/登录失效"
                     break
-                except BusyQueueError as e:
-                    # 夜间抓取占用激活集团 cookie: 停止, 不写零值缓存(避免跨集团串数据)
-                    log_line("trace", f"⏸ 夜间抓取进行中, 停止核算: {e}")
-                    _trace_state["error"] = f"夜间抓取进行中, 请稍后重试: {e}"
-                    _trace_state["progress"]["current"] = f"已停止: {e}"
+                if cur_gid != gid:
+                    try:
+                        switch_group(gid)
+                        if orig_gid is None:
+                            orig_gid = cur_gid
+                        cur_gid = gid
+                        # switch_group 内部 sync_shops_from_tanyu 会"取消运行中的核算"
+                        # (防旧 worker 串组)——但这里是本 worker 自己切集团, 取消的就是
+                        # 自己, 毫无意义; 复位取消/暂停标志, 否则一进店铺循环就 canceled 退出。
+                        with _lock:
+                            _trace_state["canceled"] = False
+                            _trace_state["paused"] = False
+                    except RiskTriggered as e:
+                        log_line("trace", f"⛔ 风控触发于切换集团, 停止: {e}")
+                        _trace_state["error"] = f"风控/登录失效: {e}"
+                        break
+                    except Exception as e:
+                        log_line("trace", f"⚠️ 切换集团「{g.get('groupName')}」失败, 跳过该集团: {e}")
+                        continue
+                for i, shop in enumerate(gshops, 1):
+                    idx = done + i
+                    # 暂停/取消检查(在店铺边界, 请求间隙)
+                    while _trace_state["paused"] and not _trace_state["canceled"]:
+                        _trace_state["progress"]["current"] = "已暂停, 等待恢复…"
+                        _trace_resume_evt.wait(timeout=1.0)
+                        _trace_resume_evt.clear()  # 事件用完即清, 防止残留置位导致 wait() 忙等
+                    if _trace_state["canceled"]:
+                        log_line("trace", f"⏹ 已取消, 已核算 {idx - 1}/{total} 家")
+                        break
+                    _trace_state["progress"]["current"] = f"{shop['platformName']} · {shop['shopName']} ({idx}/{total})"
+                    # 该店在区间内天数全部已缓存 => 纯聚合零请求, 无需限速停顿
+                    if idx > 1 and not days_all_cached(shop["thirdShopId"], sday, eday):
+                        sleep_trace_shop()
+                    try:
+                        if range_has_today:
+                            # 含今天: 历史(库)+今天(实时) 合并, 不写库
+                            merged = _trace_shop_merged(shop["thirdShopId"], start, end,
+                                                        _sms, _ems, has_time)
+                            if not merged or not merged[0]:
+                                # 零消息店铺也保留在池中(total=0), 展示"无消息"
+                                shop_list.append(
+                                    {"shop": shop, "total": 0, "adopted": 0, "rate": 0,
+                                     "replies": 0, "avgAdoptRate": 0, "avgReplyRate": 0,
+                                     "startDate": start, "endDate": end}
+                                )
+                                _trace_state["progress"]["done"] = idx
+                                continue
+                            stat = merged[0]
+                        else:
+                            # 不跨今天: 按天遍历抓取(历史已缓存的天零请求), 秒级区间聚合前按 ms 过滤
+                            stat = stat_trace_daily(shop["thirdShopId"], start, end, trim_ms=(_sms, _ems))
+                        a_rate, r_rate = _avg_daily_rates(stat.get("daily"))
+                        shop_list.append(
+                            {"shop": shop, "total": stat["total"], "adopted": stat["adopted"],
+                             "rate": stat["rate"],
+                             "replies": (stat.get("byType") or {}).get("CONSULT_REPLY", 0),
+                             "avgAdoptRate": a_rate, "avgReplyRate": r_rate,
+                             "startDate": start, "endDate": end}
+                        )
+                        agg_total += stat["total"]
+                        agg_adopted += stat["adopted"]
+                        for st in stat.get("byStaff", []):
+                            shop_agg = staff_shop_agg.setdefault(shop["thirdShopId"], {})
+                            entry = shop_agg.setdefault(st["account"], {"total": 0, "adopted": 0})
+                            entry["total"] += st["total"]
+                            entry["adopted"] += st["adopted"]
+                    except RiskTriggered as e:
+                        # 风控/登录失效: 立即停止, 不再请求剩余店铺
+                        log_line("trace", f"⛔ 风控触发, 停止剩余 {total - idx} 家店铺: {e}")
+                        _trace_state["error"] = f"风控/登录失效, 已停止: {e}"
+                        _trace_state["progress"]["current"] = f"已停止: {e}"
+                        break
+                    except BusyQueueError as e:
+                        # 夜间抓取占用激活集团 cookie: 停止, 不写零值缓存(避免跨集团串数据)
+                        log_line("trace", f"⏸ 夜间抓取进行中, 停止核算: {e}")
+                        _trace_state["error"] = f"夜间抓取进行中, 请稍后重试: {e}"
+                        _trace_state["progress"]["current"] = f"已停止: {e}"
+                        break
+                    except Exception as e:
+                        log_line("trace", f"{shop['shopName']} 失败: {e}")
+                    _trace_state["progress"]["done"] = idx
+                    # 边算边展示: 每完成一店就发布部分结果, 前端实时渲染
+                    with _lock:
+                        _trace_state["partial_list"] = list(shop_list)
+                done += len(gshops)
+                if _trace_state.get("canceled") or _trace_state.get("error"):
                     break
-                except Exception as e:
-                    log_line("trace", f"{shop['shopName']} 失败: {e}")
-                _trace_state["progress"]["done"] = i
-                # 边算边展示: 每完成一店就发布部分结果, 前端实时渲染
-                with _lock:
-                    _trace_state["partial_list"] = list(shop_list)
             # 被取消/风控中断时: 不写磁盘缓存, 不覆盖 result(保持部分结果可查)
             # 仅风控(非取消)允许 partial_list 作为部分结果供前端展示, 但绝不落盘
             if _trace_state["canceled"] or _trace_state["error"]:
                 log_line("trace", f"中断不写缓存: canceled={_trace_state['canceled']} error={_trace_state['error']}")
                 return
-            staff_list = _staff_list_per_shop(staff_shop_agg, platform, shop_filter)
+            staff_list = _staff_list_per_shop(staff_shop_agg, single_plat, shop_filter)
             completed = {
                 "startDate": start,
                 "endDate": end,
-                "platform": platform,
+                "platform": plat_key,
                 "fetched_at": time.time(),
                 "total": agg_total,
                 "adopted": agg_adopted,
@@ -5096,7 +5202,8 @@ def trace_overview(request: Request, days: int = 7, platform: int | None = None,
                 if orig_gid and not _risk_state.get("triggered"):
                     try:
                         if load_config().get("cookies", {}).get("tanyu-group-id") != orig_gid:
-                            switch_group(orig_gid)
+                            # invalidate=False: 恢复集团不能清掉刚算好的核算结果
+                            switch_group(orig_gid, invalidate=False)
                             log_line("trace", f"已恢复原激活集团 {orig_gid}")
                     except Exception as e:
                         log_line("trace", f"⚠️ 恢复原集团失败: {e}")
@@ -5703,7 +5810,8 @@ def trace_today(request: Request, platform: int | None = None, shop_ids: str | N
                 if orig_gid and not _risk_state.get("triggered"):
                     try:
                         if orig_gid != load_config().get("cookies", {}).get("tanyu-group-id"):
-                            switch_group(orig_gid)
+                            # invalidate=False: 恢复集团不清核算缓存(今日抓取不干扰已算好的结果)
+                            switch_group(orig_gid, invalidate=False)
                             log_line("today", f"已恢复原激活集团 {orig_gid}")
                     except Exception as e:
                         log_line("today", f"⚠️ 恢复原集团失败: {e}")
@@ -7017,7 +7125,8 @@ def prefetch_trace_window(days=None, prune=True, progress_cb=None):
         if orig_gid and not _risk_state.get("triggered"):
             try:
                 if orig_gid != load_config().get("cookies", {}).get("tanyu-group-id"):
-                    switch_group(orig_gid)
+                    # invalidate=False: 恢复集团不清核算缓存(刷新任务不影响已算好的结果)
+                    switch_group(orig_gid, invalidate=False)
                     print(f"[prefetch] 已恢复原激活集团 {orig_gid}")
             except Exception as e:
                 print(f"[prefetch] ⚠️ 恢复原集团失败: {e}")
