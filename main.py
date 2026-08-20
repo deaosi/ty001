@@ -18,6 +18,7 @@ import datetime
 import json
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -4419,6 +4420,239 @@ def trace_config_set(payload: dict = Body(...), _: dict = Depends(auth.require_a
     return {"ok": True,
             "prefetch_force_days": cfg["prefetch_force_days"],
             "prefetch_days": cfg["prefetch_days"]}
+
+
+# ---------- 自动抓取任务(微信账号自动抓取 · Windows 计划任务可视化配置) ----------
+_NIGHTLY_TASK_NAME = "TanyuNightlyFetch"
+_NIGHTLY_TASK_DEFAULT = {"enabled": True, "schedule": "00:05"}
+_SCHTASKS = r"C:\Windows\System32\schtasks.exe"
+# 任务名/计划任务键的中英文映射(查询输出随系统语言变化)
+_SCHTASK_KEYMAP = {
+    "taskname": "task", "任务名": "task",
+    "status": "status", "状态": "status",
+    "next run time": "next_run", "下次运行时间": "next_run",
+    "last run time": "last_run", "上次运行时间": "last_run",
+    "last result": "last_result", "上次结果": "last_result",
+    "scheduled task state": "state", "计划任务状态": "state",
+}
+
+
+def _auto_task_config():
+    """读 config 里的自动抓取配置(带默认值)"""
+    cfg = load_config()
+    af = dict(_NIGHTLY_TASK_DEFAULT)
+    af.update(cfg.get("auto_fetch") or {})
+    return cfg, af
+
+
+def _schtasks_query():
+    """查询计划任务; 未注册/查询失败返回 None"""
+    try:
+        # 注意: 无控制台(pythonw)下 schtasks 输出系统本地编码(中文 GBK)表头,
+        # 不能按 utf-8 硬解, 否则键匹配失败返回空; 有控制台时可能输出英文。
+        r = subprocess.run(
+            [_SCHTASKS, "/query", "/tn", _NIGHTLY_TASK_NAME, "/v", "/fo", "LIST"],
+            capture_output=True, timeout=20)
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    import locale as _loc
+    enc = _loc.getpreferredencoding(False) or "utf-8"
+    text = (r.stdout or b"").decode(enc, errors="replace")
+    info = {}
+    for line in text.splitlines():
+        if ":" not in line:
+            continue
+        k, _, v = line.partition(":")
+        key = _SCHTASK_KEYMAP.get(k.strip().lower(), _SCHTASK_KEYMAP.get(k.strip()))
+        if key:
+            info[key] = v.strip()
+    return info or None
+
+
+def _schtasks_register(schedule):
+    """按当前配置重新注册计划任务(幂等覆盖); 返回 (ok, msg)"""
+    import sys as _sys
+    py = r"C:\Python314\python.exe"
+    if not os.path.exists(py):
+        py = _sys.executable.replace("pythonw.exe", "python.exe")
+    script = str(BASE_DIR / "nightly_fetch.py")
+    ps = (
+        "$a = New-ScheduledTaskAction -Execute '{py}' -Argument '{script}'; "
+        "$t = New-ScheduledTaskTrigger -Daily -At '{time}'; "
+        "$s = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew "
+        "-ExecutionTimeLimit (New-TimeSpan -Hours 6); "
+        "Register-ScheduledTask -TaskName '{task}' -Action $a -Trigger $t -Settings $s -Force"
+    ).format(py=py, script=script, time=schedule, task=_NIGHTLY_TASK_NAME)
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+            capture_output=True, timeout=60)
+    except Exception as e:
+        return False, str(e)
+    if r.returncode != 0:
+        import locale as _loc
+        _enc = _loc.getpreferredencoding(False) or "utf-8"
+        err = (r.stderr or r.stdout or b"").decode(_enc, errors="replace").strip()
+        return False, err[-400:] or "注册失败"
+    return True, "计划任务已注册"
+
+
+def _schtasks_delete():
+    """删除计划任务; 返回 (ok, msg)"""
+    try:
+        r = subprocess.run(
+            [_SCHTASKS, "/delete", "/tn", _NIGHTLY_TASK_NAME, "/f"],
+            capture_output=True, timeout=20)
+    except Exception as e:
+        return False, str(e)
+    if r.returncode != 0:
+        import locale as _loc
+        _enc = _loc.getpreferredencoding(False) or "utf-8"
+        err = (r.stderr or r.stdout or b"").decode(_enc, errors="replace").strip()
+        return False, err[-300:] or "删除失败"
+    return True, "计划任务已删除"
+
+
+def _nightly_log_tail(limit=25):
+    """data/nightly_fetch.log 尾部若干行"""
+    try:
+        p = DATA_DIR / "nightly_fetch.log"
+        if not p.exists():
+            return []
+        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+        return lines[-limit:]
+    except Exception:
+        return []
+
+
+def _auto_task_status():
+    """自动抓取任务完整状态(配置 + 计划任务 + 覆盖 + 日志)"""
+    cfg, af = _auto_task_config()
+    task = _schtasks_query()
+    coverage = None
+    try:
+        import nightly_fetch as _nf
+        rep = _nf.coverage_report()
+        coverage = {
+            "total_shops": rep["total_shops"],
+            "missing_cells": rep["missing_cells"],
+            "total_cells": rep["total_cells"],
+            "gap_shops": len(rep["gap_shops"]),
+            "window_days": rep["window_days"],
+            "days_range": list(rep["days_range"]),
+        }
+    except Exception:
+        pass
+    return {
+        "config": {
+            "enabled": bool(af.get("enabled", True)),
+            "schedule": str(af.get("schedule") or "00:05"),
+            "prefetch_days": int(cfg.get("prefetch_days", 7) or 7),
+            "prefetch_force_days": int(cfg.get("prefetch_force_days", 1) or 0),
+            "prefetch_platforms": list(cfg.get("prefetch_platforms") or [1, 5, 7]),
+        },
+        "task": task,               # None=未注册
+        "coverage": coverage,
+        "log_tail": _nightly_log_tail(),
+        "tanyu": {
+            "account_configured": bool((cfg.get("cookies") or {}).get("tanyu-account-id")),
+            "cookie_expires": dict(cfg.get("cookie_expires") or {}),
+        },
+    }
+
+
+@app.get("/api/auto/task")
+def auto_task_get(_: dict = Depends(auth.require_admin)):
+    """自动抓取任务状态: 配置 / 计划任务 / 窗口覆盖 / 最近日志"""
+    return _auto_task_status()
+
+
+@app.post("/api/auto/task")
+def auto_task_set(payload: dict = Body(...), _: dict = Depends(auth.require_admin)):
+    """保存自动抓取配置并同步 Windows 计划任务(管理员)"""
+    schedule = str(payload.get("schedule") or "00:05").strip()
+    m = re.match(r"^([01]\d|2[0-3]):([0-5]\d)$", schedule)
+    if not m:
+        raise HTTPException(400, f"时间格式非法(需 HH:MM): {schedule}")
+    enabled = bool(payload.get("enabled", True))
+    days = payload.get("prefetch_days")
+    force = payload.get("prefetch_force_days")
+    plats = payload.get("prefetch_platforms")
+
+    def _apply(cfg):
+        cfg["auto_fetch"] = {"enabled": enabled, "schedule": schedule}
+        if days is not None:
+            days_i = int(days)
+            if not (1 <= days_i <= 35):
+                raise HTTPException(400, "prefetch_days 需为 1~35")
+            cfg["prefetch_days"] = days_i
+        if force is not None:
+            force_i = int(force)
+            if not (0 <= force_i <= 7):
+                raise HTTPException(400, "prefetch_force_days 需为 0~7")
+            cfg["prefetch_force_days"] = force_i
+        if plats is not None:
+            plats_i = [int(x) for x in plats]
+            if not plats_i or any(p not in FETCH_PLATFORMS for p in plats_i):
+                raise HTTPException(400, f"抓取平台需为 {list(FETCH_PLATFORMS)} 的非空子集")
+            cfg["prefetch_platforms"] = plats_i
+
+    mutate_config(_apply)
+    if enabled:
+        ok, msg = _schtasks_register(schedule)
+    else:
+        ok, msg = _schtasks_delete()
+    if not ok:
+        raise HTTPException(500, f"配置已保存, 但计划任务同步失败: {msg}")
+    return {"ok": True, "message": msg, "status": _auto_task_status()}
+
+
+@app.post("/api/auto/task/run")
+def auto_task_run(request: Request, _: dict = Depends(auth.require_admin)):
+    """立即执行一次自动抓取(后台线程跑夜间预抓同款逻辑, 不裁剪)"""
+    cfg = load_config()
+    days = int(cfg.get("prefetch_days", 7) or 7)
+    _task_label = f"自动抓取 · 立即执行(窗口 {days} 天)"
+    _task_params = {"days": days, "mode": "auto-run"}
+    _queued = _queue_if_busy(request, "prefetch", _task_label, _task_params)
+    if _queued:
+        return _queued
+    with _lock:
+        if _any_task_running():
+            if request.headers.get("x-scheduler-task") == "1":
+                raise HTTPException(409, "任务进行中, 调度器稍后重试")
+            _task = _enqueue_task("prefetch", _task_label, _operator_label(request),
+                                  _task_params, _operator_role(request))
+            return {"status": "queued", "taskId": _task["id"],
+                    "queuePosition": _queue_position(_task["id"]), "task": _task_public(_task)}
+        _prefetch_state.update({
+            "running": True, "canceled": False, "error": None,
+            "start_date": None, "end_date": None,
+            "progress": {"done": 0, "total": 0, "current": "准备中…"},
+            "started_at": time.time(), "last_run": None,
+            "triggered_by": _operator_label(request),
+        })
+        _register_running_task(_prefetch_state, "prefetch", _task_label,
+                               _operator_label(request), _task_params, _operator_role(request))
+
+    def worker():
+        try:
+            set_nightly_fetch_flag()   # 抓取期间阻塞 8080 直连请求(不串集团 cookie)
+            prefetch_trace_window(days=days, prune=False)
+            log_line("prefetch", f"自动抓取·立即执行完成(窗口 {days} 天)")
+        except Exception as e:
+            log_line("prefetch", f"自动抓取·立即执行异常: {e}")
+            _prefetch_state["error"] = str(e)
+        finally:
+            _prefetch_state["running"] = False
+            _prefetch_state["last_run"] = time.time()
+            clear_nightly_fetch_flag()
+
+    threading.Thread(target=worker, daemon=True).start()
+    return {"ok": True, "message": f"自动抓取已启动(窗口 {days} 天), 进度见任务中心",
+            "days": days}
 
 
 @app.get("/api/trace/shop/{shop_id}")

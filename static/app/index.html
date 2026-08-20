@@ -895,6 +895,64 @@
             </div>
 
             <div class="row row-cards">
+              <!-- 自动抓取任务(微信账号自动抓取 · 可视化任务管理) -->
+              <div class="col-12">
+                <div class="card" id="autoTaskCard" style="display:none">
+                  <div class="card-header">
+                    <h3 class="card-title"><span class="me-1" data-ic="clock"></span>自动抓取任务</h3>
+                    <span class="text-secondary small ms-auto">微信账号自动抓取 · Windows 计划任务可视化配置</span>
+                  </div>
+                  <div class="card-body">
+                    <div class="row g-3">
+                      <div class="col-lg-5">
+                        <div class="text-secondary small mb-2">任务状态</div>
+                        <div id="autoTaskStatus" class="small">加载中…</div>
+                        <div class="form-hint mt-2">夜间自动抓取: 每天把"昨天"的 tanyu 消息增量抓取入库, 满 35 天连续无缺口才滚动裁剪。Cookie 过期后需重新"微信扫码登录"。</div>
+                      </div>
+                      <div class="col-lg-7">
+                        <div class="text-secondary small mb-2">抓取配置</div>
+                        <div class="row g-2 align-items-end">
+                          <div class="col-12 d-flex align-items-center gap-3 flex-wrap">
+                            <div class="form-check form-switch">
+                              <input class="form-check-input" type="checkbox" id="autoEnabled" onchange="app.saveAutoTask()">
+                              <label class="form-check-label small" for="autoEnabled">启用每日自动抓取</label>
+                            </div>
+                            <div>
+                              <label class="form-label small mb-0">每日执行时间</label>
+                              <input type="time" id="autoSchedule" class="form-control form-control-sm" style="width:130px">
+                            </div>
+                          </div>
+                          <div class="col-3">
+                            <label class="form-label">窗口天数</label>
+                            <input type="number" id="autoDays" class="form-control form-control-sm" min="1" max="35">
+                            <div class="form-hint">1~35, 数据保留窗口</div>
+                          </div>
+                          <div class="col-3">
+                            <label class="form-label">强制重抓天数</label>
+                            <input type="number" id="autoForce" class="form-control form-control-sm" min="0" max="7">
+                            <div class="form-hint">0=关 · 夜间重抓最近 N 天</div>
+                          </div>
+                          <div class="col-3">
+                            <label class="form-label">抓取平台</label>
+                            <span id="autoPlatChips" class="d-inline-flex gap-1 flex-wrap pt-1"></span>
+                          </div>
+                          <div class="col-3">
+                            <button class="btn btn-primary btn-sm w-100" onclick="app.saveAutoTask()"><span class="me-1" data-ic="check"></span>保存并应用</button>
+                          </div>
+                        </div>
+                        <div class="d-flex gap-2 mt-3 flex-wrap">
+                          <button class="btn btn-outline-primary btn-sm" onclick="app.runAutoTaskNow()"><span class="me-1" data-ic="play"></span>立即执行一次</button>
+                          <button class="btn btn-outline-secondary btn-sm" onclick="app.refreshAutoTask()"><span class="me-1" data-ic="refresh"></span>刷新状态</button>
+                        </div>
+                        <details class="mt-3">
+                          <summary class="text-secondary small">最近运行日志(data/nightly_fetch.log)</summary>
+                          <pre id="autoTaskLog" class="small mt-2" style="max-height:220px;overflow:auto;background:var(--tblr-bg-surface-secondary);padding:.5rem;border-radius:6px;margin:0"></pre>
+                        </details>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
               <div class="col-lg-7">
                 <div class="card" id="cookieCard">
                   <div class="card-header">
@@ -3891,7 +3949,7 @@
     if (ding) ding.style.display = isAdmin ? '' : 'none';
     if (wxq) wxq.style.display = isAdmin ? '' : 'none';
     if (impc) impc.style.display = isAdmin ? '' : 'none';
-    var jobs = [loadTraceConfig()];
+    var jobs = [loadTraceConfig(), loadAutoTask()];
     if (isAdmin) { jobs.push(loadCookieExpiry()); jobs.push(renderDingtalk()); }
     await Promise.all(jobs);
     paintIcons();
@@ -3946,6 +4004,90 @@
       toast('已保存: 夜间强制重写 ' + d.prefetch_force_days + ' 天', 'success');
     } catch (e) { toast('保存失败: ' + e.message, 'danger'); }
   }
+
+  /* ---------- 自动抓取任务(可视化任务管理) ---------- */
+  var autoPlats = [1, 5, 7];
+  function fillAutoPlatChips() {
+    var box = $('autoPlatChips');
+    if (!box) return;
+    var list = (platformInfo && platformInfo.fetch) || [{ id: 1, name: '拼多多' }, { id: 5, name: '抖音' }, { id: 7, name: '京东' }];
+    box.innerHTML = list.map(function (p) {
+      var on = autoPlats.indexOf(Number(p.id)) >= 0;
+      return '<button class="btn btn-sm ' + (on ? 'btn-primary' : 'btn-outline-primary') + '" onclick="app.toggleAutoPlat(' + Number(p.id) + ')">' + esc(p.name) + '</button>';
+    }).join('');
+  }
+  function toggleAutoPlat(p) {
+    var i = autoPlats.indexOf(Number(p));
+    if (i >= 0) autoPlats.splice(i, 1); else autoPlats.push(Number(p));
+    fillAutoPlatChips();
+  }
+  async function loadAutoTask() {
+    var card = $('autoTaskCard');
+    if (!card) return;
+    if (!isAdmin) { card.style.display = 'none'; return; }
+    card.style.display = '';
+    try {
+      var d = await api('/api/auto/task');
+      var c = d.config || {};
+      $('autoEnabled').checked = !!c.enabled;
+      $('autoSchedule').value = c.schedule || '00:05';
+      $('autoDays').value = c.prefetch_days != null ? c.prefetch_days : 7;
+      $('autoForce').value = c.prefetch_force_days != null ? c.prefetch_force_days : 0;
+      autoPlats = (c.prefetch_platforms || [1, 5, 7]).map(Number);
+      fillAutoPlatChips();
+      var t = d.task, cov = d.coverage, rows = [];
+      if (t) {
+        var stTxt = String(t.state || '');
+        var enabledTxt = stTxt.indexOf('enabled') >= 0 || stTxt.indexOf('已启用') >= 0;
+        rows.push('<div class="d-flex align-items-center justify-content-between py-1" style="border-bottom:1px solid var(--tblr-border-color-translucent)"><span class="text-secondary">Windows 计划任务</span><b>' + (enabledTxt ? badge('已启用', 'bg-green-lt text-success') : badge(stTxt || '未知', 'bg-yellow')) + '</b></div>');
+        rows.push('<div class="d-flex align-items-center justify-content-between py-1"><span class="text-secondary">下次运行</span><b>' + esc(t.next_run || '—') + '</b></div>');
+        rows.push('<div class="d-flex align-items-center justify-content-between py-1"><span class="text-secondary">上次运行</span><b>' + esc(t.last_run || '—') + '</b></div>');
+        rows.push('<div class="d-flex align-items-center justify-content-between py-1"><span class="text-secondary">上次结果码</span><b>' + esc(t.last_result || '—') + ' (0=成功)</b></div>');
+      } else {
+        rows.push('<div class="py-1 text-secondary">计划任务未注册 — 自动抓取未启用(打开"启用每日自动抓取"并保存即注册)</div>');
+      }
+      if (!c.enabled) rows.push('<div class="py-1 text-danger small">当前配置为停用状态(保存后不注册计划任务)</div>');
+      if (cov) {
+        var covHtml = cov.missing_cells
+          ? '<span class="text-danger">缺 ' + fmt(cov.missing_cells) + '/' + fmt(cov.total_cells) + ' 格 · 缺口店 ' + fmt(cov.gap_shops) + ' 家</span>'
+          : '<span class="text-success">满窗 ' + fmt(cov.window_days) + ' 天无缺口</span>';
+        rows.push('<div class="d-flex align-items-center justify-content-between py-1"><span class="text-secondary">窗口覆盖</span><b>' + covHtml + '</b></div>');
+        rows.push('<div class="d-flex align-items-center justify-content-between py-1"><span class="text-secondary">覆盖区间</span><b>' + esc((cov.days_range || []).join(' ~ ')) + '</b></div>');
+      }
+      var exp = (d.tanyu && d.tanyu.cookie_expires) || {};
+      var expTxt = exp['tanyu-agent-account'] ? (' · 到期 ' + esc(exp['tanyu-agent-account'])) : '';
+      rows.push('<div class="d-flex align-items-center justify-content-between py-1"><span class="text-secondary">微信登录 Cookie</span><b>' +
+        ((d.tanyu && d.tanyu.account_configured)
+          ? badge('已配置', 'bg-green-lt text-success') + '<span class="text-secondary small ms-2">' + expTxt + '</span>'
+          : badge('未配置', 'bg-yellow') + '<span class="text-secondary small ms-2">请先微信扫码登录</span>') + '</b></div>');
+      $('autoTaskStatus').innerHTML = rows.join('');
+      $('autoTaskLog').textContent = (d.log_tail || []).join('\n') || '(暂无日志)';
+    } catch (e) {
+      $('autoTaskStatus').innerHTML = '<span class="empty-hint">加载失败: ' + esc(e.message) + '</span>';
+    }
+  }
+  async function saveAutoTask() {
+    var schedule = $('autoSchedule').value || '00:05';
+    var days = parseInt($('autoDays').value, 10);
+    var force = parseInt($('autoForce').value, 10);
+    if (isNaN(days) || days < 1 || days > 35) { toast('窗口天数需为 1~35'); return; }
+    if (isNaN(force) || force < 0 || force > 7) { toast('强制重抓天数需为 0~7'); return; }
+    if (!autoPlats.length) { toast('至少选择一个抓取平台'); return; }
+    try {
+      var d = await api('/api/auto/task', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: $('autoEnabled').checked, schedule: schedule, prefetch_days: days, prefetch_force_days: force, prefetch_platforms: autoPlats }) });
+      toast((d.message || '已保存'), 'success');
+      loadAutoTask();
+    } catch (e) { toast('保存失败: ' + e.message, 'danger'); }
+  }
+  async function runAutoTaskNow() {
+    try {
+      var d = await api('/api/auto/task/run', { method: 'POST' });
+      toast(d.message || '已启动自动抓取', 'success');
+      location.hash = '#/tasks';
+    } catch (e) { toast('启动失败: ' + e.message, 'danger'); }
+  }
+  function refreshAutoTask() { loadAutoTask(); }
   async function startCalibrate() {
     var days = parseInt($('calibDays').value, 10);
     if (isNaN(days) || days < 1 || days > 7) { toast('校准天数需为 1~7'); return; }
@@ -4283,6 +4425,7 @@
     toggleRegister: toggleRegister, createUser: createUser, doCreateUser: doCreateUser,
     resetPwd: resetPwd, setUserStatus: setUserStatus, setUserExpire: setUserExpire,
     saveTraceConfig: saveTraceConfig, startCalibrate: startCalibrate, startBrowserLogin: startBrowserLogin,
+    saveAutoTask: saveAutoTask, runAutoTaskNow: runAutoTaskNow, refreshAutoTask: refreshAutoTask, toggleAutoPlat: toggleAutoPlat,
     renderMore: renderMore, editUserNote: editUserNote, toggleUserLegacy: toggleUserLegacy,
     insightDays: insightDays, heatDays: heatDays, renderHeatmap: renderHeatmap, renderCoverageGrid: renderCoverageGrid,
     rankDays: rankDays, renderRanking: renderRanking, cmpMode: cmpMode, renderCompare: renderCompare,
