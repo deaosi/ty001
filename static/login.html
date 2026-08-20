@@ -456,8 +456,8 @@
         }
         systems.push({
           x: x, y: y,
-          r: 8 + Math.random() * 5,
-          vx: (Math.random() - 0.5) * 0.05, vy: (Math.random() - 0.5) * 0.05,   // 恒星缓慢漂移
+          r: (8 + Math.random() * 5) * 1.2,   // 恒星半径 +20%(体积观感), 2026-08-20
+          vx: (Math.random() - 0.5) * 0.05 * 1.25, vy: (Math.random() - 0.5) * 0.05 * 1.25,  // 漂移速度 +25%
           planets: planets,
           phase: Math.random() * Math.PI * 2
         });
