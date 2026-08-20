@@ -186,6 +186,34 @@ def window_full(report) -> bool:
     return report["missing_cells"] == 0
 
 
+def _account_preflight(M) -> str | None:
+    """夜间抓取前的账号确认(独立进程无浏览器, 只返回原因字符串)
+
+    返回 None=账号可用; 否则返回跳过原因("未登录任何抓取账号"/
+    "请在看板选择已登录的账号"/"登录账号已过期, 请重新扫码")。
+    """
+    try:
+        cfg = M.load_config()
+    except Exception:
+        return "无法读取配置"
+    accounts = []
+    try:
+        accounts = M._accounts_load()
+    except Exception:
+        accounts = []
+    active_id = cfg.get("active_account_id")
+    active = next((a for a in accounts if a.get("account_id") == active_id), None)
+    if not active:
+        return "未登录任何抓取账号" if not accounts else "请在看板选择已登录的账号"
+    cks = cfg.get("cookies") or {}
+    if cks.get("tanyu-account-id") != active_id or not cks.get("tanyu-agent-account"):
+        return "登录账号 cookie 已丢失, 请重新登录"
+    exp = (cfg.get("cookie_expires") or {}).get("tanyu-agent-account")
+    if exp and exp < datetime.date.today().isoformat():
+        return "登录账号已过期, 请重新扫码"
+    return None
+
+
 def _fetch():
     """调 prefetch_trace_window(prune=False), 只增量抓, 不裁剪"""
     import main as M
@@ -204,6 +232,12 @@ def _run_once(M, today, yesterday, dry_run):
     outcome: None=正常 / "gap"=完成但窗口未满; requests 网络异常(ConnectionError/
     Timeout)向上抛, 由 main() 整轮重试; 其他异常由外层 except 内化。
     """
+    # 抓取前先确认登录账号(与看板"每次抓取前确认"一致)。
+    # 计划任务是独立进程、没有浏览器可弹窗, 所以不抓取 + 记日志 + 由 main() 推钉钉告警。
+    acc_reason = _account_preflight(M)
+    if acc_reason:
+        log(f"⏭️ 夜间抓取跳过(无可用登录账号): {acc_reason}")
+        return acc_reason, None
     t0 = time.time()
     log(f"=== 夜间抓取开始 today={today} 目标昨天={yesterday} (dry_run={dry_run}) ===")
 
@@ -300,6 +334,11 @@ def main():
                 _alert("夜间抓取失败: 登录失效/风控",
                        f"**{today} 夜间抓取因登录失效或风控停止**。\n"
                        f"请到探域后台确认账号状态(可能被踢出/密码被改), 必要时重新登录并扫码续期 cookie。\n"
+                       f"日志: data/nightly_fetch.log")
+            elif "过期" in outcome or "登录" in outcome or "账号" in outcome:
+                _alert("夜间抓取跳过: 登录账号不可用",
+                       f"**{today} 夜间抓取未执行**: {outcome}\n"
+                       f"请到看板「系统设置 → 抓取登录账号」确认/重新扫码登录。\n"
                        f"日志: data/nightly_fetch.log")
             else:
                 _alert("夜间抓取异常",

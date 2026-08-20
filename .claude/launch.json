@@ -6,6 +6,10 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["D:\\test\\test01\\main.py"],
       "port": 8080
+    },
+    {
+      "name": "tanyu-dashboard-attach",
+      "url": "http://localhost:8080/login"
     }
   ]
 }

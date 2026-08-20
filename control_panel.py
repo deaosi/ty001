@@ -37,12 +37,11 @@ LOG_FILE = BASE_DIR / "server.log"
 MAIN_FILE = BASE_DIR / "main.py"
 
 DEFAULT_PORT = 8080
-DEFAULT_COOKIES = {
-    "tanyu-account-id": "2656113728446465571",
-    "tanyu-agent-account": "fM_VS4GirTjMlPPJx_llv5kWStXKTMrRvW__",
-    "tanyu-group-account": "le_FjY2F9WFwuBxC2_ISmD0LfcZkkuHaG9__",
-    "tanyu-group-id": "1901419852011174006",
-}
+# 2026-08-20: 此前这里硬编码了 tanyu 登录 cookie(会话令牌)。与 main.py 的
+# default_config 同理 —— 会话令牌绝不应随源码分发, 且会过期/被轮换。
+# 改为空字典: 缺 config.json 时控制面板不会偷偷写入别人的旧会话,
+# 而是提示使用者先配置 Cookie 或走浏览器登录。
+DEFAULT_COOKIES = {}
 
 _service = {"process": None, "port": DEFAULT_PORT}
 

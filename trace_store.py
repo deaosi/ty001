@@ -347,7 +347,12 @@ def delete_operation_log(ids=None, older_than=None, client_id=None):
         if client_id:
             conds.append("client_id = ?"); args.append(client_id)
         if not conds:
-            return 0
+            # 无筛选 = 清空全部(与 log_store.clear_tasks / delete_system_logs 同语义)。
+            # 前端「清理」按钮不传任何参数, 若这里 return 0, 管理员点清理
+            # 会 toast "已清理 0 条" 而实际一条没删 —— 操作日志永远清不掉。
+            cur = c.execute("DELETE FROM operation_log")
+            c.commit()
+            return cur.rowcount
         cur = c.execute("DELETE FROM operation_log WHERE " + " AND ".join(conds), args)
         c.commit()
         return cur.rowcount

@@ -168,7 +168,44 @@
   .row-cards > [class*="col"] { padding-top: 1rem; padding-bottom: 1rem; }
   .risk-banner { display: none; }
   .risk-banner.show { display: flex; }
+
+  /* ---------- 可折叠卡片(设置页 admin 配置较多, 收起不常用的卡减少杂乱) ---------- */
+  .card.has-collapse .card-header { cursor: pointer; }
+  .card.has-collapse .card-header .card-collapse-chevron {
+    width: .62rem; height: .62rem; flex: 0 0 auto;
+    border-right: 2px solid var(--tblr-secondary); border-bottom: 2px solid var(--tblr-secondary);
+    transform: rotate(-45deg) translateY(-1px); transition: transform .15s ease;
+    margin-left: .5rem;
+  }
+  .card.has-collapse.collapsed .card-header .card-collapse-chevron { transform: rotate(45deg) translateY(1px); }
+  .card.has-collapse.collapsed .card-body { display: none; }
+      .card.has-collapse.collapsed > :not(.card-header) { display: none; }
   @media print { .navbar-vertical, .topbar, .d-print-none { display: none !important; } }
+
+  /* ═══════════════ 交互动效(克制: 只在状态切换/内容刷新时生效, 不做持续跑马灯) ═══════════════ */
+  // 视图切换淡入: 新显示的视图由 JS 强制 opacity:0→1(纯 CSS 对 d-none 无效)
+  section[data-view] { transition: opacity .18s ease; }
+  // Toast 从右下滑入 + 淡入
+  #toasts .toast { animation: toastIn .22s ease both; }
+  @keyframes toastIn {
+    from { opacity: 0; transform: translateX(22px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+  // 卡片轻微上浮(原有 staff-card 已有, 这里统一给普通 card 加)
+  .card { transition: box-shadow .18s ease, transform .18s ease; }
+  .card:hover { box-shadow: 0 .4rem 1rem rgba(0,0,0,.09); }
+  // 表格内容刷新时的短暂淡化(减轻 5s 轮询造成的整表闪烁)
+  .content-flash { animation: contentFlash .24s ease both; }
+  @keyframes contentFlash {
+    from { opacity: .45; }
+    to   { opacity: 1; }
+  }
+  // 任务行进入(仅手动刷新/首次渲染时加, 自动轮询不加以免一直闪)
+  .tr-enter { animation: trEnter .26s ease both; }
+  @keyframes trEnter {
+    from { opacity: 0; transform: translateY(5px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
 </style>
 </head>
 <body>
@@ -199,7 +236,10 @@
           <li class="nav-item"><a class="nav-link" href="#/tasks" data-page="tasks"><span class="nav-link-icon" data-ic="tasks"></span>任务中心</a></li>
           <li class="nav-item"><a class="nav-link" href="#/logs" data-page="logs"><span class="nav-link-icon" data-ic="logs"></span>日志中心</a></li>
           <li class="nav-group-label">系统</li>
+          <li class="nav-item"><a class="nav-link" href="#/fetch" data-page="fetch"><span class="nav-link-icon" data-ic="fetch"></span>抓取配置</a></li>
           <li class="nav-item"><a class="nav-link" href="#/settings" data-page="settings"><span class="nav-link-icon" data-ic="sliders"></span>系统设置</a></li>
+          <li class="nav-item"><a class="nav-link" href="#/server" data-page="server" id="menuServer"><span class="nav-link-icon" data-ic="server"></span>服务控制</a></li>
+          <li class="nav-item"><a class="nav-link" href="#/database" data-page="database" id="menuDatabase"><span class="nav-link-icon" data-ic="database"></span>数据库管理</a></li>
           <li class="nav-item"><a class="nav-link" href="#/more" data-page="more"><span class="nav-link-icon" data-ic="grid"></span>更多</a></li>
         </ul>
         <div class="sidebar-foot">
@@ -258,6 +298,7 @@
               <span class="d-none d-xl-block ps-2"><b class="d-block" style="font-size:.82rem" id="userName">…</b><span class="text-secondary" style="font-size:.72rem" id="userRole">…</span></span>
             </a>
             <div class="dropdown-menu dropdown-menu-end">
+              <a class="dropdown-item" href="#/fetch"><span class="dropdown-item-icon" data-ic="fetch"></span>抓取配置</a>
               <a class="dropdown-item" href="#/settings"><span class="dropdown-item-icon" data-ic="sliders"></span>系统设置</a>
               <a class="dropdown-item" href="/legacy" id="menuLegacy"><span class="dropdown-item-icon" data-ic="folder"></span>旧版看板</a>
               <div class="dropdown-divider"></div>
@@ -424,8 +465,8 @@
                   <div class="card-header"><h3 class="card-title">最近任务</h3><a class="card-link small" href="#/tasks">全部 →</a></div>
                   <div class="table-responsive">
                     <table class="table table-vcenter card-table">
-                      <thead><tr><th>状态</th><th>任务</th><th>进度</th></tr></thead>
-                      <tbody id="dashRecentTasks"><tr><td colspan="3" class="text-center empty-hint py-3">加载中…</td></tr></tbody>
+                      <thead><tr><th>状态</th><th>任务</th><th>进度</th><th class="text-end">查看</th></tr></thead>
+                      <tbody id="dashRecentTasks"><tr><td colspan="4" class="text-center empty-hint py-3">加载中…</td></tr></tbody>
                     </table>
                   </div>
                 </div>
@@ -875,25 +916,17 @@
             </div>
           </section>
 
-          <!-- ═══════════ 系统设置 ═══════════ -->
-          <section data-view="settings" class="d-none">
+          <!-- ═══════════ 抓取配置(自动抓取任务 + 抓取登录账号) ═══════════ -->
+          <section data-view="fetch" class="d-none">
             <div class="page-header d-print-none">
               <div class="row align-items-center">
                 <div class="col-auto">
-                  <h2 class="page-title">系统设置</h2>
-                  <div class="page-pretitle text-secondary">Cookie / 集团 / 补抓 / 钉钉 / 用户</div>
+                  <h2 class="page-title">抓取配置</h2>
+                  <div class="page-pretitle text-secondary">自动抓取任务 / 抓取登录账号</div>
                 </div>
                 <div class="col-auto ms-auto"></div>
               </div>
             </div>
-
-            <div class="alert alert-danger" role="alert" id="cookieExpireAlert" style="display:none">
-              <div class="d-flex align-items-center">
-                <span class="me-2" data-ic="alert"></span>
-                <div id="cookieExpireText"></div>
-              </div>
-            </div>
-
             <div class="row row-cards">
               <!-- 自动抓取任务(微信账号自动抓取 · 可视化任务管理) -->
               <div class="col-12">
@@ -940,10 +973,41 @@
                             <button class="btn btn-primary btn-sm w-100" onclick="app.saveAutoTask()"><span class="me-1" data-ic="check"></span>保存并应用</button>
                           </div>
                         </div>
-                        <div class="d-flex gap-2 mt-3 flex-wrap">
-                          <button class="btn btn-outline-primary btn-sm" onclick="app.runAutoTaskNow()"><span class="me-1" data-ic="play"></span>立即执行一次</button>
-                          <button class="btn btn-outline-secondary btn-sm" onclick="app.refreshAutoTask()"><span class="me-1" data-ic="refresh"></span>刷新状态</button>
+                        <div class="d-flex gap-2 mt-3 flex-wrap align-items-end">
+                          <!-- 执行模式 -->
+                          <div>
+                            <label class="form-label small mb-0">执行模式</label>
+                            <div class="btn-group btn-group-sm" role="group" id="autoRunModeGroup">
+                              <input class="btn-check" type="radio" name="autoRunMode" id="autoRunModeNow" value="now" checked onchange="toggleAutoRunModeUI()">
+                              <label class="btn btn-outline-primary" for="autoRunModeNow" title="按配置全平台抓取"><span class="me-1" data-ic="play"></span>立即抓取</label>
+                              <input class="btn-check" type="radio" name="autoRunMode" id="autoRunModeForce" value="force" onchange="toggleAutoRunModeUI()">
+                              <label class="btn btn-outline-primary" for="autoRunModeForce" title="强制重抓最近 N 天(采纳口径对齐)"><span class="me-1" data-ic="rotate"></span>强制重抓</label>
+                              <input class="btn-check" type="radio" name="autoRunMode" id="autoRunModeDry" value="dryrun" onchange="toggleAutoRunModeUI()">
+                              <label class="btn btn-outline-primary" for="autoRunModeDry" title="只判定覆盖/裁剪, 不出网不抓取"><span class="me-1" data-ic="eye"></span>模拟运行</label>
+                            </div>
+                          </div>
+                          <div id="autoRunForceWrap" style="display:none">
+                            <label class="form-label mb-0">强制重抓天数</label>
+                            <input type="number" id="autoRunForce" class="form-control form-control-sm" min="0" max="7" value="1" style="width:90px">
+                          </div>
+                          <!-- 本次抓取平台(单选; 不选=按配置全抓) -->
+                          <div>
+                            <label class="form-label small mb-0">本次只抓</label>
+                            <span id="autoRunPlatChips" class="d-inline-flex gap-1 flex-wrap pt-1"></span>
+                            <div class="form-hint">不选=按配置全抓; 选中=只抓该平台(排错用)</div>
+                          </div>
+                          <div>
+                            <button class="btn btn-primary btn-sm" onclick="app.runAutoTaskNow()"><span class="me-1" data-ic="play"></span>执行</button>
+                          </div>
+                          <div>
+                            <button class="btn btn-outline-secondary btn-sm" onclick="app.dryRunAutoTask()"><span class="me-1" data-ic="eye"></span>模拟运行</button>
+                          </div>
+                          <div>
+                            <button class="btn btn-outline-secondary btn-sm" onclick="app.refreshAutoTask()"><span class="me-1" data-ic="refresh"></span>刷新状态</button>
+                          </div>
                         </div>
+                        <!-- 模拟运行结果 -->
+                        <div id="autoDryResult" class="mt-3" style="display:none"></div>
                         <details class="mt-3">
                           <summary class="text-secondary small">最近运行日志(data/nightly_fetch.log)</summary>
                           <pre id="autoTaskLog" class="small mt-2" style="max-height:220px;overflow:auto;background:var(--tblr-bg-surface-secondary);padding:.5rem;border-radius:6px;margin:0"></pre>
@@ -953,7 +1017,105 @@
                   </div>
                 </div>
               </div>
-              <div class="col-lg-7">
+              <!-- 抓取登录账号(微信扫码登录 tanyu 后台, 作为抓取数据账号) -->
+              <div class="col-12">
+                <div class="card" id="accountCard">
+                  <div class="card-header">
+                    <h3 class="card-title"><span class="me-1" data-ic="user"></span>抓取登录账号</h3>
+                    <span class="text-secondary small ms-auto">每次抓取前确认 · 未登录/过期弹窗提醒</span>
+                  </div>
+                  <div class="card-body">
+                    <div class="row g-3">
+                      <div class="col-lg-5">
+                        <div class="text-secondary small mb-2">当前抓取账号状态</div>
+                        <div id="accountStatus" class="small">加载中…</div>
+                        <div id="accountAutoFetch" class="text-secondary small mt-2"></div>
+                        <div id="tanyuAcctInfo" class="mt-3"></div>
+                        <div class="form-hint mt-2">抓取数据用的 tanyu 后台登录账号。登录后自动保存到下方历史, 可切换/删除; cookie 明文不会在页面显示。</div>
+                      </div>
+                      <div class="col-lg-7">
+                        <div class="row g-2 align-items-end">
+                          <div class="col-6">
+                            <label class="form-label small mb-0">切换活跃账号</label>
+                            <select id="accountSelect" class="form-control form-control-sm"></select>
+                          </div>
+                          <div class="col-4">
+                            <label class="form-label small mb-0">账号备注</label>
+                            <input type="text" id="accountLabel" class="form-control form-control-sm" placeholder="如: 京东主号(留空=用默认名)">
+                          </div>
+                          <div class="col-2">
+                            <button class="btn btn-primary btn-sm w-100" onclick="app.saveAccount()"><span class="me-1" data-ic="check"></span>保存</button>
+                          </div>
+                        </div>
+                        <div class="d-flex gap-2 mt-3 flex-wrap">
+                          <button class="btn btn-outline-primary btn-sm" onclick="app.accountQrStart()"><span class="me-1" data-ic="scan"></span>微信扫码登录</button>
+                          <button class="btn btn-outline-secondary btn-sm" onclick="app.loadAccounts()"><span class="me-1" data-ic="refresh"></span>刷新</button>
+                        </div>
+                        <div class="text-secondary small mt-2">已登录账号历史(点击行切换, 右侧删除):</div>
+                        <div id="accountList" class="mt-1" style="max-height:220px;overflow:auto;border:1px solid var(--tblr-border-color-translucent);border-radius:6px"></div>
+                        <!-- 扫码登录面板(复用后台二维码, 登录成功自动保存账号) -->
+                        <div id="accountQrPanel" class="mt-3" style="display:none">
+                          <div class="d-flex gap-3 flex-wrap">
+                            <div class="text-center">
+                              <div id="accountQrBox" class="d-flex align-items-center justify-content-center" style="width:190px;height:190px;border:1px dashed var(--tblr-border-color);border-radius:10px;background:#fff">
+                                <button class="btn btn-sm btn-primary" onclick="app.accountQrStart()"><span class="me-1" data-ic="scan"></span>生成二维码</button>
+                              </div>
+                              <div class="text-secondary mt-2" style="font-size:.72rem" id="accountQrTip">用绑定探域的微信扫码</div>
+                            </div>
+                            <div class="flex-fill" style="min-width:220px">
+                              <div id="accountQrStatus" class="small"><span class="text-secondary">未开始</span></div>
+                              <div class="text-secondary small mt-2">扫码并确认后选择要进入的集团, 自动获取并保存 4 个 tanyu-* Cookie 到账号池。</div>
+                            </div>
+                          </div>
+                        </div>
+                        <details class="mt-3">
+                          <summary class="text-secondary small">抓取设置程序日志(data/nightly_fetch.log + prefetch_now.log)</summary>
+                          <pre id="accountLog" class="small mt-2" style="max-height:220px;overflow:auto;background:var(--tblr-bg-surface-secondary);padding:.5rem;border-radius:6px;margin:0"></pre>
+                        </details>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <!-- 抓取账号不可用弹窗 -->
+                <div class="modal fade" id="mAccountPopup" tabindex="-1" style="display:none">
+                  <div class="modal-dialog modal-dialog-centered">
+                    <div class="modal-content">
+                      <div class="modal-header">
+                        <h5 class="modal-title" id="mAccountPopupTitle">⚠️ 抓取账号不可用</h5>
+                      </div>
+                      <div class="modal-body" id="mAccountPopupBody"></div>
+                      <div class="modal-footer">
+                        <button class="btn btn-primary" id="mAccountPopupQr" onclick="app.accountQrStart()">微信扫码登录</button>
+                        <button class="btn btn-outline-secondary" data-bs-dismiss="modal">关闭</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ═══════════ 系统设置 ═══════════ -->
+          <section data-view="settings" class="d-none">
+            <div class="page-header d-print-none">
+              <div class="row align-items-center">
+                <div class="col-auto">
+                  <h2 class="page-title">系统设置</h2>
+                  <div class="page-pretitle text-secondary">Cookie / 集团 / 补抓 / 钉钉 / 用户</div>
+                </div>
+                <div class="col-auto ms-auto"></div>
+              </div>
+            </div>
+
+            <div class="alert alert-danger" role="alert" id="cookieExpireAlert" style="display:none">
+              <div class="d-flex align-items-center">
+                <span class="me-2" data-ic="alert"></span>
+                <div id="cookieExpireText"></div>
+              </div>
+            </div>
+
+            <div class="row row-cards">
+              <div class="col-12">
                 <div class="card" id="cookieCard">
                   <div class="card-header">
                     <h3 class="card-title">Cookie 管理</h3>
@@ -971,37 +1133,20 @@
                     </div>
                   </div>
                 </div>
+              </div>
+            </div>
 
-                <div class="card" id="wxQrCard">
-                  <div class="card-header">
-                    <h3 class="card-title">微信扫码登录(二维码)</h3>
-                    <span class="text-secondary small ms-auto">照搬探域后台二维码 · 免浏览器</span>
-                  </div>
-                  <div class="card-body">
-                    <div class="d-flex align-items-start gap-3 flex-wrap">
-                      <div class="text-center">
-                        <div id="wxQrBox" class="d-flex align-items-center justify-content-center" style="width:190px;height:190px;border:1px dashed var(--tblr-border-color);border-radius:10px;background:#fff">
-                          <button class="btn btn-sm btn-primary" onclick="app.wxQrStart()"><span class="me-1" data-ic="scan"></span>生成二维码</button>
-                        </div>
-                        <div class="text-secondary mt-2" style="font-size:.72rem" id="wxQrTip">用绑定探域的微信扫码</div>
-                      </div>
-                      <div class="flex-fill" style="min-width:220px">
-                        <div class="text-secondary small mb-2">Cookie 过期后无需再打开浏览器: <b>生成二维码 → 微信扫码 → 选择集团</b>, 自动获取并保存 4 个 tanyu-* Cookie, 同步店铺列表, 解除风控。</div>
-                        <div id="wxQrPanel" class="small"><span class="text-secondary">未开始</span></div>
-                      </div>
-                    </div>
-                  </div>
+            <div class="row row-cards">
+              <div class="col-lg-6">
+                <div class="card has-collapse" data-card="groups">
+                  <div class="card-header"><h3 class="card-title">集团配置</h3><span class="card-collapse-chevron" title="点击收起/展开"></span></div>
+                  <div class="list-group list-group-flush" id="groupsBody"></div>
                 </div>
               </div>
 
-              <div class="col-lg-5">
-                <div class="card">
-                  <div class="card-header"><h3 class="card-title">集团配置</h3></div>
-                  <div class="list-group list-group-flush" id="groupsBody"></div>
-                </div>
-
-                <div class="card" id="calibCard" style="display:none">
-                  <div class="card-header"><h3 class="card-title">数据校准</h3><span class="text-secondary small ms-auto">同步 tanyu 人工变更</span></div>
+              <div class="col-lg-6">
+                <div class="card has-collapse collapsed" id="calibCard" style="display:none" data-card="calib">
+                  <div class="card-header"><h3 class="card-title">数据校准</h3><span class="text-secondary small ms-auto">同步 tanyu 人工变更</span><span class="card-collapse-chevron" title="点击收起/展开"></span></div>
                   <div class="card-body">
                     <div class="text-secondary small mb-3">
                       tanyu 会对已抓消息回溯更新发送状态(客服补发/编辑后 草稿→已发送)。夜间预抓每天自动强制重抓最近 N 天; 也可随时手动校准, 让采纳率与 tanyu 后台对齐。
@@ -1027,14 +1172,11 @@
                     <div class="form-hint mt-2">忽略缓存强制重抓最近 N 天(逐集团串行, 遇风控自动停止), 进度见任务中心</div>
                   </div>
                 </div>
+              </div>
 
-                <div class="card" id="tanyuAcctCard" style="display:none">
-                  <div class="card-header"><h3 class="card-title">抓取账号(tanyu)</h3><span class="text-secondary small ms-auto">凭据仅存 config.json</span></div>
-                  <div class="card-body" id="tanyuAcctBody">加载中…</div>
-                </div>
-
-                <div class="card">
-                  <div class="card-header"><h3 class="card-title">手动补抓数据</h3><span class="text-secondary small ms-auto">上限 35 天, 不含今天</span></div>
+              <div class="col-lg-6">
+                <div class="card has-collapse" data-card="prefetch">
+                  <div class="card-header"><h3 class="card-title">手动补抓数据</h3><span class="text-secondary small ms-auto">上限 35 天, 不含今天</span><span class="card-collapse-chevron" title="点击收起/展开"></span></div>
                   <div class="card-body">
                     <div class="row g-3">
                       <div class="col-6">
@@ -1051,11 +1193,14 @@
                     </div>
                   </div>
                 </div>
+              </div>
 
-                <div class="card" id="importCard" style="display:none">
+              <div class="col-lg-6">
+                <div class="card has-collapse collapsed" id="importCard" style="display:none" data-card="import">
                   <div class="card-header">
                     <h3 class="card-title">天猫数据导入(Excel)</h3>
                     <span class="text-secondary small ms-auto">仅管理员 · 全量重传即替换</span>
+                    <span class="card-collapse-chevron" title="点击收起/展开"></span>
                   </div>
                   <div class="card-body">
                     <div class="text-secondary small mb-3">
@@ -1081,10 +1226,201 @@
                     <div id="importResultBox" class="small"></div>
                   </div>
                 </div>
+              </div>
 
-                <div class="card" id="dingtalkCard">
-                  <div class="card-header"><h3 class="card-title">钉钉机器人</h3></div>
+              <div class="col-lg-6">
+                <div class="card has-collapse" id="dingtalkCard" data-card="dingtalk">
+                  <div class="card-header"><h3 class="card-title">钉钉机器人</h3><span class="card-collapse-chevron" title="点击收起/展开"></span></div>
                   <div class="card-body" id="dingtalkBody">加载中…</div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ═══════════ 数据库管理(仅管理员) ═══════════ -->
+          <section data-view="database" class="d-none">
+            <div class="page-header d-print-none">
+              <div class="row align-items-center">
+                <div class="col-auto">
+                  <h2 class="page-title">数据库管理</h2>
+                  <div class="page-pretitle text-secondary">SQLite 只读浏览 + 简单维护(与脚本 sqlite3 命令行等价, 无需敲命令)</div>
+                </div>
+                <div class="col-auto ms-auto d-flex gap-2">
+                  <button class="btn btn-outline-secondary btn-sm" onclick="app.renderDatabase()"><span class="me-1" data-ic="refresh"></span>刷新</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="row row-cards g-3" id="dbCards"></div>
+
+            <div class="row row-cards mt-3">
+              <div class="col-12">
+                <div class="card">
+                  <div class="card-header">
+                    <h3 class="card-title">只读 SQL 查询</h3>
+                    <span class="text-secondary small ms-auto">仅 SELECT / WITH · 结果上限 200 行</span>
+                  </div>
+                  <div class="card-body">
+                    <div class="row g-2 align-items-end">
+                      <div class="col-md-2">
+                        <label class="form-label">库</label>
+                        <select class="form-select form-select-sm" id="dbQuerySel">
+                          <option value="trace">trace.db</option>
+                          <option value="logs">logs.db</option>
+                        </select>
+                      </div>
+                      <div class="col-md-10">
+                        <label class="form-label">SQL</label>
+                        <textarea class="form-control font-monospace" id="dbQuerySql" rows="3" placeholder="select * from shops limit 5"></textarea>
+                      </div>
+                    </div>
+                    <div class="mt-2 d-flex gap-2">
+                      <button class="btn btn-primary btn-sm" onclick="app.dbQueryRun()"><span class="me-1" data-ic="search"></span>执行查询</button>
+                      <button class="btn btn-outline-secondary btn-sm" onclick="app.dbQueryLoad('select * from shops limit 5')">shops</button>
+                      <button class="btn btn-outline-secondary btn-sm" onclick="app.dbQueryLoad('select * from trace_daily order by day desc limit 5')">trace_daily</button>
+                      <button class="btn btn-outline-secondary btn-sm" onclick="app.dbQueryLoad('select * from messages order by id desc limit 5')">messages</button>
+                    </div>
+                    <div id="dbQueryResult" class="mt-3"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="row row-cards mt-3">
+              <div class="col-lg-6">
+                <div class="card has-collapse" data-card="dbmaint">
+                  <div class="card-header"><h3 class="card-title">维护 · VACUUM</h3><span class="card-collapse-chevron" title="点击收起/展开"></span></div>
+                  <div class="card-body">
+                    <div class="text-secondary small mb-3">回收 SQLite 文件碎片, 会短暂锁库。日常无需操作。</div>
+                    <div class="d-flex align-items-end gap-2">
+                      <div class="flex-fill">
+                        <label class="form-label">目标库</label>
+                        <select class="form-select form-select-sm" id="dbVacuumSel">
+                          <option value="trace">trace.db</option>
+                          <option value="logs">logs.db</option>
+                        </select>
+                      </div>
+                      <button class="btn btn-outline-primary btn-sm" onclick="app.dbVacuum()"><span class="me-1" data-ic="database"></span>执行 VACUUM</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="col-lg-6">
+                <div class="card has-collapse collapsed" data-card="dbprune">
+                  <div class="card-header"><h3 class="card-title">维护 · 按时间删旧数据</h3><span class="card-collapse-chevron" title="点击收起/展开"></span></div>
+                  <div class="card-body">
+                    <div class="alert alert-warning small mb-3" role="alert"><span class="me-1" data-ic="alert"></span>至少保留 7 天, 删后不可恢复。命中超过 1000 行时会先弹二次确认, 白名单表才允许清理。</div>
+                    <div class="row g-2 align-items-end">
+                      <div class="col-6">
+                        <label class="form-label">库</label>
+                        <select class="form-select form-select-sm" id="dbPruneDbSel" onchange="app.dbPruneFilter()">
+                          <option value="trace">trace.db</option>
+                          <option value="logs">logs.db</option>
+                        </select>
+                      </div>
+                      <div class="col-6">
+                        <label class="form-label">表</label>
+                        <select class="form-select form-select-sm" id="dbPruneTableSel"></select>
+                      </div>
+                      <div class="col-4">
+                        <label class="form-label">保留最近 N 天</label>
+                        <input type="number" class="form-control form-control-sm" id="dbPruneDays" min="7" value="30">
+                      </div>
+                      <div class="col-8">
+                        <button class="btn btn-danger btn-sm w-100" onclick="app.dbPrune()"><span class="me-1" data-ic="trash"></span>删除更早的数据</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ═══════════ 服务控制(仅管理员) ═══════════ -->
+          <section data-view="server" class="d-none">
+            <div class="page-header d-print-none">
+              <div class="row align-items-center">
+                <div class="col-auto">
+                  <h2 class="page-title">服务控制</h2>
+                  <div class="page-pretitle text-secondary">启动 / 停止 / 重启本服务, 查看运行状态(等价于 control_panel.py 命令行, 但浏览器里点就行)</div>
+                </div>
+                <div class="col-auto ms-auto d-flex gap-2">
+                  <button class="btn btn-outline-secondary btn-sm" onclick="app.renderServer()"><span class="me-1" data-ic="refresh"></span>刷新状态</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 状态概览 -->
+            <div class="row row-cards" id="serverStatusCards">
+              <div class="col-sm-6 col-lg-3">
+                <div class="card">
+                  <div class="card-body">
+                    <div class="text-secondary small">服务状态</div>
+                    <div class="h3 mb-0" id="serverStateText">—</div>
+                    <div class="text-secondary small mt-1" id="serverStateSub">探测中…</div>
+                  </div>
+                </div>
+              </div>
+              <div class="col-sm-6 col-lg-3">
+                <div class="card">
+                  <div class="card-body">
+                    <div class="text-secondary small">进程 / 端口</div>
+                    <div class="h3 mb-0 font-monospace" id="serverPidPort">—</div>
+                    <div class="text-secondary small mt-1" id="serverUptime">—</div>
+                  </div>
+                </div>
+              </div>
+              <div class="col-sm-6 col-lg-3">
+                <div class="card">
+                  <div class="card-body">
+                    <div class="text-secondary small">Python / 启动时间</div>
+                    <div class="h3 mb-0" id="serverPython">—</div>
+                    <div class="text-secondary small mt-1" id="serverStarted">—</div>
+                  </div>
+                </div>
+              </div>
+              <div class="col-sm-6 col-lg-3">
+                <div class="card">
+                  <div class="card-body">
+                    <div class="text-secondary small">夜间抓取</div>
+                    <div class="h3 mb-0" id="serverNightlyText">—</div>
+                    <div class="text-secondary small mt-1" id="serverNightlySub">—</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 控制按钮 -->
+            <div class="row row-cards">
+              <div class="col-12">
+                <div class="card">
+                  <div class="card-body d-flex flex-wrap gap-2 align-items-center">
+                    <button class="btn btn-outline-warning" onclick="app.serverRestart()"><span class="me-1" data-ic="refresh"></span>重启服务</button>
+                    <button class="btn btn-outline-danger" onclick="app.serverStop()"><span class="me-1" data-ic="power"></span>停止服务</button>
+                    <button class="btn btn-outline-secondary" onclick="app.renderServer()"><span class="me-1" data-ic="refresh"></span>刷新状态</button>
+                    <span class="ms-auto text-secondary small" id="serverActionHint">停止后需手动运行 launch_resident.py / control_panel.py 启动</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- DB + 日志 -->
+            <div class="row row-cards">
+              <div class="col-lg-6">
+                <div class="card">
+                  <div class="card-header"><div class="card-title"><span class="me-1" data-ic="database"></span>数据库文件</div></div>
+                  <div class="card-body">
+                    <div class="table-responsive"><table class="table table-vcenter table-sm mb-0" id="serverDbTable">
+                      <thead><tr><th>库</th><th>文件</th><th class="text-end">大小</th></tr></thead>
+                      <tbody></tbody>
+                    </table></div>
+                  </div>
+                </div>
+              </div>
+              <div class="col-lg-6">
+                <div class="card">
+                  <div class="card-header"><div class="card-title"><span class="me-1" data-ic="file-text"></span>服务日志(尾部 20 行)</div></div>
+                  <div class="card-body"><pre class="font-monospace small mb-0" id="serverLog" style="max-height:260px;overflow:auto"></pre></div>
                 </div>
               </div>
             </div>
@@ -1102,8 +1438,8 @@
               </div>
             </div>
 
-            <div class="card">
-              <div class="card-header"><h3 class="card-title">预留板块</h3><span class="text-secondary small ms-auto">更多功能将陆续开放</span></div>
+            <div class="card has-collapse" data-card="more">
+              <div class="card-header"><h3 class="card-title">预留板块</h3><span class="text-secondary small ms-auto">更多功能将陆续开放</span><span class="card-collapse-chevron" title="点击收起/展开"></span></div>
               <div class="card-body">
                 <div class="empty" style="padding:2.5rem 0">
                   <div class="empty-img text-secondary" style="font-size:2.6rem"><span data-ic="grid" data-size="40"></span></div>
@@ -1113,7 +1449,7 @@
               </div>
             </div>
 
-            <div class="card" id="usersCard" style="display:none">
+            <div class="card has-collapse" id="usersCard" style="display:none" data-card="users">
               <div class="card-header">
                 <h3 class="card-title">用户管理</h3>
                 <div class="card-actions">
@@ -1123,6 +1459,7 @@
                   </div>
                   <button class="btn btn-sm btn-primary" onclick="app.createUser()"><span class="me-1" data-ic="plus"></span>新建用户</button>
                 </div>
+                <span class="card-collapse-chevron" title="点击收起/展开"></span>
               </div>
               <div class="table-responsive">
                 <table class="table table-vcenter card-table">
@@ -1252,6 +1589,7 @@
     bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
     download: '<path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 21h16"/>',
+    fetch: '<path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 21h16"/>',
     play: '<path d="M7 4v16l13-8Z"/>',
     trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6"/>',
     clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
@@ -1279,6 +1617,22 @@
     size = size || 24;
     return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="' + size + '" height="' + size + '">' + (I[name] || '') + '</svg>';
   }
+  // 空状态整行: 图标 + 标题 + 提示, 比一行 "暂无任务" 有信息量
+  function emptyRow(colspan, ic, title, hint) {
+    return '<tr><td colspan="' + colspan + '" class="text-center py-4">' +
+      '<div class="d-flex flex-column align-items-center gap-2 text-secondary">' +
+      '<span style="opacity:.45">' + icon(ic || 'tasks', 36) + '</span>' +
+      '<div class fw-semibold">' + esc(title || '暂无数据') + '</div>' +
+      (hint ? '<div class="small">' + esc(hint) + '</div>' : '') +
+      '</div></td></tr>';
+  }
+  // 内容刷新时的短暂淡化(减轻轮询造成的整表闪烁): 重加类以重启动画
+  function flashEl(el) {
+    if (!el) return;
+    el.classList.remove('content-flash');
+    void el.offsetWidth;
+    el.classList.add('content-flash');
+  }
 
   /* ---------- 工具 ---------- */
   function $(id) { return document.getElementById(id); }
@@ -1300,6 +1654,14 @@
   function jsStr(v) { return esc(JSON.stringify(v == null ? '' : String(v))); }
   function fmt(n) { return (n == null ? 0 : n).toLocaleString('zh-CN'); }
   function pct(n) { return (Number(n) == null ? 0 : Number(n)).toFixed(2) + '%'; }
+  // 时刻统一补全到 HH:MM:SS("00:00" → "00:00:00", "13:59:21" → "13:59:21"),
+  // 任务结果里的 startTs 常是 HH:MM, 显示时要精确到秒就得先补全。
+  function fmtTs(ts) {
+    if (!ts) return '';
+    var m = /^(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?$/.exec(String(ts).trim());
+    if (!m) return String(ts);
+    return m[1].padStart(2, '0') + ':' + m[2].padStart(2, '0') + ':' + (m[3] || '00').padStart(2, '0');
+  }
   function rateCls(r) { r = Number(r) || 0; return r >= 70 ? 'rate-good' : r >= 40 ? 'rate-mid' : 'rate-bad'; }
   function ratePill(r) { return '<span class="rate-pill ' + rateCls(r) + '">' + pct(r) + '</span>'; }
   function pfBadge(p) {
@@ -1307,7 +1669,10 @@
     var x = m[p] || [String(p), 'bg-secondary-lt'];
     return '<span class="pf-badge ' + x[1] + '">' + x[0] + '</span>';
   }
-  function badge(text, kind) { return '<span class="badge ' + kind + '">' + text + '</span>'; }
+  function badge(text, kind, title, ic) {
+      var icon = ic ? '<span class="me-1" data-ic="' + esc(ic) + '" data-size="12"></span>' : '';
+      return '<span class="badge ' + kind + '"' + (title ? ' title="' + esc(title) + '"' : '') + '>' + icon + text + '</span>';
+    }
   function toast(msg, kind) {
     kind = kind || 'primary';
     var el = document.createElement('div');
@@ -1360,6 +1725,16 @@
     var d = (!isNaN(n) && String(ts).trim() !== '') ? new Date(n < 1e12 ? n * 1000 : n) : new Date(ts);
     if (isNaN(d.getTime())) return String(ts);
     return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  }
+  // 带秒的完整时间(核算结果的 fetched_at 是 epoch 秒, 要精确到秒就得自己格式化)
+  function fmtDateTime(ts) {
+    if (ts == null || ts === '') return '';
+    var n = Number(ts);
+    var d = (!isNaN(n) && String(ts).trim() !== '') ? new Date(n < 1e12 ? n * 1000 : n) : new Date(ts);
+    if (isNaN(d.getTime())) return String(ts);
+    var pad = function (x) { return String(x).padStart(2, '0'); };
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' +
+      pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
   }
 
   /* ---------- 鉴权与请求 ---------- */
@@ -1450,7 +1825,10 @@
     trace:     { title: '消息轨迹', parent: '经营数据', icon: 'message' },
     tasks:     { title: '任务中心', parent: '运营中心', icon: 'tasks' },
     logs:      { title: '日志中心', parent: '运营中心', icon: 'logs' },
+    fetch:     { title: '抓取配置', parent: '系统', icon: 'fetch' },
     settings:  { title: '系统设置', parent: '系统', icon: 'sliders' },
+    server:    { title: '服务控制', parent: '系统', icon: 'server' },
+    database:  { title: '数据库管理', parent: '系统', icon: 'database' },
     more:      { title: '更多', parent: '系统', icon: 'grid' }
   };
 
@@ -1460,7 +1838,10 @@
     shopsSort: { key: 'total', dir: -1 }, shopsPage: 1, shopsPageSize: 8,
     staffAgg: false, logTab: 'op',
     tasksPage: 1,
-    selShops: {}   // 核算店铺勾选(thirdShopId -> true)
+    selShops: {},   // 核算店铺勾选(thirdShopId -> true)
+    pendingTodayResult: null,   // 任务中心"查看"跳转带来的今日快照(优先于实时状态渲染)
+    pendingShopsResult: null,   // 任务中心"查看"跳转带来的店铺核算快照
+    pendingStaffResult: null    // 任务中心"查看"跳转带来的客服账号池快照
   };
   var currentUser = null;
   var platformInfo = null;
@@ -1490,9 +1871,17 @@
     window.scrollTo(0, 0);
     var sb = $('sidebar-menu');
     if (sb && sb.classList.contains('show')) sb.classList.remove('show');
+    // 切视图淡入: 只在"切换到不同视图"时触发, 同视图内重渲染不闪
+    var cur = document.querySelector('[data-view]:not(.d-none)');
+    if (cur && cur.dataset.view !== lastShownView) {
+      lastShownView = cur.dataset.view;
+      cur.style.opacity = '0';
+      requestAnimationFrame(function () { cur.style.opacity = '1'; });
+    }
   }
+  var lastShownView = 'dashboard';   // 首页默认已显示, 首次 route() 不淡入
   function renderPage(name) {
-    var map = { dashboard: renderDashboard, insights: renderInsightsPage, shops: renderShops, staff: renderStaff, trace: renderTrace, tasks: renderTasks, logs: renderLogs, settings: renderSettings, more: renderMore };
+    var map = { dashboard: renderDashboard, insights: renderInsightsPage, shops: renderShops, staff: renderStaff, trace: renderTrace, tasks: renderTasks, logs: renderLogs, fetch: renderFetch, settings: renderSettings, server: renderServer, database: renderDatabase, more: renderMore };
     if (map[name]) map[name]();
   }
   function currentViewName() {
@@ -1677,12 +2066,13 @@
         var arrow = cp > 0 ? '▲' : cp < 0 ? '▼' : '—';
         var deltaTxt = cp == null ? '—' : (arrow + ' ' + (cp > 0 ? '+' : '') + Number(cp).toFixed(2) + '%');
         var prevTxt = c.isPct ? (m.previous == null ? '' : ' vs 上期 ' + Number(m.previous).toFixed(2) + '%') : (m.previous == null ? '' : ' vs 上期 ' + fmt(m.previous));
+        var nullHint = (cur == null) ? '<div class="text-secondary small mt-1" style="font-size:.68rem">tanyu 暂不可用, 本地库无此口径</div>' : '';
         return '<div class="col-sm-6 col-xl-' + (cards.length === 3 ? 4 : 3) + '"><div class="card stat-card"><div class="card-body">' +
           '<div class="d-flex align-items-start justify-content-between">' +
           '<div><div class="text-secondary" style="font-size:.8rem">' + c.label + '</div><div class="stat-value mt-1">' + val + '</div></div>' +
           '<span class="stat-icon ' + c.color + '">' + icon(c.ic, 20) + '</span></div>' +
           '<div class="d-flex align-items-center gap-2 mt-2"><span class="stat-delta ' + dCls + '">' + deltaTxt + '</span>' +
-          '<span class="text-secondary" style="font-size:.74rem">' + prevTxt + '</span></div>' +
+          '<span class="text-secondary" style="font-size:.74rem">' + prevTxt + '</span></div>' + nullHint +
           '</div></div></div>';
       }).join('');
     } catch (e) {
@@ -1749,8 +2139,8 @@
       try {
         var r = await api('/api/trace/overview?days=' + days + '&platform=' + p + '&from_cache=1');
         var res = r.result || {};
-        rows.push({ p: p, total: res.total || 0, adopted: res.adopted || 0, shops: (res.shopList || []).length, start: res.startDate, end: res.endDate });
-      } catch (e) { rows.push({ p: p, total: 0, adopted: 0, shops: 0, start: '', end: '' }); }
+        rows.push({ p: p, total: res.total || 0, adopted: res.adopted || 0, shops: (res.shopList || []).length, start: res.startDate, end: res.endDate, coverage: res.coverage || 'full', missing: res.missingCount || 0 });
+      } catch (e) { rows.push({ p: p, total: 0, adopted: 0, shops: 0, start: '', end: '', coverage: 'none', missing: 0 }); }
     }));
     return rows;
   }
@@ -1764,6 +2154,9 @@
       var rate = r.total ? (r.adopted / r.total * 100) : 0;
       var bar = rate >= 70 ? 'bg-success' : rate >= 40 ? 'bg-warning' : 'bg-danger';
       var range = (r.start && r.end) ? (r.start + ' ~ ' + r.end) : '';
+      var covHint = r.coverage === 'partial'
+        ? '<span class="badge bg-amber-lt text-amber ms-1" style="font-size:.6rem" title="该平台近7天只有部分天有数据(新店未补历史/偶发漏抓), 数字为已有天聚合, 可能偏少">部分覆盖</span>'
+        : (r.coverage === 'none' ? '<span class="badge bg-secondary-lt ms-1" style="font-size:.6rem" title="该平台近7天本地库无数据, 请点「抓取今日数据」或「补抓历史」">无数据</span>' : '');
       return '<div class="col-md-4"><div class="card"><div class="card-body">' +
         '<div class="d-flex justify-content-between align-items-center">' +
         '<span class="pf-badge ' + n[1] + '">' + n[0] + '</span>' +
@@ -1774,6 +2167,7 @@
         '<div class="text-end"><div class="text-secondary" style="font-size:.7rem">采纳率</div>' + ratePill(rate) + '</div></div>' +
         '<div class="progress mt-2" style="height:.4rem"><div class="progress-bar ' + bar + '" style="width:' + Math.min(100, rate) + '%"></div></div>' +
         '<div class="text-secondary mt-1" style="font-size:.7rem">采纳 ' + fmt(r.adopted) + ' 条' + (range ? ' · ' + range : '') + '</div>' +
+        '<div class="mt-1">' + covHint + '</div>' +
         '</div></div></div>';
     }).join('');
   }
@@ -1810,12 +2204,20 @@
         '</div></div></div>';
     }).join('') + '</div>';
     if (meta) meta.textContent = (st.running ? '抓取中… ' : '上次抓取 ') +
-      (res.startDate || '') + ' ' + (res.startTs || '00:00') + ' ~ ' + (res.endTs || '') + (res.live ? ' · 实时' : '');
+      (res.startDate || '') + ' ' + fmtTs(res.startTs || '00:00') + ' ~ ' + fmtTs(res.endTs) + (res.live ? ' · 实时' : '');
     paintIcons();
   }
   async function renderTodayPlatforms() {
     var body = $('todayPlatBody');
     if (!body) return;
+    // 从任务中心"查看"跳过来时优先渲染该任务自己存的快照(带 startTs/endTs),
+    // 不要用实时状态: 实时状态是"此刻"的, 跟那条已完成任务的数据不是一回事。
+    if (state.pendingTodayResult) {
+      var pr = state.pendingTodayResult;
+      state.pendingTodayResult = null;
+      todayPlatHtml(pr);
+      return;
+    }
     try { todayPlatHtml(await api('/api/trace/today/status')); }
     catch (e) { body.innerHTML = '<span class="empty-hint">今日数据加载失败: ' + esc(e.message) + '</span>'; }
   }
@@ -1825,23 +2227,26 @@
     try {
       var d = await api('/api/trace/today?mode=audit', { method: 'POST' });
       if (d.status === 'queued' || d.status === 'running') {
-        toast(d.status === 'queued' ? '任务已排队(前面有任务在跑), 完成后自动刷新' : '已开始抓取今日数据, 完成后自动刷新', 'success');
+        toast(d.status === 'queued' ? '任务已排队(前面有任务在跑), 完成后自动刷新, 请往任务中心查看进度' : '已开始抓取今日数据, 完成后自动刷新, 请往任务中心查看进度', 'success');
       } else {
-        toast('已发起抓取今日数据', 'success');
+        toast('已发起抓取今日数据, 请往任务中心查看进度', 'success');
       }
-      pollTodayResult();
+      pollTodayResult(d.taskId);
     } catch (e) {
       toast('发起失败: ' + e.message, 'danger');
       if (btn) { btn.disabled = false; btn.textContent = '抓取今日数据'; }
     }
   }
-  function pollTodayResult() {
+  function pollTodayResult(taskId) {
     if (todayPollTimer) clearInterval(todayPollTimer);
     todayPollTimer = setInterval(async function () {
       var st;
       try { st = await api('/api/trace/today/status'); } catch (e) { return; }
-      todayPlatHtml(st);
-      if (!st.running) {
+      // 只认自己那单任务的结果: 排队期间状态里残留的是上一次任务的 task_id,
+      // 否则会立刻渲染旧结果 + 误报"今日数据已更新"。
+      var owner = !taskId || (st.taskId === taskId);
+      if (owner) todayPlatHtml(st);
+      if (!st.running && owner) {
         clearInterval(todayPollTimer); todayPollTimer = null;
         var btn = $('btnFetchToday');
         if (btn) { btn.disabled = false; btn.textContent = '抓取今日数据'; }
@@ -2033,17 +2438,21 @@
   /* 最近任务 */
   async function renderRecentTasks() {
     try {
-      var t = await api('/api/tasks/list?limit=5');
+      // 与任务中心同一口径(近 6 小时), 避免看板显示任务中心已清理的旧任务
+      var t = await api('/api/tasks/list?limit=5&since_hours=6');
       var list = t.tasks || [];
       $('dashRecentTasks').innerHTML = list.length ? list.map(function (x) {
-        var s = TASK_STATUS[x.status] || ['未知', 'bg-secondary'];
+        var s = TASK_STATUS[x.status] || ['未知', 'bg-secondary', ''];
         var p = x.progress || {};
-        var pctv = p.total ? Math.round((p.done || 0) / p.total * 100) : (x.status === 'running' ? 100 : 0);
-        return '<tr><td>' + badge(s[0], s[1]) + '</td><td class="small text-truncate" style="max-width:180px" title="' + esc(x.label || '') + '">' + esc(x.label || x.type || '') + '</td>' +
+        var pctv = p.total ? Math.round((p.done || 0) / p.total * 100) : (x.status === 'running' ? 100 : (x.status === 'done' ? 100 : 0));
+        var viewBtn = (x.status === 'done' || x.status === 'error') && taskViewAction(x)
+          ? '<button class="btn btn-sm btn-ghost" onclick="app.viewTaskResult(' + x.id + ')"><span data-ic="search" data-size="12"></span></button>'
+          : '';
+        return '<tr><td>' + badge(s[0], s[1], (x.status === 'canceled' || x.status === 'error') && x.error ? esc(x.error) : '', s[2]) + '</td><td class="small text-truncate" style="max-width:160px" title="' + esc(x.label || '') + '">' + esc(x.label || x.type || '') + '</td>' +
           '<td style="min-width:100px"><div class="progress prog-sm"><div class="progress-bar" style="width:' + pctv + '%"></div></div>' +
-          '<div class="prog-label mt-1">' + (p.done || 0) + '/' + (p.total || 0) + '</div></td></tr>';
-      }).join('') : '<tr><td colspan="3" class="text-center empty-hint py-3">暂无任务</td></tr>';
-    } catch (e) { $('dashRecentTasks').innerHTML = '<tr><td colspan="3" class="text-center empty-hint py-3">加载失败</td></tr>'; }
+          '<div class="prog-label mt-1">' + (p.done || 0) + '/' + (p.total || 0) + '</div></td><td class="text-end">' + viewBtn + '</td></tr>';
+      }).join('') : emptyRow(4, 'clock', '暂无任务', '近 6 小时内没有发起过任务');
+    } catch (e) { $('dashRecentTasks').innerHTML = emptyRow(4, 'alert', '加载失败', esc(e.message)); }
   }
 
   /* 最近活动(系统日志流, 空时回退最近任务) */
@@ -2060,12 +2469,12 @@
         var tasks = t.tasks || [];
         if (!tasks.length) { el.innerHTML = '<span class="empty-hint">暂无系统活动(预抓/抓取任务运行后自动记录)</span>'; return; }
         el.innerHTML = tasks.map(function (x) {
-          var s = TASK_STATUS[x.status] || [x.status || '未知', 'bg-secondary'];
+          var s = TASK_STATUS[x.status] || [x.status || '未知', 'bg-secondary', ''];
           var p = x.progress || {};
           var pctv = p.total ? Math.round((p.done || 0) / p.total * 100) : 0;
           return '<div class="activity-item">' +
             '<span class="a-dot" style="background:' + (x.status === 'error' ? '#d63939' : x.status === 'running' ? '#066fd1' : '#2fb344') + '"></span>' +
-            '<div class="a-msg"><span class="badge ' + s[1] + ' me-1" style="font-size:.62rem">' + s[0] + '</span>' + esc(x.label || x.type || '') +
+            '<div class="a-msg"><span class="badge ' + s[1] + ' me-1" style="font-size:.62rem"><span data-ic="' + s[2] + '" data-size="10"></span>' + s[0] + '</span>' + esc(x.label || x.type || '') +
             '<div class="progress prog-sm mt-1"><div class="progress-bar" style="width:' + pctv + '%"></div></div></div>' +
             '<span class="a-time">' + fmtTime(x.started_at) + '</span></div>';
         }).join('');
@@ -2303,6 +2712,14 @@
   function fmt1(n) { return (n == null ? 0 : n).toLocaleString('zh-CN', { maximumFractionDigits: 1 }); }
   async function renderShops() {
     var run = ++shopsRun;
+    // 任务中心"查看"跳过来: 直接渲染该任务存好的结果, 不再跑一次核算
+    if (state.pendingShopsResult) {
+      var pr = state.pendingShopsResult;
+      state.pendingShopsResult = null;
+      if (pr.set) pr.set();
+      renderShopsResult(pr);
+      return;
+    }
     refreshTagFilter();
     var body = $('shopsBody');
     body.innerHTML = '<tr><td colspan="11" class="text-center empty-hint py-4">加载中…</td></tr>';
@@ -2695,8 +3112,43 @@
 
   /* ---------- 客服账号池 ---------- */
   var staffRun = 0;
+  // 任务中心"查看"跳转带来的客服快照: 直接把 byStaff 喂给 staffCache 渲染,
+  // 字段名与 /api/trace/stuff 接口略有差异(今天结果用 shopPlatform/shopName),
+  // 这里做一次归一化, 复用 renderStaffGrid 的分组/汇总/搜索/导出全套逻辑。
+  function renderStaffResult(res) {
+    if (!res || !res.byStaff) return;
+    staffCache = (res.byStaff || []).map(function (x) {
+      return {
+        name: (x.nick || x.name) || x.accountShort || x.account || '?',
+        acct: x.accountShort || x.account || '',
+        accountId: x.accountId || '',
+        shop: x.shopName || '',
+        platform: x.shopPlatform || x.platform || '',
+        total: x.total || 0, adopted: x.adopted || 0,
+        rate: x.rate != null ? x.rate : (x.total ? (x.adopted / x.total * 100) : 0)
+      };
+    });
+    renderStaffGrid();
+    // 时刻精确到秒: startTs/endTs 常是 HH:MM, 用 fmtTs 补全到 HH:MM:SS 再拼进日期区间。
+    var tsStart = res.startTs ? ' ' + fmtTs(res.startTs) : '';
+    var tsEnd = res.endTs ? ' ' + fmtTs(res.endTs) : '';
+    var range = (res.startDate || '') + tsStart + ' ~ ' + (res.endDate || '') + tsEnd;
+    $('staffSummary').textContent = '共 ' + staffCache.length + ' 人' + (range ? ' · ' + range : '');
+    var badgeEl = $('staffRangeBadge');
+    if (badgeEl) { badgeEl.style.display = range ? '' : 'none'; badgeEl.textContent = '数据范围 ' + range; }
+    $('staffWarn').innerHTML = '';
+    paintIcons();
+  }
   async function renderStaff() {
     var run = ++staffRun;
+    // 任务中心"查看"跳过来: 直接渲染该任务存好的客服快照, 不再跑一次 staff 抓取
+    if (state.pendingStaffResult) {
+      var pr = state.pendingStaffResult;
+      state.pendingStaffResult = null;
+      if (pr.set) pr.set();
+      renderStaffResult(pr);
+      return;
+    }
     $('staffGrid').innerHTML = '<span class="empty-hint">加载中…</span>';
     var wb = $('staffWarn'); if (wb) wb.innerHTML = '';
     // 今日抓取结束时刻默认当前时间(秒级)
@@ -3123,7 +3575,9 @@
   }
 
   /* ---------- 任务中心 ---------- */
-  var TASK_STATUS = { running: ['运行中', 'bg-blue'], queued: ['排队中', 'bg-yellow'], done: ['完成', 'bg-green'], error: ['失败', 'bg-red'], canceled: ['已取消', 'bg-secondary'] };
+  var TASK_STATUS = { running: ['运行中', 'bg-blue', 'activity'], queued: ['排队中', 'bg-yellow', 'clock'], done: ['完成', 'bg-green', 'check'], error: ['失败', 'bg-red', 'x-octagon'], canceled: ['已中断', 'bg-secondary', 'pause'] };
+  // 任务类型的中文名(列表/看板的"类型"列显示原始英文 type, 用户看不懂)
+  var TASK_TYPE_LABEL = { today: '今日抓取', overview: '店铺核算', prefetch: '预抓取', calibrate: '校准', staff_sync: '客服同步', refresh: '刷新' };
   var taskCache = [];
   var taskSel = {};   // 任务勾选(id -> true, 管理员删除用)
   var TASKS_PAGE_SIZE = 20;   // 每页 20 条, 超过自动分页(同店铺核算池)
@@ -3167,30 +3621,33 @@
     $('btnDelTasks').style.display = 'none';
     updateTaskSelUI();
     $('tasksFooter').textContent = '第 ' + state.tasksPage + ' / ' + pages + ' 页 · 共 ' + total + ' 条 · 仅保留最近 6 小时, 超时自动清理';
-    if (!list.length) { $('tasksBody').innerHTML = '<tr><td colspan="10" class="text-center empty-hint py-4">暂无任务</td></tr>'; return; }
+    if (!list.length) { $('tasksBody').innerHTML = emptyRow(10, 'tasks', '暂无任务', '近 6 小时内的抓取 / 核算 / 预抓任务会显示在这里 — 顶部按钮发起新任务即可'); return; }
     $('tasksBody').innerHTML = list.map(function (t) {
       var s = TASK_STATUS[t.status] || [t.status || '未知', 'bg-secondary'];
       var p = t.progress || {};
-      var pctv = p.total ? Math.round((p.done || 0) / p.total * 100) : (t.status === 'running' ? 100 : 0);
+      var pctv = p.total ? Math.round((p.done || 0) / p.total * 100) : (t.status === 'running' ? 100 : (t.status === 'done' ? 100 : 0));
       var selCol = isAdmin && t.id != null
         ? '<td><label class="shop-check" onclick="event.stopPropagation()"><input type="checkbox" class="task-sel" value="' + t.id + '"' + (taskSel[t.id] ? ' checked' : '') + ' onchange="app.toggleTaskSel(this.value,this.checked)"></label></td>'
         : '<td></td>';
-      // 已完成/失败任务提供"查看"入口(跳回对应平台+时间段视图)
-      var viewBtn = (t.status === 'done' || t.status === 'error') && taskViewAction(t)
+      // 已完成/失败任务提供"查看"入口(跳回对应平台+时间段视图);
+      // canceled(被中断)任务若有存好的结果快照也一并提供, 否则不显示
+      var viewBtn = taskViewAction(t) && (t.status === 'done' || t.status === 'error' || t.result)
         ? '<button class="btn btn-sm btn-ghost" onclick="app.viewTaskResult(' + t.id + ')"><span class="me-1" data-ic="search" data-size="14"></span>查看</button>'
         : '';
       return '<tr>' + selCol +
         '<td class="text-secondary font-monospace">' + (t.id != null ? '#' + t.id : '') + '</td>' +
         '<td class="small fw-semibold">' + esc(t.label || t.type || '') + '</td>' +
-        '<td><span class="badge bg-secondary-lt">' + esc(t.type || '') + '</span></td>' +
+        '<td><span class="badge bg-secondary-lt">' + esc(TASK_TYPE_LABEL[t.type] || t.type || '') + '</span></td>' +
         '<td class="small text-secondary">' + esc(t.requested_by || '') + '</td>' +
-        '<td>' + badge(s[0], s[1]) + '</td>' +
+        '<td style="min-width:110px" class="task-status-cell">' + badge(s[0], s[1], (t.status === 'canceled' || t.status === 'error') && t.error ? esc(t.error) : '', s[2]) +
+        ((t.status === 'canceled' || t.status === 'error') && t.error ? '<div class="text-secondary small mt-1" style="max-width:150px" title="' + esc(t.error) + '">原因: ' + esc(String(t.error).slice(0, 38)) + '</div>' : '') + '</td>' +
         '<td><div class="d-flex align-items-center gap-2"><div class="progress prog-sm flex-fill"><div class="progress-bar" style="width:' + pctv + '%"></div></div>' +
         '<span class="prog-label">' + (p.done || 0) + '/' + (p.total || 0) + '</span></div></td>' +
         '<td class="small text-secondary">' + fmtTime(t.started_at) + '</td>' +
         '<td class="text-end small text-secondary text-truncate" style="max-width:160px" title="' + esc(p.current || '') + '">' + esc(p.current || '') + '</td>' +
         '<td class="text-end">' + viewBtn + '</td></tr>';
     }).join('');
+    flashEl($('tasksBody'));
     updateTaskSelUI();
   }
   function tasksPage(d) { state.tasksPage = Math.max(1, state.tasksPage + d); renderTasks(); }
@@ -3215,11 +3672,33 @@
         if (hit) platform = String(hit.id);
       }
     }
+    // 任务完成后点"查看": 跳回对应页面并显示这条任务自己存好的结果(已按起止时间筛选),
+    // 而不是再跑一次抓取/核算。
+    if (t.type === 'today') {
+      // today 任务的 params 里是 start_ts/end_ts(时刻), 没有日期; 预填日期从结果里取。
+      if (!start && t.result && t.result.startDate) start = t.result.startDate;
+      if (!end && t.result && t.result.endDate) end = t.result.endDate;
+      var mode = p.mode;
+      if (mode === 'staff') {
+        // 客服维度数据 → 客服账号池(按店铺分组的客服消息量/采纳率)
+        return { view: 'staff', shopIds: p.shop_ids,
+                 set: function () { setStaffRange(start, end, platform); },
+                 result: t.result };
+      }
+      if (mode === 'audit') {
+        // 店铺维度数据 → 店铺核算
+        return { view: 'shops', shopIds: p.shop_ids,
+                 set: function () { setShopsRange(start, end, platform); },
+                 result: t.result };
+      }
+      return { view: 'dashboard', set: null, result: t.result };   // 今日各平台卡片
+    }
     // 带时间段的抓取任务: 跳回店铺核算页并预填 平台+时间段(自定义)
     if (t.type === 'overview' || t.type === 'prefetch' || t.type === 'calibrate') {
-      return { view: 'shops', shopIds: p.shop_ids, set: function () { setShopsRange(start, end, platform); } };
+      return { view: 'shops', shopIds: p.shop_ids,
+              set: function () { setShopsRange(start, end, platform); },
+              result: t.result };
     }
-    if (t.type === 'today') return { view: 'dashboard', set: null };      // 今日各平台卡片
     if (t.type === 'refresh') return { view: 'dashboard', set: null };    // 首页看板
     return null;
   }
@@ -3233,6 +3712,23 @@
     if (start) $('shopsStart').value = String(start).slice(0, 10);
     if (end) $('shopsEnd').value = String(end).slice(0, 10);
   }
+  function setStaffRange(start, end, platform) {
+    // 客服页的区间控件是 staffDays(下拉)+staffCustomRange+staffStart/staffEnd,
+    // ID 规律与 toggleRangeControls 的 prefix+Day 不一致, 这里单独实现。
+    // 注意: 只同步 state.platform + 客服页自己的下拉, 别调 applyPlatform ——
+    // applyPlatform 会 reloadCurrent() 二次渲染, 把刚消费的快照冲掉。
+    if (platform) {
+      state.platform = String(platform);
+      var sp = $('staffPlatform');
+      if (sp) sp.value = String(platform);
+    }
+    var daysSel = $('staffDays');
+    if (daysSel) daysSel.value = 'custom';
+    var box = $('staffCustomRange');
+    if (box) box.style.display = '';
+    if (start) $('staffStart').value = String(start).slice(0, 10);
+    if (end) $('staffEnd').value = String(end).slice(0, 10);
+  }
   function viewTaskResult(id) {
     var t = null;
     for (var i = 0; i < taskCache.length; i++) if (taskCache[i].id === id) { t = taskCache[i]; break; }
@@ -3240,24 +3736,44 @@
     var a = taskViewAction(t);
     if (!a) { toast('该任务类型暂无可跳转的查看页面'); return; }
     var isShops = a.view === 'shops';
-    if (isShops) {
+    var isStaff = a.view === 'staff';
+    var hasResult = !!a.result;
+    // 失败任务重试时把原错误短句带进 toast, 用户知道它为什么失败过
+    var errTxt = (!hasResult && t.status === 'error' && t.error) ? '（原失败：' + esc(String(t.error).slice(0, 40)) + '）' : '';
+    // 核算所选(子集)任务: 预填勾选店铺, 保证重算/查看的口径一致
+    if (a.shopIds) {
+      state.selShops = {};
+      a.shopIds.split(',').forEach(function (s) { if (s) state.selShops[s] = true; });
+    }
+    // 有存好的结果就直接渲染这条任务的数据(已按起止时间筛选), 别再跑一次抓取/核算;
+    // 没存结果(如被中断的任务)才退回"重新发起"。
+    if (a.result) {
+      if (isShops) state.pendingShopsResult = { set: a.set, result: a.result };
+      else if (isStaff) state.pendingStaffResult = { set: a.set, result: a.result };
+      else state.pendingTodayResult = { result: a.result, running: false };
+      // shops 每次进入都重渲染; staff/dashboard 只渲染一次, 要把标志清掉才会真渲染。
+      if (currentViewName() === a.view) {
+        if (!isShops) rendered[a.view] = false;
+        route();   // 已在该视图(极少场景): 手动触发一次渲染
+      } else {
+        if (!isShops) rendered[a.view] = false;
+        location.hash = '#/' + a.view;   // hashchange → route() → 该视图渲染并消费快照
+      }
+    } else {
+      // 退回重新发起: 先预填平台+时间段, 再切页/重跑
       if (a.set) a.set();
-      // 核算所选(子集)任务: 预填勾选店铺, 保证重算/查看的口径一致
-      if (a.shopIds) {
-        state.selShops = {};
-        a.shopIds.split(',').forEach(function (s) { if (s) state.selShops[s] = true; });
+      if (currentViewName() === a.view) {
+        if (isShops) startRangeAudit(!!a.shopIds);
+        else if (isStaff) renderStaff();   // 客服任务重试: 走客服页实时抓取, 别误渲今日看板
+        else renderTodayPlatforms();
+      } else {
+        location.hash = '#/' + a.view;
+        // hash 切换触发 route→renderShops(只读); 随后发起范围核算:
+        // 有缓存(内存/磁盘/DB 快路径)秒回直接出表, 无缓存则后台抓取+轮询出结果
+        if (isShops) setTimeout(function () { startRangeAudit(!!a.shopIds); }, 400);
       }
     }
-    if (currentViewName() === a.view) {
-      if (isShops) startRangeAudit(!!a.shopIds);
-      else renderTodayPlatforms();
-    } else {
-      location.hash = '#/' + a.view;
-      // hash 切换触发 route→renderShops(只读); 随后发起范围核算:
-      // 有缓存(内存/磁盘/DB 快路径)秒回直接出表, 无缓存则后台抓取+轮询出结果
-      if (isShops) setTimeout(function () { startRangeAudit(!!a.shopIds); }, 400);
-    }
-    toast('已跳转到' + (isShops ? '店铺核算' : '首页看板'), 'success');
+    toast('已跳转到' + (isShops ? '店铺核算' : (isStaff ? '客服账号池' : '首页看板')) + (hasResult ? '(已显示该任务数据)' : (', 正在重新发起' + errTxt)), 'success');
   }
 
   /* ---------- 任务勾选删除(管理员) ---------- */
@@ -3344,7 +3860,7 @@
       var p = t.progress || {};
       var pctv = p.total ? Math.round((p.done || 0) / p.total * 100) : 0;
       return '<tr><td class="text-secondary font-monospace">' + (t.id != null ? t.id : '') + '</td>' +
-        '<td>' + badge(s[0], s[1]) + '</td>' +
+        '<td>' + badge(s[0], s[1], (t.status === 'canceled' || t.status === 'error') && t.error ? esc(t.error) : '', s[2]) + '</td>' +
         '<td class="small text-secondary">' + esc(t.requested_by || '') + '</td>' +
         '<td class="small">' + esc(t.label || t.type || '') + '</td>' +
         '<td><div class="progress prog-sm"><div class="progress-bar" style="width:' + pctv + '%"></div></div></td>' +
@@ -3435,97 +3951,6 @@
     } catch (e) { toast('保存失败: ' + e.message, 'danger'); }
   }
 
-  /* ---------- 微信扫码登录(二维码, 免浏览器) ---------- */
-  var wxQrTimer = null, wxQrActive = false, wxQrConfirmed = false, wxQrBusy = false;
-  async function wxQrStart() {
-    var box = $('wxQrBox'), tip = $('wxQrTip'), panel = $('wxQrPanel');
-    if (!box) return;
-    box.innerHTML = '<span class="text-secondary small">生成中…</span>';
-    panel.innerHTML = '<span class="text-secondary">正在获取二维码…</span>';
-    wxQrActive = true; wxQrConfirmed = false;
-    var d;
-    try {
-      d = await api('/api/wx-qr/start', { method: 'POST' });
-    } catch (e) {
-      wxQrActive = false;
-      box.innerHTML = '<button class="btn btn-sm btn-primary" onclick="app.wxQrStart()">重新生成</button>';
-      panel.innerHTML = '<span class="text-danger">' + esc(e.message) + '</span>';
-      return;
-    }
-    box.innerHTML = '<img src="' + esc(d.qrImage || d.qrCodeUrl) + '" style="width:178px;height:178px;border-radius:6px" alt="微信扫码登录二维码">';
-    tip.textContent = '有效期约 ' + (d.expiresIn || 150) + ' 秒, 请尽快扫码';
-    panel.innerHTML = '<span class="text-secondary">等待扫码…</span>';
-    clearInterval(wxQrTimer);
-    wxQrTimer = setInterval(wxQrPoll, 2000);
-  }
-  async function wxQrPoll() {
-    if (!wxQrActive || wxQrBusy) return;   // 防重入: 上次请求未返回不发起新的
-    wxQrBusy = true;
-    var d;
-    try { d = await api('/api/wx-qr/status'); } catch (e) { wxQrBusy = false; return; }
-    wxQrBusy = false;
-    var panel = $('wxQrPanel'), box = $('wxQrBox'), tip = $('wxQrTip');
-    if (!panel) { wxQrActive = false; return; }
-    if (d.phase === 'waiting') return;
-    if (d.phase === 'confirmed') {
-      var infos = d.accountInfos || [];
-      if (infos.length && !wxQrConfirmed) {
-        wxQrConfirmed = true;
-        tip.textContent = '已扫码, 请选择集团';
-        panel.innerHTML = '<div class="text-success fw-semibold mb-2">扫码成功, 请选择要进入的集团</div>' +
-          infos.map(function (g, i) {
-            var name = g.groupName || g.accountName || ('集团 ' + (i + 1));
-            return '<div class="d-flex align-items-center justify-content-between border rounded-2 px-3 py-2 mb-2">' +
-              '<span class="fw-semibold">' + esc(name) + '</span>' +
-              '<button class="btn btn-sm btn-primary" onclick="app.wxQrSelect(' + jsStr(String(g.accountId)) + ',' + jsStr(String(g.accountType == null ? 3 : g.accountType)) + ')">进入</button></div>';
-          }).join('') || '<span class="text-danger">未返回可进入的集团</span>';
-      }
-      return;
-    }
-    if (d.phase === 'done') {
-      clearInterval(wxQrTimer); wxQrTimer = null; wxQrActive = false;
-      box.innerHTML = '<div class="text-success" style="font-size:2.4rem;line-height:1"><span data-ic="check" data-size="38"></span></div>';
-      tip.textContent = 'Cookie 已更新';
-      panel.innerHTML = '<span class="text-success fw-semibold">登录成功, Cookie 已自动保存</span>';
-      loadCookieExpiry();
-      loadGroups();
-      renderGroups();
-      toast('登录成功, Cookie 已更新', 'success');
-      return;
-    }
-    if (d.phase === 'expired' || d.phase === 'error') {
-      clearInterval(wxQrTimer); wxQrTimer = null; wxQrActive = false;
-      box.innerHTML = '<button class="btn btn-sm btn-primary" onclick="app.wxQrStart()">重新生成</button>';
-      tip.textContent = '用绑定探域的微信扫码';
-      panel.innerHTML = '<span class="text-danger">' + esc(d.error || (d.phase === 'expired' ? '二维码已过期, 请重新生成' : '登录失败')) + '</span>';
-      return;
-    }
-  }
-  async function wxQrSelect(accountId, accountType) {
-    var panel = $('wxQrPanel');
-    if (!panel) return;
-    panel.innerHTML = '<span class="text-secondary">正在登录并获取 Cookie…</span>';
-    clearInterval(wxQrTimer); wxQrTimer = null; wxQrActive = false;
-    try {
-      var d = await api('/api/wx-qr/select', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_id: String(accountId), account_type: Number(accountType || 3) })
-      });
-      var box = $('wxQrBox'), tip = $('wxQrTip');
-      box.innerHTML = '<div class="text-success" style="font-size:2.4rem;line-height:1"><span data-ic="check" data-size="38"></span></div>';
-      tip.textContent = 'Cookie 已更新';
-      panel.innerHTML = '<span class="text-success fw-semibold">登录成功' + (d.group && d.group.name ? ' · ' + esc(d.group.name) : '') + '</span>' +
-        '<div class="text-secondary mt-1">Cookie 已自动保存, 店铺列表已同步</div>';
-      loadCookieExpiry();
-      loadGroups();
-      renderGroups();
-      toast('登录成功, Cookie 已更新', 'success');
-    } catch (e) {
-      panel.innerHTML = '<span class="text-danger">' + esc(e.message) + '</span>' +
-        '<div class="mt-2"><button class="btn btn-sm btn-outline-primary" onclick="app.wxQrStart()">重新登录</button></div>';
-    }
-  }
   function renderGroups() {
     $('groupsBody').innerHTML = (groupsData && groupsData.groups ? groupsData.groups : []).map(function (g) {
       var cur = g.current ? badge('当前', 'bg-blue') : '';
@@ -3541,7 +3966,11 @@
     var s = $('pfStart').value, e = $('pfEnd').value;
     if (!s || !e) { toast('请选择开始与结束日期'); return; }
     try {
-      await api('/api/trace/prefetch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ start: s, end: e }) });
+      var resp = await fetch(apiUrl('/api/trace/prefetch'), { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ start: s, end: e }) });
+      var d = await resp.json().catch(function () { return {}; });
+      if (!resp.ok && d.action === 'qr') { showAccountPopup(d.code, d.message, d.accounts || []); return; }
+      if (!resp.ok) { toast('启动失败: ' + (d.message || resp.status), 'danger'); return; }
       toast('补抓任务已启动, 可到任务中心查看进度', 'success');
       location.hash = '#/tasks';
     } catch (err) { toast('启动失败: ' + err.message, 'danger'); }
@@ -3941,29 +4370,302 @@
       renderUsers();
     } catch (e) { toast('创建失败: ' + e.message, 'danger'); }
   }
+
+  /* ---------- 抓取配置(自动抓取任务 + 抓取登录账号, 从系统设置独立出来) ---------- */
+  async function renderFetch() {
+    var jobs = [loadAutoTask(), loadAccounts()];
+    await Promise.all(jobs);
+    paintIcons();
+    setupSettingsCardCollapse();
+  }
+
   async function renderSettings() {
     renderGroups();
-    // 普通用户: 不展示 Cookie 管理 / 微信扫码登录 / 钉钉机器人(管理员专属运维配置)
-    var show = $('cookieCard'), ding = $('dingtalkCard'), wxq = $('wxQrCard'), impc = $('importCard');
+    // 普通用户: 不展示 Cookie 管理 / 钉钉机器人 / 天猫导入(管理员专属运维配置)
+    var show = $('cookieCard'), ding = $('dingtalkCard'), impc = $('importCard');
     if (show) show.style.display = isAdmin ? '' : 'none';
     if (ding) ding.style.display = isAdmin ? '' : 'none';
-    if (wxq) wxq.style.display = isAdmin ? '' : 'none';
     if (impc) impc.style.display = isAdmin ? '' : 'none';
-    var jobs = [loadTraceConfig(), loadAutoTask()];
+    var jobs = [loadTraceConfig()];
     if (isAdmin) { jobs.push(loadCookieExpiry()); jobs.push(renderDingtalk()); }
     await Promise.all(jobs);
     paintIcons();
+    setupSettingsCardCollapse();
     var y = new Date(Date.now() - 86400000);
     var ystr = y.getFullYear() + '-' + String(y.getMonth() + 1).padStart(2, '0') + '-' + String(y.getDate()).padStart(2, '0');
     if (!$('pfStart').value) $('pfStart').value = ystr;
     if (!$('pfEnd').value) $('pfEnd').value = ystr;
   }
 
+  /* ---------- 数据库管理(仅管理员): SQLite 只读浏览 + 简单维护 ---------- */
+  /* 服务控制: 运行状态 + 重启/停止。停止由后端返回 200 后再 os._exit,
+     重启由后端 detached 起 launch_resident.py 后再退出, 浏览器里一键完成。
+     2026-08-20 */
+  async function renderServer() {
+    var st = null;
+    try {
+      st = await api('/api/admin/server/status');
+    } catch (e) {
+      $('serverStateText').innerHTML = '<span class="text-danger">● 无法连接</span>';
+      $('serverStateSub').textContent = e.message || '服务未运行或未授权';
+      $('serverPidPort').textContent = '—';
+      $('serverUptime').textContent = '—';
+      $('serverPython').textContent = '—';
+      $('serverStarted').textContent = '—';
+      $('serverNightlyText').innerHTML = '<span class="text-secondary">—</span>';
+      $('serverNightlySub').textContent = '—';
+      var dbTb = $('serverDbTable').querySelector('tbody');
+      if (dbTb) dbTb.innerHTML = '<tr><td colspan="3" class="text-center text-secondary">服务未运行, 无数据</td></tr>';
+      try { var lg = await api('/api/admin/server/log?lines=20'); $('serverLog').textContent = lg.log || ''; }
+      catch (_) {}
+      return;
+    }
+    var stateCls = st.ok ? 'text-success' : 'text-danger';
+    $('serverStateText').innerHTML = '<span class="' + stateCls + '">● ' + (st.ok ? '运行中' : '已停止') + '</span>';
+    $('serverStateSub').textContent = st.ok ? ('PID ' + st.pid + ' · 端口 ' + st.port) : '未响应';
+    $('serverPidPort').textContent = 'PID ' + st.pid + ' : ' + st.port;
+    $('serverUptime').textContent = '已运行 ' + (st.uptime_human || '—');
+    $('serverPython').textContent = 'Python ' + (st.python || '—');
+    $('serverStarted').textContent = '启动 ' + (st.started_at || '—');
+    var n = st.nightly || {};
+    if (n.active) {
+      $('serverNightlyText').innerHTML = '<span class="text-warning">● 抓取中</span>';
+      $('serverNightlySub').textContent = (n.source || '') + ' · ' + (n.minutes + '分') + ' · ' + (n.since || '');
+    } else {
+      $('serverNightlyText').innerHTML = '<span class="text-secondary">● 空闲</span>';
+      $('serverNightlySub').textContent = '未在抓取';
+    }
+    var dbHtml = '';
+    (st.databases || []).forEach(function (d) {
+      dbHtml += '<tr><td class="font-monospace">' + esc(d.key) + '</td>' +
+        '<td class="text-secondary small">' + esc(d.path || ('data/' + d.key + '.db')) + '</td>' +
+        '<td class="text-end font-monospace">' + esc(d.size) + '</td></tr>';
+    });
+    var dbTb = $('serverDbTable').querySelector('tbody');
+    if (dbTb) dbTb.innerHTML = dbHtml || '<tr><td colspan="3" class="text-center text-secondary">无数据</td></tr>';
+    try {
+      var lg = await api('/api/admin/server/log?lines=20');
+      $('serverLog').textContent = lg.log || '(暂无日志)';
+    } catch (_) {}
+  }
+
+  function serverPollUntil(upUrl, onOk, timeoutMs, timeoutMsg) {
+    var t = setInterval(function () {
+      api(upUrl).then(function (r) {
+        if (r && r.ok) { clearInterval(t); onOk(r); }
+      }, function () {});
+    }, 1500);
+    setTimeout(function () { clearInterval(t); toast(timeoutMsg || '超时', 'danger'); }, timeoutMs || 30000);
+  }
+
+  async function countRunningTasks() {
+    try {
+      var t = await api('/api/tasks/list?limit=100');
+      var n = 0;
+      (t.tasks || []).forEach(function (x) { if (x.status === 'running' || x.status === 'queued') n++; });
+      return n;
+    } catch (e) { return 0; }
+  }
+
+  async function serverStop() {
+    var runningTasks = await countRunningTasks();
+    if (!confirm('确认停止服务?\n停止后看板将不可用, 需手动运行 launch_resident.py 或 control_panel.py 重启。'
+      + (runningTasks ? '\n⚠️ 当前有 ' + runningTasks + ' 个任务运行中, 停止后将中断并标记为「已中断」。' : ''))) return;
+    try {
+      await api('/api/admin/server/stop', { method: 'POST' });
+      toast('正在停止服务…', 'warning');
+      serverPollUntil('/api/admin/server/status',
+        function (r) { toast('服务已停止', 'info'); renderServer(); },
+        8000, '服务已停止(或未响应)');
+    } catch (e) {
+      // 服务可能在响应前就挂了, fetch 抛错也算停止成功
+      if (e.message && e.message.indexOf('fetch') >= 0) { toast('服务已停止', 'info'); renderServer(); }
+      else toast('停止失败: ' + e.message, 'danger');
+    }
+  }
+
+  async function serverRestart() {
+    var runningTasks = await countRunningTasks();
+    if (!confirm('确认重启服务?\n重启期间看板约 3~5 秒不可用, 会自动恢复。'
+      + (runningTasks ? '\n⚠️ 当前有 ' + runningTasks + ' 个任务运行中, 重启后将中断并标记为「已中断」(数据不丢, 可重跑)。' : ''))) return;
+    try {
+      await api('/api/admin/server/restart', { method: 'POST' });
+      toast('正在重启服务…', 'warning');
+      serverPollUntil('/api/admin/server/status',
+        function (r) { toast('服务已恢复 (PID ' + r.pid + ')', 'success'); renderServer(); },
+        30000, '重启超时, 请查看 server.log');
+    } catch (e) {
+      if (e.message && e.message.indexOf('fetch') >= 0) {
+        toast('正在重启服务…(已收到退出信号)', 'warning');
+        serverPollUntil('/api/admin/server/status',
+          function (r) { toast('服务已恢复 (PID ' + r.pid + ')', 'success'); renderServer(); },
+          30000, '重启超时, 请查看 server.log');
+      } else {
+        toast('重启失败: ' + e.message, 'danger');
+      }
+    }
+  }
+
+  async function renderDatabase() {
+    if (!isAdmin) { toast('仅管理员可见', 'danger'); return; }
+    try {
+      var d = await api('/api/admin/databases');
+      var dbs = d.databases || [];
+      var html = dbs.map(function (db) {
+        var sizeMb = db.size ? (db.size / 1048576).toFixed(2) + ' MB' : '—';
+        var head = '<div class="card">' +
+          '<div class="card-header"><h3 class="card-title">' + esc(db.key) + '</h3>' +
+          '<span class="text-secondary small ms-auto">' + esc(db.path) + ' · ' + sizeMb + '</span></div>' +
+          '<div class="card-body p-0"><div class="table-responsive"><table class="table table-vcenter table-sm mb-0">' +
+          '<thead><tr><th>表</th><th class="text-end">行数</th><th>列</th><th class="text-end">操作</th></tr></thead><tbody>';
+        if (!db.tables || !db.tables.length) {
+          head += '<tr><td colspan="4" class="text-center empty-hint">该库不存在或无表</td></tr></tbody></table></div></div></div>';
+          return head;
+        }
+        var rows = db.tables.map(function (t) {
+          var cols = (t.columns || []).map(esc).join('<span class="text-secondary">, </span>');
+          return '<tr>' +
+            '<td class="fw-semibold font-monospace">' + esc(t.name) + '</td>' +
+            '<td class="text-end font-monospace">' + fmt(t.rows) + '</td>' +
+            '<td class="text-secondary small" style="max-width:360px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">' + cols + '</td>' +
+            '<td class="text-end"><button class="btn btn-sm btn-outline-primary" onclick="app.dbOpenTable(\'' + db.key + '\',\'' + esc(t.name).replace(/'/g, "\\'") + '\')"><span class="me-1" data-ic="table"></span>浏览</button></td>' +
+            '</tr>';
+        }).join('');
+        head += rows + '</tbody></table></div></div></div>';
+        return head;
+      }).join('');
+      $('dbCards').innerHTML = html || '<div class="col-12"><div class="text-center text-secondary small py-5">暂无数据库</div></div>';
+      paintIcons();
+      setupSettingsCardCollapse();
+      if ($('dbPruneDbSel')) dbPruneFilter();
+    } catch (e) {
+      $('dbCards').innerHTML = '<div class="col-12"><div class="alert alert-danger">加载失败: ' + esc(e.message) + '</div></div>';
+    }
+  }
+
+  /* 打开单表浏览: 结构 + 总行数 + 抽样行(分页) */
+  var dbCur = { db: null, table: null, page: 1, limit: 50 };
+  async function dbOpenTable(db, table) {
+    dbCur.db = db; dbCur.table = table; dbCur.page = 1;
+    await dbPageTable();
+  }
+  async function dbPageTable() {
+    if (!dbCur.db) return;
+    try {
+      var d = await api('/api/admin/db/tables?db=' + encodeURIComponent(dbCur.db) +
+        '&table=' + encodeURIComponent(dbCur.table) +
+        '&page=' + dbCur.page + '&limit=' + dbCur.limit);
+      var total = d.total || 0;
+      var pages = Math.max(1, Math.ceil(total / dbCur.limit));
+      var thead = '<tr>' + (d.columns || []).map(function (c) { return '<th>' + esc(c) + '</th>'; }).join('') + '</tr>';
+      var body = (d.rows || []).map(function (r) {
+        return '<tr>' + (d.columns || []).map(function (c) {
+          var v = r[c];
+          var s = (v === null || v === undefined) ? '<span class="text-secondary">NULL</span>' :
+            (typeof v === 'object' ? esc(JSON.stringify(v)) : esc(String(v)));
+          return '<td class="font-monospace small" style="max-width:320px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">' + s + '</td>';
+        }).join('') + '</tr>';
+      }).join('');
+      var pager = '<nav><ul class="pagination pagination-sm mb-0">';
+      var prevP = 0;
+      for (var p = 1; p <= pages; p++) {
+        var keep = (p === 1 || p === pages || Math.abs(p - dbCur.page) <= 2);
+        if (!keep) continue;
+        if (prevP > 0 && p - prevP > 1) pager += '<li class="page-item disabled"><a class="page-link">…</a></li>';
+        pager += '<li class="page-item' + (p === dbCur.page ? ' active' : '') + '"><a class="page-link" href="#" onclick="app.dbPage(' + p + ');return false">' + p + '</a></li>';
+        prevP = p;
+      }
+      pager += '</ul></nav>';
+      var box = $('dbQueryResult');
+      if (box) box.innerHTML =
+        '<div class="d-flex align-items-center justify-content-between mb-2">' +
+        '<div><b class="font-monospace">' + esc(dbCur.db) + '.' + esc(dbCur.table) + '</b> · 共 ' + fmt(total) + ' 行 · 第 ' + dbCur.page + '/' + pages + ' 页</div>' +
+        '<div class="text-secondary small">列: ' + (d.columns || []).map(esc).join(', ') + '</div></div>' +
+        '<div class="table-responsive"><table class="table table-vcenter table-sm mb-0"><thead>' + thead + '</thead><tbody>' + (body || '<tr><td colspan="' + (d.columns || []).length + '" class="text-center empty-hint">该页无数据</td></tr>') + '</tbody></table></div>' +
+        '<div class="mt-2">' + pager + '</div>';
+      paintIcons();
+    } catch (e) {
+      var box = $('dbQueryResult');
+      if (box) box.innerHTML = '<div class="alert alert-danger">加载失败: ' + esc(e.message) + '</div>';
+    }
+  }
+  function dbPage(p) { dbCur.page = p; dbPageTable(); }
+
+  async function dbQueryRun() {
+    var db = $('dbQuerySel').value;
+    var sql = $('dbQuerySql').value.trim();
+    if (!sql) { toast('请输入 SQL', 'warning'); return; }
+    var box = $('dbQueryResult');
+    if (box) box.innerHTML = '<div class="text-secondary small"><span class="spinner-border spinner-border-sm me-2"></span>执行中…</div>';
+    try {
+      var d = await api('/api/admin/db/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: db, sql: sql }) });
+      if (!d.columns || !d.columns.length) {
+        if (box) box.innerHTML = '<div class="alert alert-info">查询成功, 无返回列(可能是非 SELECT 语句)。</div>';
+        return;
+      }
+      var thead = '<tr>' + d.columns.map(function (c) { return '<th>' + esc(c) + '</th>'; }).join('') + '</tr>';
+      var body = (d.rows || []).map(function (r) {
+        return '<tr>' + r.map(function (v) {
+          var s = (v === null || v === undefined) ? '<span class="text-secondary">NULL</span>' : esc(String(v));
+          return '<td class="font-monospace small" style="max-width:360px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">' + s + '</td>';
+        }).join('') + '</tr>';
+      }).join('');
+      var extra = d.truncated ? '<div class="text-secondary small mt-2">结果已截断至 200 行</div>' : '';
+      if (box) box.innerHTML =
+        '<div class="d-flex align-items-center justify-content-between mb-2">' +
+        '<div><b>查询结果</b> · ' + fmt(d.rows.length) + ' 行' + (d.truncated ? ' (已截断)' : '') + '</div>' +
+        '<button class="btn btn-sm btn-outline-secondary" onclick="app.dbQueryBackToTable()"><span class="me-1" data-ic="table"></span>回到表浏览</button></div>' +
+        '<div class="table-responsive"><table class="table table-vcenter table-sm mb-0"><thead>' + thead + '</thead><tbody>' +
+        (body || '<tr><td colspan="' + d.columns.length + '" class="text-center empty-hint">无数据</td></tr>') +
+        '</tbody></table></div>' + extra;
+      paintIcons();
+    } catch (e) {
+      var box = $('dbQueryResult');
+      if (box) box.innerHTML = '<div class="alert alert-danger">查询失败: ' + esc(e.message) + '</div>';
+    }
+  }
+  function dbQueryLoad(sql) { var el = $('dbQuerySql'); if (el) el.value = sql; }
+  function dbQueryBackToTable() { if (dbCur.db && dbCur.table) dbPageTable(); }
+
+  async function dbVacuum() {
+    var db = $('dbVacuumSel').value;
+    if (!confirm('确认对 ' + db + ' 执行 VACUUM? 会短暂锁库。')) return;
+    try {
+      var d = await api('/api/admin/db/vacuum', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: db }) });
+      toast('VACUUM 已执行', 'success');
+    } catch (e) { toast('失败: ' + e.message, 'danger'); }
+  }
+
+  function dbPruneFilter() {
+    var db = $('dbPruneDbSel').value;
+    var map = {
+      trace: [['messages','messages'], ['trace_daily','trace_daily'], ['operation_log','operation_log']],
+      logs: [['tasks','tasks'], ['system_logs','system_logs']]
+    };
+    var sel = $('dbPruneTableSel');
+    var opts = map[db] || [];
+    sel.innerHTML = opts.map(function (o) { return '<option value="' + o[0] + '">' + o[1] + '</option>'; }).join('');
+  }
+  async function dbPrune() {
+    var db = $('dbPruneDbSel').value;
+    var table = $('dbPruneTableSel').value;
+    var days = parseInt($('dbPruneDays').value, 10);
+    if (isNaN(days) || days < 7) { toast('至少保留 7 天', 'warning'); return; }
+    try {
+      var d = await api('/api/admin/db/prune', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: db, table: table, days: days }) });
+      if (d.needsConfirm) {
+        if (!confirm('确认删除 ' + db + '.' + table + ' 中 ' + days + ' 天以前的数据?\n将删除 ' + fmt(d.wouldDelete) + ' 条, 删后不可恢复。')) return;
+        d = await api('/api/admin/db/prune', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: db, table: table, days: days, confirm: true }) });
+      }
+      toast('已删除 ' + fmt(d.deleted) + ' 条旧数据(保留最近 ' + days + ' 天)', 'success');
+      renderDatabase();
+    } catch (e) { toast('失败: ' + e.message, 'danger'); }
+  }
+
   /* 数据校准 + 抓取账号(管理员) */
   async function loadTraceConfig() {
-    var calib = $('calibCard'), acct = $('tanyuAcctCard');
+    var calib = $('calibCard');
     if (calib) calib.style.display = isAdmin ? '' : 'none';
-    if (acct) acct.style.display = isAdmin ? '' : 'none';
     if (!isAdmin) return;
     try {
       var d = await api('/api/config/trace');
@@ -3983,17 +4685,26 @@
           '<span>' + st + '<span class="text-secondary small ms-2">' + expTxt + '</span></span></div>';
       }).join('');
       var groupName = (d.current_group && d.current_group.name) || '—';
-      $('tanyuAcctBody').innerHTML =
+      var tname = t.name;
+      var troles = (t.roles || []);
+      var roleHtml = troles.length ? troles.map(function (r) { return '<span class="badge bg-primary-lt text-primary" style="font-size:.7rem">' + esc(r) + '</span>'; }).join(' ') : '<span class="text-secondary small">—</span>';
+      // 合并进抓取账号卡片(不再单独一张卡): 账号 ID / 集团 / cookie 键状态 / 浏览器登录
+      $('tanyuAcctInfo').innerHTML =
+        '<div class="text-secondary small mb-1">tanyu 后台登录账号(抓取数据用)</div>' +
+        (tname ? '<div class="d-flex align-items-center justify-content-between mb-1"><span class="text-secondary small">员工姓名</span><b class="small">' + esc(tname) + '</b></div>' : '') +
+        '<div class="d-flex align-items-center justify-content-between mb-1">' +
+        '<span class="text-secondary small">角色</span><span>' + roleHtml + '</span></div>' +
+        '<div class="d-flex align-items-center justify-content-between mb-1">' +
+        '<span class="text-secondary small">登录账号 ID</span><b class="font-monospace small">' + esc(t.account_id || '—') + '</b></div>' +
         '<div class="d-flex align-items-center justify-content-between mb-2">' +
-        '<span class="text-secondary small">登录账号 ID</span><b class="font-monospace">' + esc(t.account_id || '—') + '</b></div>' +
-        '<div class="d-flex align-items-center justify-content-between mb-2">' +
-        '<span class="text-secondary small">当前激活集团</span><b>' + esc(groupName) + '</b></div>' +
+        '<span class="text-secondary small">当前激活集团</span><b class="small">' + esc(groupName) + '</b></div>' +
         '<div class="mb-2">' + ckRows + '</div>' +
-        '<div class="btn-list mt-3">' +
+        '<div class="btn-list mt-2">' +
         '<button class="btn btn-outline-primary btn-sm" onclick="app.startBrowserLogin()"><span class="me-1" data-ic="key"></span>浏览器登录更新 Cookie</button></div>' +
         '<div class="form-hint mt-2">点击后本机弹出浏览器, 登录探域后台后自动抓取 Cookie 写入 config.json</div>';
     } catch (e) {
-      $('tanyuAcctBody').innerHTML = '<span class="empty-hint">加载失败: ' + esc(e.message) + '</span>';
+      var el = $('tanyuAcctInfo');
+      if (el) el.innerHTML = '<span class="empty-hint">加载失败: ' + esc(e.message) + '</span>';
     }
   }
   async function saveTraceConfig() {
@@ -4021,6 +4732,83 @@
     if (i >= 0) autoPlats.splice(i, 1); else autoPlats.push(Number(p));
     fillAutoPlatChips();
   }
+  function setBtnLoading(btn, on) {
+    if (!btn) return;
+    btn.disabled = on;
+    btn.classList.toggle('disabled', on);
+    var ic = btn.querySelector('[data-ic]');
+    if (ic) ic.style.opacity = on ? '0' : '';
+  }
+  /* ---------- 自动抓取: 执行模式 / 本次平台 / 模拟运行 ---------- */
+  // 本次抓取的平台(单选: 不选=按配置全抓), 独立于保存配置的 autoPlats
+  var autoRunPlats = null;
+  function fillAutoRunPlatChips() {
+    var box = $('autoRunPlatChips');
+    if (!box) return;
+    var list = (platformInfo && platformInfo.fetch) || [{ id: 1, name: '拼多多' }, { id: 5, name: '抖音' }, { id: 7, name: '京东' }];
+    var html = list.map(function (p) {
+      var on = autoRunPlats === Number(p.id);
+      return '<button class="btn btn-sm ' + (on ? 'btn-primary' : 'btn-outline-primary') + '" '
+        + 'onclick="app.pickAutoRunPlat(' + Number(p.id) + ')" title="' + (on ? '只抓此平台' : '全抓') + '">'
+        + esc(p.name) + '</button>';
+    }).join('');
+    html += '<button class="btn btn-sm btn-outline-secondary" onclick="app.clearAutoRunPlat()" title="取消筛选, 按配置全抓">全抓</button>';
+    box.innerHTML = html;
+  }
+  function pickAutoRunPlat(p) { autoRunPlats = (autoRunPlats === Number(p)) ? null : Number(p); fillAutoRunPlatChips(); }
+  function clearAutoRunPlat() { autoRunPlats = null; fillAutoRunPlatChips(); }
+  function toggleAutoRunModeUI() {
+    var mode = $('autoRunModeForce').checked ? 'force' : ($('autoRunModeDry').checked ? 'dryrun' : 'now');
+    $('autoRunForceWrap').style.display = (mode === 'force') ? '' : 'none';
+  }
+  function _platName(p) {
+      var list = (platformInfo && platformInfo.fetch) || [];
+      var hit = list.filter(function (x) { return Number(x.id) === Number(p); })[0];
+      return hit ? hit.name : p;
+    }
+  function fmtDays(iso) { return iso ? iso.slice(5) : '—'; }
+  async function dryRunAutoTask() {
+    var days = parseInt($('autoDays').value, 10) || 35;
+    var btn = document.activeElement; setBtnLoading(btn, true);
+    try {
+      var d = await api('/api/auto/task/dry-run', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ days: days, platforms: autoRunPlats ? [autoRunPlats] : null }) });
+      var r = d.report, html = '';
+      if (!d.ok) { html = '<div class="text-danger small">模拟运行失败: ' + esc(d.error) + '</div>'; }
+      else {
+        var full = d.full;
+        html += '<div class="small mb-2"><span class="text-secondary">窗口 </span>'
+          + '<b>' + fmtDays(r.days_range[0]) + ' ~ ' + fmtDays(r.days_range[1]) + '</b>'
+          + ' · ' + r.total_shops + ' 店 × ' + r.window_days + ' 天 = '
+          + fmt(r.total_cells) + ' 格'
+          + (full ? ' · <span class="text-success">满窗无缺口, 今晚将滚动裁剪</span>'
+               : ' · <span class="text-danger">缺 ' + fmt(r.missing_cells) + ' 格, 今晚只积累不裁剪</span>')
+          + '</div>';
+        var gs = r.gap_shops || [];
+        if (gs.length) {
+          html += '<div class="text-secondary small mb-1">缺口店明细(' + gs.length + ' 家):</div>';
+          html += '<div class="small" style="max-height:260px;overflow:auto;border:1px solid var(--tblr-border-color-translucent);border-radius:6px;padding:.4rem 0">';
+          gs.forEach(function (g) {
+            html += '<div class="py-1" style="border-bottom:1px solid var(--tblr-border-color-translucent)">'
+              + '<span class="text-secondary">' + esc(g.shop) + '</span> '
+              + '<span class="badge bg-secondary-lt text-secondary">平台' + g.platform + '</span> '
+              + '缺 <b class="text-danger">' + g.missing.length + '</b> 天: '
+              + '<span class="text-secondary">' + g.missing.map(fmtDays).join(' ') + '</span>'
+              + '</div>';
+          });
+          html += '</div>';
+        } else {
+          html += '<div class="text-success small">无缺口店</div>';
+        }
+        html += '<div class="text-secondary small mt-2">模拟运行只判定覆盖/裁剪, 未实际抓取、未裁剪数据。</div>';
+      }
+      $('autoDryResult').innerHTML = html;
+      $('autoDryResult').style.display = '';
+    } catch (e) {
+      $('autoDryResult').innerHTML = '<div class="text-danger small">模拟运行请求失败: ' + esc(e.message) + '</div>';
+      $('autoDryResult').style.display = '';
+    } finally { setBtnLoading(btn, false); }
+  }
   async function loadAutoTask() {
     var card = $('autoTaskCard');
     if (!card) return;
@@ -4035,6 +4823,11 @@
       $('autoForce').value = c.prefetch_force_days != null ? c.prefetch_force_days : 0;
       autoPlats = (c.prefetch_platforms || [1, 5, 7]).map(Number);
       fillAutoPlatChips();
+      autoRunPlats = null;
+      fillAutoRunPlatChips();
+      var modeR = $('autoRunModeNow');
+      if (modeR) modeR.checked = true;
+      toggleAutoRunModeUI();
       var t = d.task, cov = d.coverage, rows = [];
       if (t) {
         var stTxt = String(t.state || '');
@@ -4060,6 +4853,33 @@
         ((d.tanyu && d.tanyu.account_configured)
           ? badge('已配置', 'bg-green-lt text-success') + '<span class="text-secondary small ms-2">' + expTxt + '</span>'
           : badge('未配置', 'bg-yellow') + '<span class="text-secondary small ms-2">请先微信扫码登录</span>') + '</b></div>');
+      // 抓取账号池(与「抓取登录账号」卡片同源): 让自动抓取卡片也能看到当前活跃账号,
+      // 点击跳回账号面板 —— 两个功能互相可跳转, 不用在两个卡片间来回找。
+      var ac = (d.tanyu && d.tanyu.accounts) || {};
+      var accRow = '<div class="d-flex align-items-center justify-content-between py-1"><span class="text-secondary">抓取账号</span><b>';
+      if (ac.total) {
+        accRow += '<a href="#/fetch" onclick="event.stopPropagation();app.gotoAccountCard()" class="link-primary">' +
+          (ac.active_label || ac.active_id) + '</a> ' + (ac.active_expired ? badge('已过期', 'bg-danger-lt text-danger') : badge('可用', 'bg-green-lt text-success')) +
+          '<span class="text-secondary small ms-1">(池 ' + ac.total + ' 个)</span>';
+      } else {
+        accRow += badge('未登录', 'bg-yellow') + '<span class="text-secondary small ms-1">请到账号面板扫码登录</span>';
+      }
+      accRow += '</b></div>';
+      rows.push(accRow);
+      // 上次运行结果(从日志解析的业务指标, 比 schtasks 退出码更有信息量)
+      var lr = d.last_run_result;
+      if (lr) {
+        rows.push('<div class="text-secondary small mt-2 mb-1">上次运行结果' +
+          (lr.started_at ? ' · ' + esc(lr.started_at) : '') + '</div>');
+        var lrItems = [];
+        if (lr.total_seconds) lrItems.push('总耗时 <b>' + lr.total_seconds + '</b>s');
+        if (lr.fetch_seconds) lrItems.push('抓取 <b>' + lr.fetch_seconds + '</b>s');
+        if (lr.shops != null) lrItems.push(lr.shops + ' 店' + (lr.failed ? (' · 失败 <b class="text-danger">' + lr.failed + '</b>') : ''));
+        if (lr.total_cells) lrItems.push('覆盖 ' + (lr.missing_cells || 0) + '/' + lr.total_cells + ' 格');
+        if (lr.skipped) lrItems.push('<span class="text-warning">已有任务在跑, 跳过</span>');
+        if (lr.risk) lrItems.push('<span class="text-danger">风控/登录失效</span>');
+        rows.push('<div class="small text-secondary">' + lrItems.join(' · ') + '</div>');
+      }
       $('autoTaskStatus').innerHTML = rows.join('');
       $('autoTaskLog').textContent = (d.log_tail || []).join('\n') || '(暂无日志)';
     } catch (e) {
@@ -4081,13 +4901,320 @@
     } catch (e) { toast('保存失败: ' + e.message, 'danger'); }
   }
   async function runAutoTaskNow() {
+    // 与上方 runAutoTaskNow(带 mode/platforms)同源: 后端返回 {ok:false, action:"qr"} 时
+    // 弹窗提醒用户扫码登录, 而不是静默失败。
+    var mode = $('autoRunModeForce').checked ? 'force' : ($('autoRunModeDry').checked ? 'dryrun' : 'now');
+    if (mode === 'dryrun') { dryRunAutoTask(); return; }
+    var days = parseInt($('autoDays').value, 10);
+    var force = parseInt($('autoRunForce').value, 10);
+    if (isNaN(days) || days < 1 || days > 35) { toast('窗口天数需为 1~35'); return; }
+    if (mode === 'force' && (isNaN(force) || force < 0 || force > 7)) { toast('强制重抓天数需为 0~7'); return; }
     try {
-      var d = await api('/api/auto/task/run', { method: 'POST' });
-      toast(d.message || '已启动自动抓取', 'success');
+      var d = await api('/api/auto/task/run', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: mode, days: days, force_days: force,
+          platforms: autoRunPlats ? [autoRunPlats] : null }) });
+      if (d.ok === false && d.action === 'qr') { showAccountPopup(d.code, d.message, d.accounts || []); return; }
+      toast((d.message || '抓取任务已启动') + '，请往任务中心查看进度', 'success');
       location.hash = '#/tasks';
     } catch (e) { toast('启动失败: ' + e.message, 'danger'); }
   }
   function refreshAutoTask() { loadAutoTask(); }
+
+  /* ================= 抓取登录账号(微信扫码登录 tanyu 后台) =================
+     账号池 data/tanyu_accounts.json; 当前活跃 cookie 存 config.json(active_account_id)。
+     所有既有抓取代码继续读 config.cookies, 无需改动。页面绝不回显 cookie 明文。 */
+  function _accGroups(acc) { var g = acc && acc.groups; return Array.isArray(g) ? g : []; }
+  function _accPlat(acc) { var p = acc && acc.platforms; return Array.isArray(p) ? p : []; }
+  function _accPlatNames(acc) {
+    var ps = _accPlat(acc);
+    if (!ps.length) return '—';
+    return ps.map(function (p) { return _platName(p); }).join('、');
+  }
+  function _accExpiryHtml(acc) {
+    var e = acc && acc.expires;
+    if (!e) return '<span class="text-secondary">到期未知</span>';
+    var s = String(e).substring(0, 10);
+    var d = new Date(s + 'T00:00:00');
+    var today = new Date(); today.setHours(0, 0, 0, 0);
+    if (isNaN(d.getTime())) return '<span class="text-secondary">' + esc(s) + '</span>';
+    var diff = Math.round((d - today) / 86400000);
+    if (diff < 0) return '<span class="text-danger fw-semibold">已过期</span>';
+    if (diff === 0) return '<span class="text-warning fw-semibold">今天到期</span>';
+    return esc(s) + ' <span class="text-secondary">(剩 ' + diff + ' 天)</span>';
+  }
+  function _accState(acc) {
+    if (acc && acc.expired) return '<span class="badge bg-danger-lt text-danger" style="font-size:.65rem">已过期</span>';
+    return '<span class="badge bg-green-lt text-success" style="font-size:.65rem">可用</span>';
+  }
+  function _accRoles(acc) {
+    var r = (acc && acc.roles) || [];
+    if (!r.length) return '<span class="text-secondary small">—</span>';
+    return r.map(function (x) { return '<span class="badge bg-primary-lt text-primary" style="font-size:.65rem">' + esc(x) + '</span>'; }).join(' ');
+  }
+  function renderAccountStatus(pf) {
+    var el = $('accountStatus');
+    if (!el) return;
+    if (!pf || !pf.ok) {
+      var code = pf ? pf.code : 'unknown';
+      var msg = pf ? (pf.message || code) : '未知错误';
+      var act = (pf && pf.action === 'qr') ? '扫码登录' : '';
+      el.innerHTML = '<div class="text-danger fw-semibold">⚠️ ' + esc(msg) + '</div>' +
+        (act ? '<div class="mt-2"><button class="btn btn-sm btn-primary" onclick="app.accountQrStart()"><span class="me-1" data-ic="scan"></span>' + act + '</button></div>' : '');
+      return;
+    }
+    var a = pf.account;
+    if (!a) { el.innerHTML = '<span class="text-secondary">未登录任何抓取账号</span>'; return; }
+    var nameHtml = a.name ? '<div class="text-secondary">员工姓名: <span class="fw-semibold text-dark">' + esc(a.name) + '</span></div>' : '';
+    el.innerHTML =
+      '<div class="d-flex align-items-center gap-2">' +
+        '<span class="badge bg-primary text-white">已登录</span>' +
+        '<span class="fw-semibold">' + esc(a.label || a.account_id) + '</span>' +
+      '</div>' +
+      nameHtml +
+      '<div class="text-secondary">角色: ' + _accRoles(a) + '</div>' +
+      '<div class="text-secondary">账号 ID: <code style="font-size:.8rem">' + esc(a.account_id) + '</code></div>' +
+      '<div class="text-secondary">到期: ' + _accExpiryHtml(a) + '</div>' +
+      '<div class="text-secondary">平台: ' + esc(_accPlatNames(a)) + '</div>' +
+      '<div class="text-secondary">集团: ' + (a.groups && a.groups.length ? esc(a.groups.join('、')) : '—') + '</div>';
+  }
+  function renderAccountList(accounts, activeId) {
+    var el = $('accountList');
+    if (!el) return;
+    if (!accounts || !accounts.length) {
+      el.innerHTML = '<div class="text-secondary small p-2">暂无已登录账号, 点击「微信扫码登录」添加</div>';
+      return;
+    }
+    var rows = accounts.map(function (a) {
+      var active = a.account_id === activeId;
+      return '<div class="d-flex align-items-center justify-content-between border rounded-2 px-2 py-1 mb-1 ' +
+        (active ? 'border-primary bg-primary-lt' : '') + '" style="cursor:pointer" onclick="app.selectAccount(' + jsStr(a.account_id) + ')">' +
+        '<div class="flex-fill min-w-0 pe-2">' +
+          '<div class="d-flex align-items-center gap-1">' +
+            (active ? '<span class="badge bg-primary text-white" style="font-size:.6rem">当前</span>' : '') +
+            '<span class="fw-semibold small text-truncate">' + esc(a.label || a.account_id) + '</span>' +
+            _accState(a) +
+          '</div>' +
+          (a.name ? '<div class="text-secondary" style="font-size:.7rem">员工: ' + esc(a.name) + '</div>' : '') +
+          '<div class="text-secondary" style="font-size:.7rem">' + esc(a.account_id) + ' · ' + esc(_accPlatNames(a)) + ' · 角色 ' + _accRoles(a) + ' · ' + (a.expires ? esc(String(a.expires).substring(0, 10)) : '到期未知') + '</div>' +
+        '</div>' +
+        '<button class="btn btn-sm btn-outline-danger" onclick="event.stopPropagation();app.deleteAccount(' + jsStr(a.account_id) + ')"><span data-ic="trash" data-size="14"></span></button>' +
+      '</div>';
+    }).join('');
+    el.innerHTML = rows;
+  }
+  function fillAccountSelect(accounts, activeId) {
+    var sel = $('accountSelect');
+    if (!sel) return;
+    var opts = '<option value="">— 选择账号 —</option>' +
+      (accounts || []).map(function (a) {
+        return '<option value="' + esc(a.account_id) + '"' + (a.account_id === activeId ? ' selected' : '') + '>' + esc(a.label || a.account_id) + '</option>';
+      }).join('');
+    sel.innerHTML = opts;
+    sel.onchange = function () { app.selectAccount(this.value); };
+  }
+  async function selectAccount(accountId) {
+    if (!accountId) return;
+    try {
+      var d = await api('/api/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id: accountId }) });
+      toast((d.message || '已切换账号'), 'success');
+      loadAccounts();
+    } catch (e) { toast('切换失败: ' + e.message, 'danger'); }
+  }
+  async function saveAccount() {
+    var label = ($('accountLabel') || {}).value || '';
+    try {
+      var d = await api('/api/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: label }) });
+      toast((d.message || '已保存'), 'success');
+      if (label) $('accountLabel').value = '';
+      loadAccounts();
+    } catch (e) { toast('保存失败: ' + e.message, 'danger'); }
+  }
+  async function deleteAccount(accountId) {
+    if (!accountId) return;
+    if (!confirm('确定删除该抓取账号 ' + accountId + ' 吗? 若为当前活跃账号将一并清除登录 cookie')) return;
+    try {
+      var d = await api('/api/accounts/' + encodeURIComponent(accountId), { method: 'POST' });
+      toast((d.message || '已删除'), 'success');
+      loadAccounts();
+    } catch (e) { toast('删除失败: ' + e.message, 'danger'); }
+  }
+  async function loadAccounts() {
+    var card = $('accountCard');
+    if (!card) return;
+    if (!isAdmin) { card.style.display = 'none'; return; }
+    card.style.display = '';
+    try {
+      var d = await api('/api/accounts');
+      renderAccountStatus(d.preflight);
+      renderAccountList(d.accounts, d.active_id);
+      fillAccountSelect(d.accounts, d.active_id);
+      // 自动抓取任务(与「自动抓取任务」卡片同源): 让账号面板也能看到夜间抓取计划,
+      // 点击跳回自动抓取卡片 —— 两个功能互相可跳转。
+      var af = $('accountAutoFetch');
+      if (af) {
+        var pf = d.prefetch || {};
+        if (pf.enabled) {
+          af.innerHTML = '🌙 夜间自动抓取: 每天 <b>' + esc(pf.schedule || '00:05') + '</b>' +
+            (pf.next_run ? (' · 下次 ' + esc(pf.next_run)) : '') +
+            (pf.account_configured ? '' : ' · <span class="text-warning">未配置账号</span>') +
+            ' · <a href="#/fetch" onclick="event.stopPropagation();app.gotoAutoTaskCard()" class="link-primary">去配置 →</a>';
+        } else {
+          af.innerHTML = '🌙 夜间自动抓取: <span class="text-secondary">未启用</span>' +
+            ' · <a href="#/fetch" onclick="event.stopPropagation();app.gotoAutoTaskCard()" class="link-primary">去配置 →</a>';
+        }
+      }
+      // 抓取设置程序日志
+      var logEl = $('accountLog');
+      if (logEl) {
+        var tail = [];
+        try { tail = await api('/api/auto/task/log/tail?lines=120'); }
+        catch (e) { tail = ['(加载失败: ' + e.message + ')']; }
+        if (Array.isArray(tail)) logEl.textContent = tail.join('\n') || '(暂无日志)';
+        else logEl.textContent = '(无日志)';
+      }
+    } catch (e) {
+      var st = $('accountStatus');
+      if (st) st.innerHTML = '<span class="text-danger">加载失败: ' + esc(e.message) + '</span>';
+    }
+  }
+  /* ---- 抓取前弹窗提醒: 后端返回 {ok:false, action:"qr"} 时弹出 ---- */
+  function showAccountPopup(code, message, accounts) {
+    var title, body, qrBtn;
+    if (code === 'no_account') {
+      title = '未登录抓取账号';
+      body = '<div class="text-secondary">尚未登录任何 tanyu 后台账号, 无法抓取数据。</div>' +
+        '<div class="mt-2">请用微信扫码登录, 登录后自动保存为可用账号。</div>';
+      qrBtn = true;
+    } else if (code === 'no_active') {
+      title = '请选择抓取账号';
+      var opts = (accounts || []).map(function (a) {
+        return '<div class="d-flex align-items-center justify-content-between border rounded-2 px-2 py-1 mb-1">' +
+          '<span class="fw-semibold small">' + esc(a.label || a.account_id) + '</span>' +
+          '<button class="btn btn-sm btn-primary" onclick="app.selectAccount(' + jsStr(a.account_id) + ');hideModal(\'mAccountPopup\')">选择</button></div>';
+      }).join('');
+      body = '<div class="text-secondary">已登录 ' + (accounts ? accounts.length : 0) + ' 个账号, 但当前未选为活跃。</div>' +
+        '<div class="mt-2 small text-secondary">选择一个账号作为本次抓取数据账号:</div>' +
+        (opts || '<div class="text-secondary small mt-2">暂无可选账号, 请先扫码登录</div>');
+      qrBtn = false;
+    } else if (code === 'account_expired') {
+      title = '登录账号已过期';
+      body = '<div class="text-danger fw-semibold">当前抓取账号的登录态已过期, 请重新扫码登录。</div>' +
+        '<div class="mt-2 text-secondary">重新扫码后会自动覆盖原账号(按 accountId 去重), 无需手动删除。</div>';
+      qrBtn = true;
+    } else {
+      title = '抓取账号不可用';
+      body = '<div class="text-danger">' + esc(message || '未知错误') + '</div>';
+      qrBtn = true;
+    }
+    var t = $('mAccountPopupTitle'); if (t) t.textContent = title;
+    var b = $('mAccountPopupBody'); if (b) b.innerHTML = body;
+    var qb = $('mAccountPopupQr');
+    if (qb) { qb.style.display = qrBtn ? '' : 'none'; qb.textContent = '微信扫码登录'; }
+    showModal('mAccountPopup');
+  }
+  /* ---- 微信扫码登录(账号面板专用, 复用后台二维码, 成功后自动落池) ---- */
+  var accountQrActive = false, accountQrBusy = false, accountQrConfirmed = false, accountQrTimer = null;
+  async function accountQrStart() {
+    var box = $('accountQrBox'), tip = $('accountQrTip'), status = $('accountQrStatus'),
+        panel = $('accountQrPanel');
+    if (!box) return;
+    // 二维码面板默认是隐藏的, 要先显示出来, 否则生成了二维码也看不到(按钮点了没反应的根因)
+    if (panel) panel.style.display = '';
+    // 从"抓取账号不可用"弹窗跳进来的, 关掉弹窗让用户在卡片里看二维码
+    hideModal('mAccountPopup');
+    box.innerHTML = '<span class="text-secondary small">生成中…</span>';
+    if (status) status.innerHTML = '<span class="text-secondary">正在获取二维码…</span>';
+    accountQrActive = true; accountQrConfirmed = false;
+    var d;
+    try { d = await api('/api/accounts/qr', { method: 'POST' }); }
+    catch (e) {
+      accountQrActive = false;
+      box.innerHTML = '<button class="btn btn-sm btn-primary" onclick="app.accountQrStart()"><span class="me-1" data-ic="scan"></span>重新生成</button>';
+      if (status) status.innerHTML = '<span class="text-danger">' + esc(e.message) + '</span>';
+      return;
+    }
+    box.innerHTML = '<img src="' + esc(d.qrImage || d.qrCodeUrl) + '" style="width:178px;height:178px;border-radius:6px" alt="微信扫码登录二维码">';
+    if (tip) tip.textContent = '有效期约 ' + (d.expiresIn || 150) + ' 秒, 请尽快扫码';
+    if (status) status.innerHTML = '<span class="text-secondary">等待扫码…</span>';
+    clearInterval(accountQrTimer);
+    accountQrTimer = setInterval(accountQrPoll, 2000);
+  }
+  async function accountQrPoll() {
+    if (!accountQrActive || accountQrBusy) return;
+    accountQrBusy = true;
+    var d;
+    try { d = await api('/api/wx-qr/status'); } catch (e) { accountQrBusy = false; return; }
+    accountQrBusy = false;
+    var status = $('accountQrStatus'), box = $('accountQrBox'), tip = $('accountQrTip');
+    if (!status) { accountQrActive = false; return; }
+    if (d.phase === 'waiting') return;
+    if (d.phase === 'confirmed') {
+      var infos = d.accountInfos || [];
+      if (infos.length && !accountQrConfirmed) {
+        accountQrConfirmed = true;
+        if (tip) tip.textContent = '已扫码, 请选择集团';
+        status.innerHTML = '<div class="text-success fw-semibold mb-2">扫码成功, 请选择要进入的集团</div>' +
+          infos.map(function (g, i) {
+            var name = g.groupName || g.accountName || ('集团 ' + (i + 1));
+            return '<div class="d-flex align-items-center justify-content-between border rounded-2 px-3 py-2 mb-2">' +
+              '<span class="fw-semibold">' + esc(name) + '</span>' +
+              '<button class="btn btn-sm btn-primary" onclick="app.accountQrSelect(' + jsStr(String(g.accountId)) + ',' + jsStr(String(g.accountType == null ? 3 : g.accountType)) + ')">进入</button></div>';
+          }).join('') || '<span class="text-danger">未返回可进入的集团</span>';
+      }
+      return;
+    }
+    if (d.phase === 'done') {
+      clearInterval(accountQrTimer); accountQrTimer = null; accountQrActive = false;
+      if (box) box.innerHTML = '<div class="text-success" style="font-size:2.4rem;line-height:1"><span data-ic="check" data-size="38"></span></div>';
+      if (tip) tip.textContent = 'Cookie 已更新';
+      if (status) status.innerHTML = '<span class="text-success fw-semibold">登录成功, 账号已自动保存到账号池</span>';
+      toast('登录成功, 账号已保存', 'success');
+      loadAccounts();
+      loadCookieExpiry(); loadTraceConfig(); loadGroups(); renderGroups();
+      return;
+    }
+    if (d.phase === 'expired' || d.phase === 'error') {
+      clearInterval(accountQrTimer); accountQrTimer = null; accountQrActive = false;
+      if (box) box.innerHTML = '<button class="btn btn-sm btn-primary" onclick="app.accountQrStart()"><span class="me-1" data-ic="scan"></span>重新生成</button>';
+      if (tip) tip.textContent = '用绑定探域的微信扫码';
+      if (status) status.innerHTML = '<span class="text-danger">' + esc(d.error || (d.phase === 'expired' ? '二维码已过期, 请重新生成' : '登录失败')) + '</span>';
+      return;
+    }
+  }
+  async function accountQrSelect(accountId, accountType) {
+    var status = $('accountQrStatus');
+    if (!status) return;
+    status.innerHTML = '<span class="text-secondary">正在登录并获取 Cookie…</span>';
+    clearInterval(accountQrTimer); accountQrTimer = null; accountQrActive = false;
+    try {
+      var d = await api('/api/wx-qr/select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id: String(accountId), account_type: Number(accountType || 3) })
+      });
+      var box = $('accountQrBox'), tip = $('accountQrTip');
+      if (box) box.innerHTML = '<div class="text-success" style="font-size:2.4rem;line-height:1"><span data-ic="check" data-size="38"></span></div>';
+      if (tip) tip.textContent = 'Cookie 已更新';
+      if (status) status.innerHTML = '<span class="text-success fw-semibold">登录成功</span>' +
+        '<div class="text-secondary mt-1">Cookie 已自动保存到账号池</div>';
+      toast('登录成功, 账号已保存', 'success');
+      loadAccounts();
+      loadCookieExpiry(); loadTraceConfig(); loadGroups(); renderGroups();
+    } catch (e) {
+      if (status) status.innerHTML = '<span class="text-danger">' + esc(e.message) + '</span>' +
+        '<div class="mt-2"><button class="btn btn-sm btn-outline-primary" onclick="app.accountQrStart()">重新登录</button></div>';
+    }
+  }
+  // 抓取入口(自动任务/手动补抓)返回 {ok:false, action:"qr"} 时统一弹窗
+  function maybeBlockFetch(result) {
+    if (!result) return false;
+    if (result.ok) return false;
+    if (result.action === 'qr') { showAccountPopup(result.code, result.message, result.accounts || []); return true; }
+    toast(result.message || '请求失败', 'danger');
+    return true;
+  }
   async function startCalibrate() {
     var days = parseInt($('calibDays').value, 10);
     if (isNaN(days) || days < 1 || days > 7) { toast('校准天数需为 1~7'); return; }
@@ -4150,9 +5277,16 @@
     renderShopsTable();
     updateShopsSelUI();
     var el = $('shopsSummary');
-    if (el) el.textContent = (res.startDate || '') + ' ~ ' + (res.endDate || '') + ' · 共 ' + fmt(res.total || 0) + ' 条 · 采纳率 ' + pct(res.rate || 0);
+    if (el) {
+      var tsS = res.startTs ? ' ' + fmtTs(res.startTs) : '';
+      var tsE = res.endTs ? ' ' + fmtTs(res.endTs) : '';
+      // 核算结果带 fetched_at(epoch 秒): 区间是自然日(无时刻), 精确到秒的时间
+      // 只能取"核算完成时刻"。任务中心"查看"跳过来时显示的就是这条任务跑完的时间。
+      var ft = res.fetched_at ? ' · 核算完成 ' + fmtDateTime(res.fetched_at) : '';
+      el.textContent = (res.startDate || '') + tsS + ' ~ ' + (res.endDate || '') + tsE + ' · 共 ' + fmt(res.total || 0) + ' 条 · 采纳率 ' + pct(res.rate || 0) + ft;
+    }
   }
-  function pollRangeAudit(start, end) {
+  function pollRangeAudit(start, end, taskId) {
     if (rangeAuditTimer) clearInterval(rangeAuditTimer);
     var tries = 0;
     var idleWaits = 0;   // 连续轮询但任务未出结果的次数(排队/等待开始阶段)
@@ -4168,7 +5302,12 @@
           return;   // 继续轮询
         }
         var res = t.result || t.subsetResult;
-        if (res && res.shopList && (res.startDate || start) === start && (res.endDate || end) === end) {
+        // 结果必须属于"当前这次任务": 状态里的 task_id 只在任务真正开始时
+        // 写入(登记函数/调度器), 排队期间仍是上一次任务的旧值。只用 result
+        // 的区间匹配, 会在排队期间把上一次任务的旧结果当本次结果直接渲染
+        // (用户看到"完成了"但其实还没轮到)。
+        var owner = !taskId || (t.taskId === taskId);
+        if (res && res.shopList && owner && t.startDate === start && t.endDate === end) {
           // 结果属于本次核算区间才渲染(防止误渲染别的任务残留的旧结果)
           clearInterval(rangeAuditTimer); rangeAuditTimer = null;
           renderShopsResult(res);
@@ -4213,19 +5352,21 @@
       } else if (r.status === 'running') {
         var el = $('shopsSummary');
         if (el) el.textContent = '核算中: ' + rd.start + ' ~ ' + rd.end + ' (' + scopeTxt + ')…';
-        toast('已开始核算 ' + rd.start + ' ~ ' + rd.end + ' (' + scopeTxt + '), 完成后自动刷新', 'success');
-        pollRangeAudit(rd.start, rd.end);
+        toast('已开始核算 ' + rd.start + ' ~ ' + rd.end + ' (' + scopeTxt + '), 请往任务中心查看进度', 'success');
+        pollRangeAudit(rd.start, rd.end, r.taskId);
       } else if (r.status === 'queued') {
         var el = $('shopsSummary');
         if (el) el.textContent = '核算已排队(第' + (r.queuePosition != null ? r.queuePosition : '?') + '位), 轮到后自动开始: ' + rd.start + ' ~ ' + rd.end;
-        toast('核算已排队(第' + (r.queuePosition != null ? r.queuePosition : '?') + '位), 完成后自动刷新', 'success');
-        pollRangeAudit(rd.start, rd.end);
+        toast('核算已排队(第' + (r.queuePosition != null ? r.queuePosition : '?') + '位), 请往任务中心查看进度', 'success');
+        pollRangeAudit(rd.start, rd.end, r.taskId);
       } else {
         toast('核算未启动: ' + (r.message || r.status || '未知状态'), 'danger');
       }
     } catch (e) { toast('发起核算失败: ' + e.message, 'danger'); }
   }
   function gotoPrefetch() { location.hash = '#/settings'; setTimeout(function () { $('pfStart').focus(); }, 300); }
+  function gotoAccountCard() { location.hash = '#/fetch'; setTimeout(function () { var el = $('accountCard'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 300); }
+  function gotoAutoTaskCard() { location.hash = '#/fetch'; setTimeout(function () { var el = $('autoTaskCard'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 300); }
   async function syncShops() {
     try {
       var r = await api('/api/shops/sync', { method: 'POST' });
@@ -4364,6 +5505,10 @@
     if (ml) ml.style.display = isAdmin ? '' : 'none';
     var fl = document.querySelector('.legacyLink');
     if (fl) fl.style.display = isAdmin ? '' : 'none';
+    var md = $('menuDatabase');
+    if (md) md.style.display = isAdmin ? '' : 'none';
+    var ms = $('menuServer');
+    if (ms) ms.style.display = isAdmin ? '' : 'none';
     $('topPlatformSel').addEventListener('change', function (e) {
       applyPlatform(e.target.value);
     });
@@ -4396,6 +5541,37 @@
         if (!tasksTimer) tasksTimer = setInterval(function () { if (document.hidden) return; if (currentViewName() === 'tasks') renderTasks(); }, 5000);
       }
     });
+    setupSettingsCardCollapse();
+  }
+
+  /* ---------- 设置页可折叠卡片 ----------
+     把不常用的配置卡收起来, 类似抽屉, 点击卡片标题栏展开/收起。
+     收起状态按 data-card 键持久化到 localStorage, 刷新不丢失。
+     点击卡片内的按钮/控件/表单时不触发折叠(只认标题栏为折叠入口)。 */
+  var _SC_KEY = 'settings.collapsed.v1';
+  function _scRead() { try { return JSON.parse(localStorage.getItem(_SC_KEY) || '{}'); } catch (e) { return {}; } }
+  function _scWrite(map) { try { localStorage.setItem(_SC_KEY, JSON.stringify(map)); } catch (e) {} }
+  function setupSettingsCardCollapse() {
+    var cards = Array.prototype.slice.call(document.querySelectorAll('.card.has-collapse'));
+    cards.forEach(function (card) {
+      var key = card.getAttribute('data-card');
+      if (!key) return;
+      var header = card.querySelector('.card-header');
+      if (!header || header._scBound) return;
+      header._scBound = true;
+      header.style.cursor = 'pointer';
+      // 进入页面时按持久化状态恢复(默认展开)
+      var map = _scRead();
+      if (map[key]) card.classList.add('collapsed');
+      header.addEventListener('click', function (e) {
+        // 点在卡片内的交互控件上(按钮/链接/输入框/开关/下拉)时不折叠, 只认标题栏本身
+        if (e.target.closest('button, a, [role="button"], input, select, textarea, .form-check, .card-actions, [data-ic]')) return;
+        card.classList.toggle('collapsed');
+        var m = _scRead();
+        if (card.classList.contains('collapsed')) m[key] = true; else delete m[key];
+        _scWrite(m);
+      });
+    });
   }
 
   /* ---------- 暴露 ---------- */
@@ -4419,19 +5595,28 @@
     tasksPage: tasksPage, toggleTaskSel: toggleTaskSel, toggleTasksSelAll: toggleTasksSelAll, delSelectedTasks: delSelectedTasks,
     switchLogs: switchLogs, renderSysLogs: function () { renderLogs(); }, pruneLogs: pruneLogs,
     saveCookies: saveCookies, switchGroup: switchGroup, startPrefetch: startPrefetch,
-    wxQrStart: wxQrStart, wxQrSelect: wxQrSelect,
     notifyRead: notifyRead, notifyReadAll: notifyReadAll, notifyClearAll: notifyClearAll,
     pushDingtalk: pushDingtalk, editDingtalk: editDingtalk,
     toggleRegister: toggleRegister, createUser: createUser, doCreateUser: doCreateUser,
     resetPwd: resetPwd, setUserStatus: setUserStatus, setUserExpire: setUserExpire,
     saveTraceConfig: saveTraceConfig, startCalibrate: startCalibrate, startBrowserLogin: startBrowserLogin,
     saveAutoTask: saveAutoTask, runAutoTaskNow: runAutoTaskNow, refreshAutoTask: refreshAutoTask, toggleAutoPlat: toggleAutoPlat,
+    pickAutoRunPlat: pickAutoRunPlat, clearAutoRunPlat: clearAutoRunPlat, dryRunAutoTask: dryRunAutoTask,
+    toggleAutoRunModeUI: toggleAutoRunModeUI,
+    // 抓取登录账号
+    loadAccounts: loadAccounts, renderAccountStatus: renderAccountStatus, renderAccountList: renderAccountList,
+    fillAccountSelect: fillAccountSelect, selectAccount: selectAccount, saveAccount: saveAccount, deleteAccount: deleteAccount,
+    accountQrStart: accountQrStart, accountQrPoll: accountQrPoll, accountQrSelect: accountQrSelect,
+    showAccountPopup: showAccountPopup, maybeBlockFetch: maybeBlockFetch,
     renderMore: renderMore, editUserNote: editUserNote, toggleUserLegacy: toggleUserLegacy,
     insightDays: insightDays, heatDays: heatDays, renderHeatmap: renderHeatmap, renderCoverageGrid: renderCoverageGrid,
     rankDays: rankDays, renderRanking: renderRanking, cmpMode: cmpMode, renderCompare: renderCompare,
     toggleFavShop: toggleFavShop, editShopTags: editShopTags, refreshTagFilter: refreshTagFilter, renderFavShops: renderFavShops,
-    startAudit: startAudit, startRangeAudit: startRangeAudit, gotoPrefetch: gotoPrefetch, syncShops: syncShops,
-    fetchTodayPlatforms: fetchTodayPlatforms, renderTodayPlatforms: renderTodayPlatforms
+    startAudit: startAudit, startRangeAudit: startRangeAudit, gotoPrefetch: gotoPrefetch, gotoAccountCard: gotoAccountCard, gotoAutoTaskCard: gotoAutoTaskCard, syncShops: syncShops,
+    fetchTodayPlatforms: fetchTodayPlatforms, renderTodayPlatforms: renderTodayPlatforms,
+    // 数据库管理(仅管理员)
+    renderDatabase: renderDatabase, renderServer: renderServer, serverStop: serverStop, serverRestart: serverRestart, dbOpenTable: dbOpenTable, dbPage: dbPage, dbQueryRun: dbQueryRun,
+    dbQueryLoad: dbQueryLoad, dbQueryBackToTable: dbQueryBackToTable, dbVacuum: dbVacuum, dbPrune: dbPrune, dbPruneFilter: dbPruneFilter
   };
 
   document.addEventListener('DOMContentLoaded', boot);

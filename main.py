@@ -22,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+import sqlite3
 import urllib.parse
 from io import BytesIO
 from pathlib import Path
@@ -49,7 +50,7 @@ try:
 except ImportError:
     _psutil = None
 import uvicorn
-from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
@@ -135,6 +136,7 @@ _refresh_state = {
     "last_run": None,
     "error": None,
     "triggered_by": None,   # 谁发起的刷新(操作者用户名/昵称), 供状态展示
+    "_gen": 0,              # 任务调度器判"是否真起过 worker"的代际计数(见 _run_task)
 }
 # 手动补抓数据状态(独立于 refresh: 用户选日期范围触发, 逐集团抓 trace 写库)
 _prefetch_state = {
@@ -147,6 +149,7 @@ _prefetch_state = {
     "last_run": None,
     "error": None,
     "triggered_by": None,   # 谁发起的补抓(操作者用户名/昵称), 供状态展示
+    "_gen": 0,
 }
 _lock = threading.Lock()
 _rate_lock = threading.Lock()  # 限速窗口专用锁(独立于 _lock, 避免限速等待阻塞状态读写)
@@ -275,29 +278,49 @@ def _fake_request():
 
 
 def _run_task(task):
-    """按任务类型调用对应端点启动, 并等待该类型 worker 结束, 进度镜像到任务"""
+    """按任务类型调用对应端点启动, 并等待该类型 worker 结束, 进度镜像到任务。
+
+    返回 (state, ran_worker): ran_worker=True 表示端点真的起了 worker(该状态的
+    _gen 已推进), False 表示端点走短路(缓存/DB/导入/无任务)直接返回、从未起 worker。
+    调度器据 ran_worker 决定: 起过 → _await_state 等结束; 未起 → 任务已完成, 直接置 done。
+    """
     req = _fake_request()
     typ, p = task["type"], task["params"]
+    state = None
+    gen0 = None
+    # 调度器跑的排队任务: 端点内部走 x-scheduler-task 分支, 不会调
+    # _register_running_task, 状态里不会自动带上 task_id。这里先占位,
+    # 前端轮询状态端点时据 task_id 判"这个结果是不是我那单任务的"。
     try:
         if typ == "overview":
+            state = _trace_state
+            state["task_id"] = task["id"]
+            gen0 = state.get("_gen", 0)
             trace_overview(req, days=p.get("days", 7), platform=p.get("platform"),
                            force=p.get("force", 0), start=p.get("start"), end=p.get("end"),
                            from_cache=0, shop_ids=p.get("shop_ids"))
-            state = _trace_state
         elif typ == "today":
+            state = _today_state
+            state["task_id"] = task["id"]
+            gen0 = state.get("_gen", 0)
             trace_today(req, platform=p.get("platform"), shop_ids=p.get("shop_ids"),
                         start_ts=p.get("start_ts", "00:00"), end_ts=p.get("end_ts"),
                         mode=p.get("mode", ""))
-            state = _today_state
         elif typ == "prefetch":
-            trace_prefetch_start(req, {"start": p.get("start"), "end": p.get("end")})
             state = _prefetch_state
+            state["task_id"] = task["id"]
+            gen0 = state.get("_gen", 0)
+            trace_prefetch_start(req, {"start": p.get("start"), "end": p.get("end")})
         elif typ == "refresh":
-            refresh(req)
             state = _refresh_state
+            state["task_id"] = task["id"]
+            gen0 = state.get("_gen", 0)
+            refresh(req)
         elif typ == "staff_sync":
-            staff_names_sync(req)
             state = _staff_sync_state
+            state["task_id"] = task["id"]
+            gen0 = state.get("_gen", 0)
+            staff_names_sync(req)
         else:
             raise RuntimeError(f"未知任务类型: {typ}")
     except HTTPException as e:
@@ -309,30 +332,40 @@ def _run_task(task):
         state["triggered_by"] = task["requested_by"]
     except Exception:
         pass
-    _await_state(state, task)
+    ran = state is not None and state.get("_gen", 0) != gen0
+    if ran:
+        _await_state(state, task)
+    else:
+        # 短路完成(缓存/DB/导入/无任务可做): 无 worker 可等, 直接取 state 里的结果
+        try:
+            task["progress"] = dict(state.get("progress") or {})
+        except Exception:
+            pass
+        task["result"] = state.get("result") if state else None
+    return state, ran
 
 
 def _await_state(state, task):
     """等待某类型 worker 结束, 期间镜像进度到任务 dict。
 
-    worker 由端点起线程、有启动延迟才置 running=True: 给 3s 宽限期判断是否
-    "启动后结束"(running 从 True→False) 还是 "未启动直接返回"(缓存命中/无任务,
-    running 全程 False → 宽限期后视为完成)。
+    用 _gen 代际计数判"是否真起过 worker": 端点启动 worker 时 _gen+1 且 running=True,
+    worker 收尾时 running=False。仅当 _gen 已推进(真起过 worker)时由 _run_task 调用,
+    等待 running 由 True→False 即完成。短路完成(缓存/DB/导入)由 _run_task 据 _gen 是否
+    变化直接处理, 不走本函数的宽限期 —— 否则会把"缓存命中即完成"误等 3s, 且把上一次
+    任务的进度/结果串给当前任务(排队任务第二个显示已完成的根因)。
     """
+    gen0 = state.get("_gen", 0)
     grace = 3.0
     t0 = time.time()
-    started = False
     while True:
-        if state.get("running"):
-            started = True
         try:
             task["progress"] = dict(state.get("progress") or {})
         except Exception:
             pass
-        if started and not state.get("running"):
-            break
-        if not started and time.time() - t0 > grace:
-            break
+        if state.get("_gen", 0) != gen0 and not state.get("running"):
+            break   # worker 已起且已结束(含"起完就结束"的快场景)
+        if state.get("_gen", 0) == gen0 and time.time() - t0 > grace:
+            break   # 兜底: 始终未起 worker, 不无限等待
         time.sleep(0.5)
     try:
         task["progress"] = dict(state.get("progress") or {})
@@ -358,6 +391,48 @@ def _queue_if_busy(request, task_type, label, params):
         return None
     if request.headers.get("x-scheduler-task") == "1":
         raise HTTPException(409, "任务进行中, 调度器稍后重试")
+    return _dedup_or_enqueue(request, task_type, label, params)
+
+
+def _task_params_key(task_type, params):
+    """任务去重键: 同 type + 同 params 视为同一次请求。
+
+    用于拒绝重复提交 —— 用户连点几次"抓取今日数据"会堆出七八条一模一样的排队任务,
+    服务重启时又把它们全标成"完成", 任务中心看起来就像有一堆已完成的废任务。
+    """
+    try:
+        return (task_type, json.dumps(params or {}, sort_keys=True, ensure_ascii=False, default=str))
+    except Exception:
+        return (task_type, repr(params))
+
+
+def _find_live_task(task_type, params):
+    """查找"同 type + 同 params"且仍在排队/运行中的任务。
+
+    返回该任务 dict(含 status), 无则 None。最近创建的优先 —— 后入队的参数往往更贴近
+    用户当前选择, 且排在更后面, 直接复用它比另建一条更合理。
+    """
+    key = _task_params_key(task_type, params)
+    with _tasks_lock:
+        for tid in reversed(_tasks_order):
+            t = _tasks.get(tid)
+            if t and t.get("status") in ("running", "queued") \
+                    and _task_params_key(t.get("type"), t.get("params")) == key:
+                return t
+    return None
+
+
+def _dedup_or_enqueue(request, task_type, label, params):
+    """同 type+params 去重: 已有任务在排队/运行则返回该任务; 否则新建入队并返回 queued 响应。
+
+    供 trace_today / overview / prefetch / calibrate 的"忙则入队"分支共用,
+    把"新建一条排队任务"统一收口, 避免每个端点各写一套去重逻辑。
+    """
+    existing = _find_live_task(task_type, params)
+    if existing:
+        qp = _queue_position(existing["id"]) if existing["status"] == "queued" else None
+        return {"status": existing["status"], "taskId": existing["id"],
+                "queuePosition": qp, "task": _task_public(existing), "dedup": True}
     task = _enqueue_task(task_type, label, _operator_label(request), params, _operator_role(request))
     return {"status": "queued", "taskId": task["id"],
             "queuePosition": _queue_position(task["id"]), "task": _task_public(task)}
@@ -391,6 +466,13 @@ def _register_running_task(state, task_type, label, requested_by, params=None, r
         _tasks[tid] = task
         _tasks_order.append(tid)
         _running_task_id = tid
+        # 记录"当前占据该状态的是哪个任务": 前端轮询状态端点时, 只渲染
+        # task_id 与自己发起的任务一致的结果。否则排队期间状态里残留的
+        # 上一次任务的 task_id/结果会被当成"本次已完成"直接渲染。
+        try:
+            state["task_id"] = tid
+        except Exception:
+            pass
     # 持久化到独立日志库
     log_store.upsert_task(task)
     return task
@@ -436,7 +518,7 @@ def _sync_task_progress():
 def _restore_task_history():
     """启动时从独立日志库恢复近期任务到内存(任务列表/池子跨重启可查)。
 
-    运行中/排队中的重启后无法续跑, 标为"服务重启, 任务中断"(done); 已结束的保留原状。
+    运行中/排队中的重启后无法续跑, 标为 canceled(服务重启, 任务中断); 已结束的保留原状。
     恢复后 _TASK_SEQ 从最大 id+1 起, 避免与 DB 已用 id 冲突。
     """
     global _TASK_SEQ, _running_task_id
@@ -450,7 +532,10 @@ def _restore_task_history():
             tid = int(t["id"])
             max_id = max(max_id, tid)
             if t.get("status") in ("running", "queued"):
-                t["status"] = "done"
+                # 服务重启后内存队列/状态字典都没了, 排队与运行中的任务都无法续跑。
+                # 这类任务是"被中断", 不是"已完成": 标 canceled(已取消) 而非 done(完成),
+                # 否则任务中心会把排队中的任务显示成绿色"完成", 用户误以为已跑完。
+                t["status"] = "canceled"
                 t["error"] = t.get("error") or "服务重启, 任务中断"
                 t["finished_at"] = time.time()
                 try:
@@ -550,14 +635,31 @@ def log_line(tag, msg):
 
 
 # ---------- 配置 ----------
+# 服务进程启动时间(模块 import 时即记录, 供"服务控制"页面显示已运行时长)。
+# 与 _nightly_flag_info 的独立标志文件不同: 这个只代表本进程, 重启即重置。
+_SERVER_START_TIME = time.time()
+
+
+def _human_size(n):
+    """字节数 → 人类可读(B/KB/MB/GB)。"""
+    try:
+        n = float(n)
+    except (TypeError, ValueError):
+        return str(n)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.1f}{unit}" if unit != "B" else f"{int(n)}B"
+        n /= 1024
+
+
 def default_config():
     return {
-        "cookies": {
-            "tanyu-account-id": "2656113728446465571",
-            "tanyu-agent-account": "fM_VS4GirTjMlPPJx_llv5kWStXKTMrRvW__",
-            "tanyu-group-account": "le_FjY2F9WFwuBxC2_ISmD0LfcZkkuHaG9__",
-            "tanyu-group-id": "1901419852011174006",
-        },
+        # 2026-08-20: 此前这里硬编码了 tanyu 登录 cookie(tanyu-agent-account /
+        # tanyu-group-account 等会话令牌), 且已被提交进 git。会话令牌绝不应落源码 ——
+        # 它们会过期、会被轮换, 泄露出去就是别人的登录态。改为留空: 缺 config.json
+        # 时应用启动但抓不到数据(正确行为: 必须由使用者配置/扫码登录), 而不是
+        # 静默带着别人的旧会话 pretend to work。
+        "cookies": {},
         "groups": [],  # 已发现的集团列表(来自微信扫码登录 localStorage.groupList)
         # 夜间预抓多集团配置: 平台顺序(1拼多多 5抖音 7京东)、
         # 默认窗口天数(未在 prefetch_windows 列出的平台用此值)、
@@ -1347,6 +1449,7 @@ def refresh_all_async(start, end, shops=None):
             if _refresh_state["running"]:
                 return
             _refresh_state["running"] = True
+            _refresh_state["_gen"] = _refresh_state.get("_gen", 0) + 1
             _refresh_state["error"] = None
         try:
             # 只抓取启用的平台
@@ -1517,6 +1620,34 @@ def get_current_group():
             return None
         g = (d.get("data") or {}).get("group") or {}
         return {"id": g.get("id"), "name": g.get("name"), "chatbotGroupId": g.get("chatbotGroupId")}
+    except Exception:
+        return None
+
+
+def fetch_tanyu_profile():
+    """获取当前登录账号的个人信息(员工姓名 / 角色 / 账号 ID)
+
+    来自 agent-personal/detail 的 data.account 与 data.roles, 用于给账号池
+    的每条记录打上"这是谁的账号"的可读标注(对扫码登录后只看得到
+    tanyu-account-id 数字的运营场景很有用)。失败/风控静默返回 None。
+    """
+    try:
+        _assert_no_risk()
+        _rate_limit()
+        r = requests.get(f"{GC_API}/agent-personal/detail", headers=get_headers(), timeout=15)
+        d = r.json()
+        if _check_risk(r, d):
+            return None
+        if d.get("success") is False:
+            return None
+        data = d.get("data") or {}
+        acc = data.get("account") or {}
+        roles = [x.get("roleName") for x in (data.get("roles") or []) if x.get("roleName")]
+        return {
+            "name": acc.get("account") or None,
+            "account_id": str(acc.get("id") or ""),
+            "roles": roles,
+        }
     except Exception:
         return None
 
@@ -2011,6 +2142,7 @@ def sync_staff_names_from_tanyu(triggered_by=None):
         if _staff_sync_state.get("running"):
             raise RuntimeError("客服昵称同步任务进行中")
         _staff_sync_state["running"] = True
+        _staff_sync_state["_gen"] = _staff_sync_state.get("_gen", 0) + 1
         _staff_sync_state["error"] = None
         _staff_sync_state["triggered_by"] = triggered_by
     # 用"昨天~昨天"(客服表按天, 一天足矣; 该接口反映当前客服成员)
@@ -2060,9 +2192,7 @@ def staff_names_sync(request: Request):
         if _any_task_running():
             if request.headers.get("x-scheduler-task") == "1":
                 raise HTTPException(409, "任务进行中, 调度器稍后重试")
-            _task = _enqueue_task("staff_sync", _task_label, _operator_label(request), _task_params, _operator_role(request))
-            return {"status": "queued", "taskId": _task["id"],
-                    "queuePosition": _queue_position(_task["id"]), "task": _task_public(_task)}
+            return _dedup_or_enqueue(request, "staff_sync", _task_label, _task_params)
     try:
         r = sync_staff_names_from_tanyu(_operator_label(request))
     except RuntimeError as e:
@@ -2353,6 +2483,7 @@ _staff_sync_state = {
     "last_run": None,
     "error": None,
     "triggered_by": None,  # 谁发起的客服同步(操作者用户名/昵称), 供状态展示
+    "_gen": 0,
 }
 
 
@@ -4099,12 +4230,11 @@ def refresh(request: Request):
         if _any_task_running():
             if request.headers.get("x-scheduler-task") == "1":
                 raise HTTPException(409, "任务进行中, 调度器稍后重试")
-            _task = _enqueue_task("refresh", _task_label, _operator_label(request), _task_params, _operator_role(request))
-            return {"status": "queued", "taskId": _task["id"],
-                    "queuePosition": _queue_position(_task["id"]), "task": _task_public(_task)}
+            return _dedup_or_enqueue(request, "refresh", _task_label, _task_params)
         _refresh_state["triggered_by"] = _operator_label(request)
         # 同步置位 running: 不等 worker 首个 switch_group 完成, 杜绝窗口期双启动
         _refresh_state["running"] = True
+        _refresh_state["_gen"] = _refresh_state.get("_gen", 0) + 1
         _refresh_state["error"] = None
         _refresh_state["progress"] = {"done": 0, "total": 0, "current": "准备中"}
     refresh_all_groups_async(start, end)
@@ -4141,6 +4271,12 @@ def trace_prefetch_start(request: Request, payload: dict = Body(...)):
     span = (e - s).days + 1
     if span > 35:
         raise HTTPException(400, f"区间超过 35 天上限: {span} 天")
+    # 抓取前先确认登录账号: 未登录 / 无可用账号 / 已过期 → 返回结构化错误, 前端弹窗提醒
+    pf = _preflight_account()
+    if not pf["ok"]:
+        return {"ok": False, "code": pf["code"], "action": "qr",
+                "message": pf["message"], "account": pf.get("account"),
+                "accounts": pf.get("accounts")}
     # 校验集团可用
     cfg = load_config()
     groups = [g for g in (cfg.get("groups") or [])
@@ -4158,13 +4294,12 @@ def trace_prefetch_start(request: Request, payload: dict = Body(...)):
         if _any_task_running():
             if request.headers.get("x-scheduler-task") == "1":
                 raise HTTPException(409, "任务进行中, 调度器稍后重试")
-            _task = _enqueue_task("prefetch", _task_label, _operator_label(request), _task_params, _operator_role(request))
-            return {"status": "queued", "taskId": _task["id"],
-                    "queuePosition": _queue_position(_task["id"]), "task": _task_public(_task)}
+            return _dedup_or_enqueue(request, "prefetch", _task_label, _task_params)
         _prefetch_state.update({
             "running": True, "canceled": False, "error": None,
             "start_date": start, "end_date": end,
             "progress": {"done": 0, "total": 0, "current": "准备中…"},
+            "_gen": _prefetch_state.get("_gen", 0) + 1,
             "started_at": time.time(), "last_run": None,
             "triggered_by": _operator_label(request),
         })
@@ -4288,14 +4423,12 @@ def trace_calibrate_start(request: Request, payload: dict = Body(...),
         return _queued
     with _lock:
         if _any_task_running():
-            _task = _enqueue_task("prefetch", _task_label, _operator_label(request),
-                                  _task_params, _operator_role(request))
-            return {"status": "queued", "taskId": _task["id"],
-                    "queuePosition": _queue_position(_task["id"]), "task": _task_public(_task)}
+            return _dedup_or_enqueue(request, "prefetch", _task_label, _task_params)
         _prefetch_state.update({
             "running": True, "canceled": False, "error": None,
             "start_date": start, "end_date": end,
             "progress": {"done": 0, "total": 0, "current": "准备中…"},
+            "_gen": _prefetch_state.get("_gen", 0) + 1,
             "started_at": time.time(), "last_run": None,
             "triggered_by": _operator_label(request),
         })
@@ -4381,6 +4514,7 @@ def trace_config_get(_: dict = Depends(auth.require_admin)):
     else:
         masked = "未配置"
     cur = get_current_group()
+    profile = fetch_tanyu_profile()
     return {
         "prefetch_days": cfg.get("prefetch_days", 7),
         "prefetch_force_days": cfg.get("prefetch_force_days", 1),
@@ -4391,6 +4525,9 @@ def trace_config_get(_: dict = Depends(auth.require_admin)):
             "account_configured": bool(account_id),
             "cookie_configured": {k: bool(cookies.get(k)) for k in _TRACE_COOKIE_KEYS},
             "cookie_expires": dict(cfg.get("cookie_expires") or {}),
+            # tanyu 后台返回的员工姓名 / 角色(扫码登录时捕获), 用于账号可读标注
+            "name": (profile or {}).get("name"),
+            "roles": (profile or {}).get("roles") or [],
         },
         "current_group": {
             "id": cur.get("id") if cur else None,
@@ -4527,6 +4664,61 @@ def _nightly_log_tail(limit=25):
         return []
 
 
+def _last_run_result():
+    """从 nightly_fetch.log 解析最近一次运行的业务结果(耗时/店铺/失败/覆盖)
+
+    返回 dict; 解析不到返回 None。只读日志, 无副作用。
+    用于状态卡片展示"上次运行到底抓到多少", 而不只是 schtasks 的退出码。
+    """
+    try:
+        p = DATA_DIR / "nightly_fetch.log"
+        if not p.exists():
+            return None
+        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception:
+        return None
+    result = {}
+    # 倒序找最近一个"开始"标记, 正序收集其后的关键行
+    start_idx = None
+    for i in range(len(lines) - 1, -1, -1):
+        if "夜间抓取开始" in lines[i] or "自动抓取" in lines[i] and "立即执行" in lines[i]:
+            start_idx = i
+            break
+    if start_idx is None:
+        return None
+    block = lines[start_idx:]
+    for ln in block:
+        m = re.search(r"抓取完成,?\s*耗时\s*(\d+)s", ln)
+        if m and "耗时" not in result:
+            result["fetch_seconds"] = int(m.group(1))
+        m = re.search(r"全部集团完成:\s*(\d+)\s*家店铺,?\s*(\d+)\s*家失败", ln)
+        if m:
+            result["shops"] = int(m.group(1))
+            result["failed"] = int(m.group(2))
+        m = re.search(r"覆盖:\s*总店\s*(\d+)\s*窗口\s*(\d+)\s*天\s*\(([^)]+)\)\s*缺格\s*(\d+)/(\d+)\s*缺口店\s*(\d+)\s*家", ln)
+        if m:
+            result["total_shops"] = int(m.group(1))
+            result["window_days"] = int(m.group(2))
+            result["days_range"] = m.group(3)
+            result["missing_cells"] = int(m.group(4))
+            result["total_cells"] = int(m.group(5))
+            result["gap_shops"] = int(m.group(6))
+        m = re.search(r"耗时\s*(\d+)s\s*$", ln)
+        if m and "total_seconds" not in result and "完成" in ln:
+            result["total_seconds"] = int(m.group(1))
+        if "风控" in ln and "停止" in ln:
+            result["risk"] = True
+        if "跳过本次" in ln:
+            result["skipped"] = True
+    if not result:
+        return None
+    # 时间戳: 取开始行的 [YYYY-MM-DD HH:MM:SS]
+    m = re.search(r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]", lines[start_idx])
+    if m:
+        result["started_at"] = m.group(1)
+    return result
+
+
 def _auto_task_status():
     """自动抓取任务完整状态(配置 + 计划任务 + 覆盖 + 日志)"""
     cfg, af = _auto_task_config()
@@ -4555,10 +4747,14 @@ def _auto_task_status():
         },
         "task": task,               # None=未注册
         "coverage": coverage,
+        "last_run_result": _last_run_result(),
         "log_tail": _nightly_log_tail(),
         "tanyu": {
             "account_configured": bool((cfg.get("cookies") or {}).get("tanyu-account-id")),
             "cookie_expires": dict(cfg.get("cookie_expires") or {}),
+            # 抓取账号池摘要: 与「抓取登录账号」卡片同源, 让自动抓取卡片也能看到
+            # 当前活跃账号与池子规模, 两个功能互相可跳转(整合入口)。
+            "accounts": _accounts_summary(cfg),
         },
     }
 
@@ -4610,12 +4806,53 @@ def auto_task_set(payload: dict = Body(...), _: dict = Depends(auth.require_admi
 
 
 @app.post("/api/auto/task/run")
-def auto_task_run(request: Request, _: dict = Depends(auth.require_admin)):
-    """立即执行一次自动抓取(后台线程跑夜间预抓同款逻辑, 不裁剪)"""
+def auto_task_run(request: Request, payload: dict = Body(default_factory=dict),
+                  _: dict = Depends(auth.require_admin)):
+    """立即执行一次自动抓取(后台线程跑夜间预抓同款逻辑, 不裁剪)
+
+    payload:
+      mode: "now"=立即抓取(默认) / "force"=强制重抓最近 N 天 / "dryrun"=模拟运行(不抓取)
+      platforms: 可选, 只抓指定平台的集团(如 [7]); 不传=按配置全抓
+      force_days: 可选, mode=force 时强制重抓天数(0~7); 不传=用 config.prefetch_force_days
+      days: 可选, 覆盖窗口天数(1~35); 不传=用 config.prefetch_days
+    """
     cfg = load_config()
-    days = int(cfg.get("prefetch_days", 7) or 7)
-    _task_label = f"自动抓取 · 立即执行(窗口 {days} 天)"
-    _task_params = {"days": days, "mode": "auto-run"}
+    mode = str(payload.get("mode") or "now").strip().lower()
+    if mode not in ("now", "force", "dryrun"):
+        raise HTTPException(400, f"mode 非法: {mode}(需 now/force/dryrun)")
+    days = payload.get("days")
+    days = int(days) if days is not None else int(cfg.get("prefetch_days", 7) or 7)
+    if not (1 <= days <= 35):
+        raise HTTPException(400, "窗口天数需为 1~35")
+    plats = payload.get("platforms")
+    if plats is not None:
+        plats_i = [int(x) for x in plats]
+        if not plats_i or any(p not in FETCH_PLATFORMS for p in plats_i):
+            raise HTTPException(400, f"抓取平台需为 {list(FETCH_PLATFORMS)} 的非空子集")
+        plats = plats_i
+    force = payload.get("force_days")
+    force_i = int(force) if force is not None else int(cfg.get("prefetch_force_days", 1) or 0)
+    if not (0 <= force_i <= 7):
+        raise HTTPException(400, "强制重抓天数需为 0~7")
+
+    # 抓取前先确认登录账号: 未登录 / 无可用账号 / 已过期 → 返回结构化错误, 前端弹窗提醒
+    # (模拟运行只读缓存, 不需要登录态, 不做预检)
+    if mode != "dryrun":
+        pf = _preflight_account()
+        if not pf["ok"]:
+            return {"ok": False, "code": pf["code"], "action": "qr",
+                    "message": pf["message"], "account": pf.get("account"),
+                    "accounts": pf.get("accounts")}
+
+    if mode == "dryrun":
+        return _auto_task_dryrun(days=days, platforms=plats)
+
+    plat_txt = f"·{[PLATFORM_NAMES.get(p, p) for p in plats]}" if plats else ""
+    if mode == "force":
+        _task_label = f"自动抓取 · 强制重抓(窗口 {days} 天 · 重抓 {force_i} 天){plat_txt}"
+    else:
+        _task_label = f"自动抓取 · 立即执行(窗口 {days} 天){plat_txt}"
+    _task_params = {"days": days, "mode": mode, "platforms": plats, "force_days": force_i}
     _queued = _queue_if_busy(request, "prefetch", _task_label, _task_params)
     if _queued:
         return _queued
@@ -4623,14 +4860,12 @@ def auto_task_run(request: Request, _: dict = Depends(auth.require_admin)):
         if _any_task_running():
             if request.headers.get("x-scheduler-task") == "1":
                 raise HTTPException(409, "任务进行中, 调度器稍后重试")
-            _task = _enqueue_task("prefetch", _task_label, _operator_label(request),
-                                  _task_params, _operator_role(request))
-            return {"status": "queued", "taskId": _task["id"],
-                    "queuePosition": _queue_position(_task["id"]), "task": _task_public(_task)}
+            return _dedup_or_enqueue(request, "prefetch", _task_label, _task_params)
         _prefetch_state.update({
             "running": True, "canceled": False, "error": None,
             "start_date": None, "end_date": None,
             "progress": {"done": 0, "total": 0, "current": "准备中…"},
+            "_gen": _prefetch_state.get("_gen", 0) + 1,
             "started_at": time.time(), "last_run": None,
             "triggered_by": _operator_label(request),
         })
@@ -4640,10 +4875,13 @@ def auto_task_run(request: Request, _: dict = Depends(auth.require_admin)):
     def worker():
         try:
             set_nightly_fetch_flag()   # 抓取期间阻塞 8080 直连请求(不串集团 cookie)
-            prefetch_trace_window(days=days, prune=False)
-            log_line("prefetch", f"自动抓取·立即执行完成(窗口 {days} 天)")
+            prefetch_trace_window(days=days, prune=False, platforms=plats,
+                                   force_days=force_i if mode == "force" else None)
+            log_line("prefetch", f"自动抓取·{mode} 完成(窗口 {days} 天"
+                                   + (f"·重抓 {force_i} 天" if mode == "force" else "")
+                                   + (f"·{plat_txt.strip('·')}" if plats else "") + ")")
         except Exception as e:
-            log_line("prefetch", f"自动抓取·立即执行异常: {e}")
+            log_line("prefetch", f"自动抓取·{mode} 异常: {e}")
             _prefetch_state["error"] = str(e)
         finally:
             _prefetch_state["running"] = False
@@ -4651,8 +4889,356 @@ def auto_task_run(request: Request, _: dict = Depends(auth.require_admin)):
             clear_nightly_fetch_flag()
 
     threading.Thread(target=worker, daemon=True).start()
-    return {"ok": True, "message": f"自动抓取已启动(窗口 {days} 天), 进度见任务中心",
-            "days": days}
+    return {"ok": True, "message": f"自动抓取已启动({mode}, 窗口 {days} 天), 进度见任务中心",
+            "mode": mode, "days": days, "platforms": plats, "force_days": force_i}
+
+
+def _auto_task_dryrun(days=35, platforms=None):
+    """模拟运行: 跑 nightly_fetch 的 dry-run 判定(只算覆盖/裁剪, 不出网不抓取)
+
+    直接同步执行(coverage 只读缓存文件, 毫秒级, 无网络), 返回完整覆盖报告 + 缺口店明细。
+    """
+    import nightly_fetch as _nf
+    import datetime as _dt
+    today = _dt.date.today()
+    yesterday = today - _dt.timedelta(days=1)
+    try:
+        # coverage_report 内部走 _shops_by_platform 跨集团全量; 全量计算成本极低
+        # (只读缓存文件, 毫秒级, 无网络), 比逐平台调用更一致。
+        rep = _nf.coverage_report(yesterday)
+        if platforms:
+            _pls = set(int(p) for p in platforms)
+            shops_by_p = _nf._shops_by_platform()
+            rep = dict(rep)
+            rep["gap_shops"] = [g for g in rep["gap_shops"] if g["platform"] in _pls]
+            rep["missing_cells"] = sum(len(g["missing"]) for g in rep["gap_shops"])
+            rep["total_shops"] = sum(len(shops_by_p.get(p, [])) for p in _pls)
+            rep["total_cells"] = sum(
+                len(shops_by_p.get(p, [])) * len(_nf._window_days(yesterday))
+                for p in _pls)
+        return {"ok": True, "mode": "dryrun", "days": days, "report": rep,
+                "full": _nf.window_full(rep),
+                "log_tail": _nightly_log_tail()}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "mode": "dryrun"}
+
+
+@app.post("/api/auto/task/dry-run")
+def auto_task_dryrun(payload: dict = Body(default_factory=dict),
+                     _: dict = Depends(auth.require_admin)):
+    """模拟运行一次夜间抓取(只判定覆盖/裁剪, 不实际抓取); 等价于 nightly_fetch.py --dry-run"""
+    days = payload.get("days")
+    cfg = load_config()
+    days = int(days) if days is not None else int(cfg.get("prefetch_days", 35) or 35)
+    plats = payload.get("platforms")
+    if plats is not None:
+        plats_i = [int(x) for x in plats]
+        if not plats_i or any(p not in FETCH_PLATFORMS for p in plats_i):
+            raise HTTPException(400, f"抓取平台需为 {list(FETCH_PLATFORMS)} 的非空子集")
+        plats = plats_i
+    return _auto_task_dryrun(days=days, platforms=plats)
+
+
+# ---------- 抓取登录账号池(微信扫码登录 tanyu 后台的账号, 按 tanyu-account-id 去重) ----------
+# 背景: 探域数据抓取需要 tanyu 后台登录态(cookie)。之前只在 config.json 存一套,
+# 换账号要手动改配置, 且历史登录的账号无处可查。这里做一个持久化账号池:
+#   - data/tanyu_accounts.json 存历史登录的账号(页面不回显 cookie 明文)
+#   - config.json 存"当前活跃账号"的 cookie(所有既有抓取代码继续读 config.cookies, 不动)
+#   - 删/切账号 = 改 config.cookies; 池子独立于配置存活, 重启不丢
+ACCOUNTS_FILE = DATA_DIR / "tanyu_accounts.json"
+
+
+def _accounts_load() -> list:
+    """读账号池; 文件不存在/损坏返回 []"""
+    try:
+        data = json.loads(ACCOUNTS_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _accounts_save(lst: list):
+    """原子写账号池(先写临时文件再 rename, 防止写到一半磁盘满导致池文件损坏)"""
+    try:
+        tmp = ACCOUNTS_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(lst, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(ACCOUNTS_FILE)
+    except Exception as e:
+        log_line("auth", f"⚠️ 保存账号池失败: {e}")
+
+
+def _account_id_of(cfg: dict) -> str | None:
+    return (cfg.get("cookies") or {}).get("tanyu-account-id")
+
+
+def _account_expiry(cfg: dict) -> str | None:
+    return (cfg.get("cookie_expires") or {}).get("tanyu-agent-account")
+
+
+def _account_label(cfg: dict, acc: dict | None = None) -> str:
+    """账号展示名: 优先用户备注 > 集团名 > accountId"""
+    if acc and acc.get("label"):
+        return acc["label"]
+    groups = (acc.get("groups") if acc else None) or cfg.get("groups") or []
+    named = [g.get("groupName") for g in groups if g.get("groupName")]
+    aid = (acc.get("account_id") if acc else None) or _account_id_of(cfg) or ""
+    if named:
+        return named[0]
+    return aid or "未命名账号"
+
+
+def _account_from_cfg(cfg: dict, label: str | None = None, profile: dict | None = None) -> dict | None:
+    """从当前 config 构造账号条目(供扫码登录后落池)"""
+    cks = dict(cfg.get("cookies") or {})
+    key = cks.get("tanyu-account-id")
+    if not key or not cks.get("tanyu-agent-account"):
+        return None
+    # 账号展示名: 优先用户备注 > tanyu 后台返回的员工姓名 > 集团名 > accountId
+    name = (profile or {}).get("name")
+    if not label and name:
+        label = name
+    return {
+        "account_id": key,
+        "label": label or _account_label(cfg),
+        "name": name,
+        "roles": (profile or {}).get("roles") or [],
+        "cookies": {k: cks[k] for k in cks if k.startswith("tanyu-")},
+        "groups": [dict(g) for g in (cfg.get("groups") or []) if g.get("groupId")],
+        "expires": dict(cfg.get("cookie_expires") or {}),
+        "platforms": sorted({g.get("platform") for g in (cfg.get("groups") or [])
+                             if g.get("platform")}),
+        "created": time.time(),
+        "last_used": time.time(),
+    }
+
+
+def _pub_account(acc: dict) -> dict:
+    """账号的页面公开视图: 绝不回显 cookie 明文"""
+    exp = acc.get("expires") or {}
+    agent_exp = exp.get("tanyu-agent-account")
+    try:
+        expired = bool(agent_exp) and agent_exp < datetime.date.today().isoformat()
+    except Exception:
+        expired = False
+    return {
+        "account_id": acc.get("account_id"),
+        "label": acc.get("label") or _account_label({}, acc),
+        # tanyu 后台返回的员工姓名 / 角色(扫码登录时捕获), 用于区分"这是谁的账号"
+        "name": acc.get("name"),
+        "roles": acc.get("roles") or [],
+        "platforms": acc.get("platforms") or [],
+        "groups": [g.get("groupName") for g in (acc.get("groups") or []) if g.get("groupName")],
+        "expires": agent_exp,
+        "expired": expired,
+        "created": acc.get("created"),
+        "last_used": acc.get("last_used"),
+    }
+
+
+def _accounts_upsert_from_cfg(label: str | None = None, profile: dict | None = None) -> dict:
+    """把当前 config 的登录态落进账号池(按 tanyu-account-id 去重覆盖), 并设为活跃"""
+    cfg = load_config()
+    acc = _account_from_cfg(cfg, label=label, profile=profile)
+    if not acc:
+        return {"ok": False, "message": "当前 config 没有可保存的 tanyu 账号 cookie"}
+    accounts = _accounts_load()
+    accounts = [a for a in accounts if a.get("account_id") != acc["account_id"]]
+    accounts.append(acc)
+    _accounts_save(accounts)
+    aid = acc["account_id"]
+
+    def _set_active(c):
+        c["active_account_id"] = aid
+    mutate_config(_set_active)
+    return {"ok": True, "message": "已保存账号到池", "account": _pub_account(acc)}
+
+
+def _accounts_select(account_id: str) -> dict:
+    """切换活跃账号: 把池里该账号的 cookie 复制进 config"""
+    accounts = _accounts_load()
+    acc = next((a for a in accounts if a.get("account_id") == account_id), None)
+    if not acc:
+        raise HTTPException(400, f"账号 {account_id} 不在账号池中")
+    acc["last_used"] = time.time()
+    _accounts_save(accounts)
+
+    def _sel(c):
+        c["active_account_id"] = account_id
+        c["cookies"] = dict(acc.get("cookies") or {})
+        if acc.get("expires"):
+            c["cookie_expires"] = dict(acc["expires"])
+    mutate_config(_sel)
+    return {"ok": True, "message": f"已切换到账号 {account_id}", "account": _pub_account(acc)}
+
+
+def _accounts_delete(account_id: str) -> dict:
+    """删除账号; 若为当前活跃账号则一并清空 config 里的登录 cookie"""
+    accounts = _accounts_load()
+    acc = next((a for a in accounts if a.get("account_id") == account_id), None)
+    if not acc:
+        raise HTTPException(404, f"账号 {account_id} 不在账号池中")
+    accounts = [a for a in accounts if a.get("account_id") != account_id]
+    _accounts_save(accounts)
+    cfg = load_config()
+    if cfg.get("active_account_id") == account_id:
+        def _clear(c):
+            c.pop("active_account_id", None)
+            # 只清 tanyu-* 登录 cookie, 其余配置(集团/抓取/钉钉)保留
+            c["cookies"] = {k: v for k, v in (c.get("cookies") or {}).items()
+                            if not k.startswith("tanyu-")}
+            c.pop("cookie_expires", None)
+        mutate_config(_clear)
+    return {"ok": True, "message": f"已删除账号 {account_id}",
+            "accounts": [_pub_account(a) for a in _accounts_load()]}
+
+
+def _ensure_active_account():
+    """确保 config cookies 与活跃账号一致(不一致则静默从池恢复)
+
+    返回 (account|None, restored:bool, reason:str|None)
+      reason: None=正常 / "no_account"=池空 / "no_active"=有池但未选活跃 /
+              "expired"=cookie 已过期
+    """
+    cfg = load_config()
+    accounts = _accounts_load()
+    active_id = cfg.get("active_account_id")
+    active = next((a for a in accounts if a.get("account_id") == active_id), None)
+    if not active:
+        return None, False, ("no_account" if not accounts else "no_active")
+    cks = cfg.get("cookies") or {}
+    if cks.get("tanyu-account-id") != active_id or not cks.get("tanyu-agent-account"):
+        def _restore(c):
+            c["active_account_id"] = active_id
+            c["cookies"] = dict(active.get("cookies") or {})
+            if active.get("expires"):
+                c["cookie_expires"] = dict(active["expires"])
+        mutate_config(_restore)
+        return active, True, None
+    exp = _account_expiry(cfg)
+    if exp and exp < datetime.date.today().isoformat():
+        return active, False, "expired"
+    return active, False, None
+
+
+def _preflight_account() -> dict:
+    """抓取前的账号确认(每次抓取前调用)
+
+    返回 {ok, code?, account?, message, accounts?}
+      ok=True  : 账号可用, account 为公开视图
+      ok=False : code ∈ {no_account, no_active, account_expired}
+    """
+    acc, restored, reason = _ensure_active_account()
+    if reason == "expired":
+        return {"ok": False, "code": "account_expired", "account": _pub_account(acc),
+                "message": "登录账号已过期, 请重新扫码登录保存账号"}
+    if reason == "no_account":
+        return {"ok": False, "code": "no_account",
+                "message": "未登录任何抓取账号, 请先扫码登录"}
+    if reason == "no_active":
+        return {"ok": False, "code": "no_active",
+                "accounts": [_pub_account(a) for a in _accounts_load()],
+                "message": "请在抓取账号面板选择一个已登录的账号"}
+    return {"ok": True, "account": _pub_account(acc), "restored": restored}
+
+
+def _accounts_summary(cfg: dict) -> dict:
+    """账号池摘要(供自动抓取卡片复用): 池子规模 + 当前活跃账号的公开信息"""
+    accounts = _accounts_load()
+    active_id = cfg.get("active_account_id")
+    active = next((a for a in accounts if a.get("account_id") == active_id), None)
+    return {
+        "total": len(accounts),
+        "active_id": active_id,
+        "active_label": _account_label(cfg, active) if active else None,
+        "active_expired": bool(active and (active.get("expires") or {}).get("tanyu-agent-account")
+                               and (active.get("expires") or {}).get("tanyu-agent-account") < datetime.date.today().isoformat()),
+    }
+
+
+def _auto_task_prefetch_summary() -> dict:
+    """自动抓取任务摘要(供抓取账号卡片复用): 计划任务是否注册 + 下次运行 + 是否已配置账号"""
+    try:
+        cfg, af = _auto_task_config()
+        task = _schtasks_query()
+        return {
+            "enabled": bool(af.get("enabled", True)),
+            "schedule": str(af.get("schedule") or "00:05"),
+            "next_run": (task or {}).get("next_run"),
+            "account_configured": bool((cfg.get("cookies") or {}).get("tanyu-account-id")),
+        }
+    except Exception:
+        return {"enabled": False, "schedule": "00:05", "next_run": None, "account_configured": False}
+
+
+@app.get("/api/accounts")
+def accounts_get(_: dict = Depends(auth.require_admin)):
+    """抓取账号池: 历史账号 + 当前活跃 + 抓取前预检结果"""
+    accounts = _accounts_load()
+    cfg = load_config()
+    return {
+        "accounts": [_pub_account(a) for a in accounts],
+        "active_id": cfg.get("active_account_id"),
+        "preflight": _preflight_account(),
+        # 自动抓取任务摘要: 与「自动抓取任务」卡片同源, 让账号面板也能看到
+        # 夜间抓取计划与下次运行时间, 两个功能互相可跳转(整合入口)。
+        "prefetch": _auto_task_prefetch_summary(),
+    }
+
+
+@app.post("/api/accounts")
+def accounts_set(payload: dict = Body(default_factory=dict),
+                 _: dict = Depends(auth.require_admin)):
+    """保存/切换抓取账号
+
+    payload.account_id 已存在 → 切换为活跃账号(从池恢复 cookie 到 config)
+    payload.account_id 不存在 + 传 label → 以当前 config cookie 新建账号
+    不传 account_id → 把当前 config 登录态落池(扫码登录后保存)
+    """
+    aid = payload.get("account_id")
+    if aid:
+        return _accounts_select(str(aid))
+    label = payload.get("label")
+    return _accounts_upsert_from_cfg(label=str(label) if label else None)
+
+
+# 注意: /api/accounts/qr 与 /api/accounts/qr/save 必须注册在
+# /api/accounts/{account_id} 之前 —— Starlette 按注册顺序匹配, 否则 POST /api/accounts/qr
+# 会被 {account_id} 路由捕获成 account_id="qr", 走到 accounts_delete 抛 404。
+@app.post("/api/accounts/qr")
+def accounts_qr(_: dict = Depends(auth.require_admin)):
+    """生成微信扫码登录二维码(复用后台原图), 登录成功后自动落池并设为活跃"""
+    return wx_qr_start()
+
+
+@app.post("/api/accounts/qr/save")
+def accounts_qr_save(payload: dict = Body(default_factory=dict),
+                     _: dict = Depends(auth.require_admin)):
+    """扫码登录完成后, 把当前 config 登录态显式落进账号池(可附带备注)"""
+    return _accounts_upsert_from_cfg(label=payload.get("label"))
+
+
+@app.delete("/api/accounts/{account_id}")
+@app.post("/api/accounts/{account_id}")
+def accounts_delete(account_id: str, _: dict = Depends(auth.require_admin)):
+    """删除某个已登录账号(同时清除 config 里的登录 cookie 若为活跃账号)"""
+    return _accounts_delete(account_id)
+
+
+@app.get("/api/auto/task/log/tail")
+def auto_task_log_tail(lines: int = 120, _: dict = Depends(auth.require_admin)):
+    """抓取设置程序日志尾部: nightly_fetch.log + prefetch_now.log 合并展示"""
+    out = []
+    for name in ("nightly_fetch.log", "prefetch_now.log"):
+        p = DATA_DIR / name
+        if not p.exists():
+            continue
+        try:
+            content = p.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            continue
+        out.append(f"===== {name} (尾部 {min(lines, len(content))} 行) =====")
+        out.extend(content[-lines:])
+    return {"ok": True, "lines": out}
 
 
 @app.get("/api/trace/shop/{shop_id}")
@@ -4746,6 +5332,7 @@ _trace_state = {
     "partial_list": [],    # 运行中已完成店铺的统计(浅拷贝), 供前端边算边展示
     "shop_filter": None,   # 本次核算的店铺子集(账号池勾选), None=全部店铺
     "triggered_by": None,  # 谁发起的核算(操作者用户名/昵称), 供状态展示
+    "_gen": 0,              # 调度器判"是否真起过 worker"的代际计数(见 _run_task)
 }
 _trace_resume_evt = threading.Event()
 
@@ -4763,6 +5350,7 @@ _today_state = {
     "last_run": None,
     "error": None,
     "triggered_by": None,  # 谁发起的今日抓取(操作者用户名/昵称), 供状态展示
+    "_gen": 0,
 }
 
 
@@ -5202,26 +5790,65 @@ def trace_overview(request: Request, days: int = 7, platform: str | None = None,
     if shop_filter:
         # 子集核算只关心勾选店铺所属平台的覆盖情况, 避免未勾选平台拖垮判定
         _db_plats = _filtered_platforms(_db_plats, shop_filter)
-    if (not force and _use_sqlite_trace() and _db_plats
-            and all(trace_store.db_window_covers(sday, eday, platform=p,
-                                                 shop_filter=shop_filter) for p in _db_plats)):
-        try:
-            result = _trace_overview_from_db_multi(start, end, _db_plats, shop_filter, has_time=has_time)
-            if result:
-                if shop_filter:
-                    # 店铺子集结果单独存, 不覆盖全量核算视图
-                    _trace_state["subset_result"] = result
-                else:
-                    _trace_state["result"] = result
-                _trace_state["start_date"] = start
-                _trace_state["end_date"] = end
-                _trace_state["platform"] = plat_key
-                _trace_state["shop_filter"] = shop_filter
-                _trace_state["last_run"] = time.time()
-                print(f"[trace] SQLite 快路径 {start}~{end} (共{result['total']}条)")
-                return {"status": "done", "startDate": start, "endDate": end, "result": result}
-        except Exception as e:
-            print(f"[trace] SQLite 快路径失败, 回退在线抓取: {e}")
+    if not force and _use_sqlite_trace() and _db_plats:
+        # 逐平台判定覆盖, 而不是"全库 MIN/MAX": 导入平台(10/11)无限期数据
+        # 会撑大全库窗口, 全库口径会让抓取平台早于其窗口的自定义区间误判已覆盖。
+        cov = {p: trace_store.db_window_covers(sday, eday, platform=p,
+                                               shop_filter=shop_filter) for p in _db_plats}
+        if all(cov.values()):
+            # 完整覆盖 → 纯本地聚合, 零上游请求(核算提速主因)
+            try:
+                result = _trace_overview_from_db_multi(start, end, _db_plats, shop_filter, has_time=has_time)
+                if result:
+                    if shop_filter:
+                        # 店铺子集结果单独存, 不覆盖全量核算视图
+                        _trace_state["subset_result"] = result
+                    else:
+                        _trace_state["result"] = result
+                    _trace_state["start_date"] = start
+                    _trace_state["end_date"] = end
+                    _trace_state["platform"] = plat_key
+                    _trace_state["shop_filter"] = shop_filter
+                    _trace_state["last_run"] = time.time()
+                    print(f"[trace] SQLite 快路径 {start}~{end} (共{result['total']}条)")
+                    return {"status": "done", "startDate": start, "endDate": end, "result": result}
+            except Exception as e:
+                print(f"[trace] SQLite 快路径失败, 回退在线抓取: {e}")
+        else:
+            # 完整覆盖失败 → 部分覆盖兜底(同 trace_staff 口径): 区间内部分天
+            # 有数据就聚合已有天, 标 coverage=partial + missingDays, 避免单天缺失
+            # (如某店新加入、某晚抓取失败)把整片平台显示成 0。完全无数据
+            # (区间整体在窗口之外)则不聚合, 继续走缓存/在线抓取。
+            partial_plats = [p for p in _db_plats
+                             if trace_store.db_window_range(sday, eday, platform=p,
+                                                             shop_filter=shop_filter)]
+            if partial_plats:
+                try:
+                    result = _trace_overview_from_db_multi(start, end, partial_plats,
+                                                           shop_filter, has_time=has_time)
+                    if result:
+                        result["coverage"] = "partial"
+                        gaps = {}
+                        for p in partial_plats:
+                            gaps.update(_staff_window_gaps(p, shop_filter, sday, eday))
+                        if gaps:
+                            result["missingDays"] = gaps
+                            result["missingCount"] = sum(gaps.values())
+                        if shop_filter:
+                            _trace_state["subset_result"] = result
+                        else:
+                            _trace_state["result"] = result
+                        _trace_state["start_date"] = start
+                        _trace_state["end_date"] = end
+                        _trace_state["platform"] = plat_key
+                        _trace_state["shop_filter"] = shop_filter
+                        _trace_state["last_run"] = time.time()
+                        print(f"[trace] SQLite 部分覆盖聚合 {start}~{end} "
+                              f"(共{result['total']}条, coverage=partial, 缺天{len(gaps)}天)")
+                        return {"status": "done", "startDate": start, "endDate": end,
+                                "result": result}
+                except Exception as e:
+                    print(f"[trace] SQLite 部分覆盖聚合失败, 回退在线抓取: {e}")
     if from_cache:
         # 只读模式: 未命中缓存不触发任务; 有最近结果则带回展示
         latest = load_latest_trace_overview_cache()
@@ -5244,10 +5871,9 @@ def trace_overview(request: Request, days: int = 7, platform: str | None = None,
             # 队列检查到加锁间的竞态窗口被交互请求抢占: 锁内再查, 忙则入队
             if request.headers.get("x-scheduler-task") == "1":
                 raise HTTPException(409, "任务进行中, 调度器稍后重试")
-            _task = _enqueue_task("overview", _task_label, _operator_label(request), _task_params, _operator_role(request))
-            return {"status": "queued", "taskId": _task["id"],
-                    "queuePosition": _queue_position(_task["id"]), "task": _task_public(_task)}
+            return _dedup_or_enqueue(request, "overview", _task_label, _task_params)
         _trace_state["running"] = True
+        _trace_state["_gen"] = _trace_state.get("_gen", 0) + 1
         _trace_state["start_date"] = start
         _trace_state["end_date"] = end
         _trace_state["platform"] = platform
@@ -5449,6 +6075,7 @@ def trace_overview(request: Request, days: int = 7, platform: str | None = None,
 
     threading.Thread(target=worker, daemon=True).start()
     return {"status": "running", "startDate": start, "endDate": end,
+            "taskId": _trace_state.get("task_id"),
             "progress": _trace_state["progress"]}
 
 
@@ -5925,10 +6552,9 @@ def trace_today(request: Request, platform: int | None = None, shop_ids: str | N
         if _any_task_running():
             if request.headers.get("x-scheduler-task") == "1":
                 raise HTTPException(409, "任务进行中, 调度器稍后重试")
-            _task = _enqueue_task("today", _task_label, _operator_label(request), _task_params, _operator_role(request))
-            return {"status": "queued", "taskId": _task["id"],
-                    "queuePosition": _queue_position(_task["id"]), "task": _task_public(_task)}
+            return _dedup_or_enqueue(request, "today", _task_label, _task_params)
         _today_state["running"] = True
+        _today_state["_gen"] = _today_state.get("_gen", 0) + 1
         _today_state["start_date"] = today_str
         _today_state["end_date"] = today_str
         _today_state["start_ts"] = start_ts
@@ -6054,7 +6680,8 @@ def trace_today(request: Request, platform: int | None = None, shop_ids: str | N
 
     threading.Thread(target=worker, daemon=True).start()
     return {"status": "running", "startDate": today_str, "endDate": today_str,
-            "startTs": start_ts, "endTs": end_ts, "progress": _today_state["progress"]}
+            "startTs": start_ts, "endTs": end_ts, "taskId": _today_state.get("task_id"),
+            "progress": _today_state["progress"]}
 
 
 @app.get("/api/trace/today/status")
@@ -6062,6 +6689,9 @@ def trace_today_status(request: Request):
     """今日实时抓取任务状态/结果(附带夜间抓取标志: 前端展示"谁在抓取/为何阻塞")"""
     with _lock:
         st = dict(_today_state)
+    # task_id 是内部字段(调度器/登记函数写入), 对外统一成 taskId 供前端判归属
+    if st.get("task_id") is not None:
+        st["taskId"] = st["task_id"]
     st["nightly"] = _nightly_flag_info()
     if st.get("triggered_by"):
         st["triggered_by"] = _mask_admin_label(request, st["triggered_by"])
@@ -6080,6 +6710,7 @@ def trace_overview_status(request: Request):
             "platform": _trace_state["platform"],
             "lastRun": _trace_state["last_run"],
             "taskShopFilter": _trace_state["shop_filter"],
+            "taskId": _trace_state.get("task_id"),
             "error": _trace_state["error"],
             "result": _trace_state["result"],
             "subsetResult": _trace_state["subset_result"],
@@ -6279,6 +6910,44 @@ def _maybe_prune_tasks():
             pass
 
 
+_STALE_TASK_AGE = 90   # 兜底: running 记录超过该秒仍未被懒同步收尾, 视为已结束
+
+
+def _reconcile_stale_tasks():
+    """兜底收尾: 把"状态字典已空闲、但任务记录仍停在 running"的行标 done。
+
+    懒同步 _sync_task_progress 只遍历内存中的任务; 服务重启后从 DB 恢复的任务
+    (_state_ref=None)、或恢复时 upsert 失败导致 DB 仍为 running 的行, 永远不会被
+    懒同步触到, 任务中心就会永久显示"运行中"。这里直接查 DB 一次性清理。
+    """
+    try:
+        rows = log_store.query_tasks(status="running", limit=200, since=None)
+    except Exception:
+        return
+    now = time.time()
+    for r in rows:
+        tid = r.get("id")
+        try:
+            tid_i = int(tid)
+        except Exception:
+            continue
+        m = _tasks.get(tid_i)
+        live = (m is not None and m.get("status") == "running"
+                and m.get("_state_ref") is not None
+                and bool(m["_state_ref"].get("running")))
+        if live:
+            continue                                  # 真的在跑, 不动
+        if now - (r.get("created_at") or 0) < _STALE_TASK_AGE:
+            continue                                  # 新建任务, 给懒同步时间
+        r["status"] = "done"
+        r["error"] = r.get("error") or "任务已结束(兜底收尾)"
+        r["finished_at"] = now
+        try:
+            log_store.upsert_task(r)
+        except Exception:
+            pass
+
+
 @app.get("/api/tasks/list")
 def tasks_list(request: Request, limit: int = 10, offset: int = 0, status: str | None = None,
                task_type: str | None = None, since_hours: float | None = 6):
@@ -6292,6 +6961,7 @@ def tasks_list(request: Request, limit: int = 10, offset: int = 0, status: str |
     """
     _maybe_prune_tasks()
     _sync_task_progress()
+    _reconcile_stale_tasks()
     limit = max(1, min(int(limit), 100))
     offset = max(0, int(offset))
     since = None
@@ -6633,6 +7303,320 @@ def auth_cookie_expiry():
         if days_left is None or left < days_left:
             days_left = left
     return {"expires": expires_map, "daysLeft": days_left}
+
+
+# ---------- 数据库管理面板(仅管理员) ----------
+# 用户提到"接了 MySQL", 实际项目只有两个 SQLite 文件: data/trace.db(消息轨迹)与
+# data/logs.db(任务/系统日志)。这里做一个可视化的只读浏览器 + 简单维护, 供管理员
+# 直接看表结构/行数/抽样行, 与脚本里 sqlite3 命令行等价但不用敲命令。
+DB_PANEL_DB = {
+    "trace": str(trace_store.DB_FILE),
+    "logs": str(log_store.DB_FILE),
+}
+# 允许"删旧数据"的表(白名单, 防误删元表/用户表)
+DB_PRUNE_WHITELIST = {
+    "trace": ["messages", "trace_daily", "operation_log"],
+    "logs": ["tasks", "system_logs"],
+}
+# 敏感列名: 任何只读浏览/查询结果里都要屏蔽, 防管理员在"任意表浏览"里
+# 顺手看到密码哈希/令牌/cookie 明文。2026-08-20 审查发现 users.password_hash
+# 原样下发。
+DB_SENSITIVE_COLS = {"password_hash", "password", "token", "secret", "cookie",
+                     "webhook", "api_key", "passphrase"}
+
+
+def _db_mask_cols(cols):
+    """去掉敏感列名(保持原顺序), 用于列列表与查询结果投影。"""
+    return [c for c in cols if c.lower() not in DB_SENSITIVE_COLS]
+
+
+def _db_panel_conn(db_key: str):
+    path = DB_PANEL_DB.get(db_key)
+    if not path or not Path(path).exists():
+        raise HTTPException(status_code=404, detail=f"数据库 {db_key} 不存在")
+    c = sqlite3.connect(str(path), timeout=15)
+    c.row_factory = sqlite3.Row
+    return c
+
+
+def _safe_table_name(db_key: str, table: str) -> str:
+    """校验 table 是该库真实存在的用户表, 防 SQL 注入拼接。"""
+    c = _db_panel_conn(db_key)
+    try:
+        ok = c.execute(
+            "select 1 from sqlite_master where type='table' and name=? and name not like 'sqlite_%'",
+            (table,),
+        ).fetchone()
+    finally:
+        c.close()
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"表 {table} 不存在")
+    return table
+
+
+@app.get("/api/admin/databases")
+def admin_databases(_: dict = Depends(auth.require_admin)):
+    """两个 SQLite 库: 文件大小 + 每张表的行数与列名(纯只读统计)。"""
+    out = []
+    for key, path in DB_PANEL_DB.items():
+        p = Path(path)
+        if not p.exists():
+            out.append({"key": key, "path": "data/" + p.name, "exists": False, "size": 0, "tables": []})
+            continue
+        c = sqlite3.connect(str(path))
+        c.row_factory = sqlite3.Row
+        tables = []
+        for (t,) in c.execute(
+            "select name from sqlite_master where type='table' and name not like 'sqlite_%' order by name"
+        ):
+            try:
+                n = c.execute(f"select count(*) from {t}").fetchone()[0]
+            except Exception:
+                n = -1
+            cols = [r[1] for r in c.execute(f"pragma table_info({t})")]
+            tables.append({"name": t, "rows": n, "columns": _db_mask_cols(cols)})
+        c.close()
+        out.append({"key": key, "path": "data/" + p.name, "exists": True,
+                    "size": p.stat().st_size, "tables": tables})
+    return {"databases": out}
+
+
+@app.get("/api/admin/db/tables")
+def admin_db_table(db: str = Query(...), table: str = Query(...), page: int = 1,
+                   limit: int = 50, _: dict = Depends(auth.require_admin)):
+    """单表结构 + 总行数 + 当前页抽样行(只读)。"""
+    table = _safe_table_name(db, table)
+    c = _db_panel_conn(db)
+    try:
+        total = c.execute(f"select count(*) from {table}").fetchone()[0]
+        cols = [r[1] for r in c.execute(f"pragma table_info({table})")]
+        safe_cols = _db_mask_cols(cols)
+        lp = max(1, min(int(limit), 200))
+        off = max(0, (int(page) - 1)) * lp
+        rows = c.execute(f"select * from {table} limit ? offset ?", (lp, off)).fetchall()
+    finally:
+        c.close()
+    return {"db": db, "table": table, "total": total, "columns": safe_cols,
+            "rows": [{k: v for k, v in dict(r).items() if k in safe_cols} for r in rows],
+            "page": page, "limit": lp}
+
+
+@app.post("/api/admin/db/query")
+def admin_db_query(body: dict = Body(...), _: dict = Depends(auth.require_admin)):
+    """只读 SQL 查询(仅 SELECT / WITH), 结果上限 200 行。"""
+    db = body.get("db")
+    sql = (body.get("sql") or "").strip()
+    if db not in DB_PANEL_DB:
+        raise HTTPException(status_code=400, detail="未知数据库")
+    head = sql.upper().lstrip()
+    if not (head.startswith("SELECT") or head.startswith("WITH")):
+        raise HTTPException(status_code=400, detail="仅支持 SELECT / WITH 只读查询")
+    for kw in ("DROP", "DELETE", "INSERT", "UPDATE", "ALTER", "CREATE",
+               "REPLACE", "ATTACH", "DETACH", "VACUUM", "GRANT", "REVOKE"):
+        if re.search(r"\b" + kw + r"\b", head):
+            raise HTTPException(status_code=400, detail=f"禁止出现关键字 {kw}")
+    c = _db_panel_conn(db)
+    try:
+        cur = c.execute(sql)
+        cols = [d[0] for d in cur.description] if cur.description else []
+        rows = cur.fetchmany(200)
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=400, detail=f"SQL 执行失败: {e}")
+    finally:
+        c.close()
+    # 敏感列(密码哈希/令牌/cookie)在任何只读结果里都屏蔽, 防管理员顺手看到。
+    safe_cols = _db_mask_cols(cols)
+    keep = [i for i, c2 in enumerate(cols) if c2 in safe_cols]
+    return {"db": db, "columns": safe_cols,
+            "rows": [[r[i] for i in keep] for r in rows], "truncated": len(rows) >= 200}
+
+
+@app.post("/api/admin/db/vacuum")
+def admin_db_vacuum(body: dict = Body(...), _: dict = Depends(auth.require_admin)):
+    """VACUUM 回收文件碎片(仅管理员, 会短暂锁库)。"""
+    db = body.get("db")
+    if db not in DB_PANEL_DB:
+        raise HTTPException(status_code=400, detail="未知数据库")
+    c = sqlite3.connect(DB_PANEL_DB[db], timeout=15)
+    try:
+        c.execute("VACUUM")
+        c.commit()
+    finally:
+        c.close()
+    return {"ok": True, "db": db}
+
+
+@app.post("/api/admin/db/prune")
+def admin_db_prune(body: dict = Body(...), _: dict = Depends(auth.require_admin)):
+    """按时间删旧数据(白名单表 + 最少天数保护), 防误删。
+
+    安全闸: 若命中行数 > 1000, 必须带 confirm=true 才真删, 否则返回
+    {"needsConfirm": true, "wouldDelete": N} 让前端弹二次确认。2026-08-20
+    这里曾因直接调用把 trace_daily 的 4412 行一次删光(全部数据都早于 30 天),
+    加此闸防止同类误操作。
+    """
+    db = body.get("db")
+    table = body.get("table")
+    days = body.get("days")
+    if db not in DB_PANEL_DB or table not in DB_PRUNE_WHITELIST.get(db, []):
+        raise HTTPException(status_code=400, detail="该表不允许在此清理")
+    try:
+        days = int(days)
+    except Exception:
+        raise HTTPException(status_code=400, detail="天数需为整数")
+    if days < 7:
+        raise HTTPException(status_code=400, detail="至少保留 7 天, 防误删")
+    if days > 36500:   # > 100 年: 视为"保留全部", 不让异常时间值误删数据
+        return {"ok": True, "db": db, "table": table, "deleted": 0, "retention_days": days}
+    ts_col = {"messages": "msg_time", "trace_daily": "day", "operation_log": "ts",
+              "tasks": "created_at", "system_logs": "ts"}[table]
+    cutoff = time.time() - days * 86400
+    if table == "trace_daily":
+        # day 列存的是 ISO 日期字符串(如 '2026-07-21'), 不是 YYYYMMDD 整数。
+        # 必须用同格式比较, 否则 '2026-07-21' < 20260721 按字典序恒真 → 误删全部。
+        try:
+            cutoff_day = datetime.date.fromtimestamp(cutoff).isoformat()
+        except (OverflowError, ValueError, OSError):
+            cutoff_day = "1970-01-01"   # 溢出=保留全部, 删 0 条
+        sql = f"delete from {table} where day < ?"
+        args = (cutoff_day,)
+    else:
+        sql = f"delete from {table} where {ts_col} < ?"
+        args = (cutoff,)
+
+    # 命中数预览(不真删)
+    c = sqlite3.connect(DB_PANEL_DB[db], timeout=15)
+    try:
+        cnt_sql = sql.replace("delete from", "select count(*) from")
+        would = c.execute(cnt_sql, args).fetchone()[0] or 0
+    finally:
+        c.close()
+    if would > 1000 and not body.get("confirm"):
+        return {"needsConfirm": True, "wouldDelete": would, "db": db, "table": table, "retention_days": days}
+
+    c = sqlite3.connect(DB_PANEL_DB[db], timeout=15)
+    try:
+        cur = c.execute(sql, args)
+        c.commit()
+        n = cur.rowcount
+    finally:
+        c.close()
+    return {"ok": True, "db": db, "table": table, "deleted": n, "retention_days": days}
+
+
+# ---------- 服务控制(仅管理员: 启停/重启本服务) ----------
+# 服务自己停自己是可行的: 端点先返回 200, 再在后台线程里 os._exit,
+# 浏览器拿到响应后进程才退出。重启则先 detached 起 launch_resident.py
+# (等端口空闲后自动拉起本服务), 再退出本进程 —— 全程在浏览器里完成,
+# 不需要再跑一遍启动器。2026-08-20
+_SERVER_LAUNCHER = str(Path(__file__).resolve().parent / "launch_resident.py")
+
+
+def _spawn_detached_launcher():
+    """起一个 detached 进程跑 launch_resident.py(端口释放后自动拉起服务)。
+
+    用 DETACHED_PROCESS 让子进程脱离当前控制台, 本进程退出后它继续活着。
+    跨平台: 没有 DETACHED_PROCESS 常量的平台(如 Linux)跳过该标志。
+    """
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if os.name == "nt":
+        flags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+    subprocess.Popen(
+        [sys.executable, _SERVER_LAUNCHER],
+        cwd=str(Path(__file__).resolve().parent),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        env=dict(os.environ),
+        creationflags=flags,
+    )
+
+
+@app.get("/api/admin/server/status")
+def admin_server_status(_: dict = Depends(auth.require_admin)):
+    """服务运行状态: 进程/端口/Python/已运行时长/DB 大小/夜间抓取标志/配置文件。"""
+    import platform
+
+    port = int(os.environ.get("PORT", "8080"))
+    uptime = max(0, int(time.time() - _SERVER_START_TIME))
+    dbs = []
+    for key, path in DB_PANEL_DB.items():
+        p = Path(path)
+        dbs.append({
+            "key": key,
+            "exists": p.exists(),
+            "size": _human_size(p.stat().st_size) if p.exists() else "-",
+        })
+    return {
+        "ok": True,
+        "pid": os.getpid(),
+        "port": port,
+        "python": platform.python_version(),
+        "interpreter": sys.executable,
+        "uptime_seconds": uptime,
+        "uptime_human": _human_duration(uptime),
+        "started_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(_SERVER_START_TIME)),
+        "databases": dbs,
+        "nightly": _nightly_flag_info(),
+        "config_present": CONFIG_FILE.exists(),
+        "data_dir": str(DATA_DIR),
+    }
+
+
+def _human_duration(seconds):
+    """秒数 → 天/时/分/秒人类可读。"""
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}秒"
+    if seconds < 3600:
+        return f"{seconds // 60}分{seconds % 60}秒"
+    if seconds < 86400:
+        h, rem = divmod(seconds, 3600)
+        return f"{h}小时{rem // 60}分"
+    d, rem = divmod(seconds, 86400)
+    h, rem = divmod(rem, 3600)
+    return f"{d}天{h}小时{rem // 60}分"
+
+
+@app.post("/api/admin/server/stop")
+def admin_server_stop(_: dict = Depends(auth.require_admin)):
+    """停止本服务(响应后退出)。停止后需手动跑 launch_resident.py / control_panel.py 启动。"""
+    def _shutdown():
+        time.sleep(0.4)
+        os._exit(0)
+
+    threading.Thread(target=_shutdown, daemon=True).start()
+    return {"ok": True, "stopping": True}
+
+
+@app.post("/api/admin/server/restart")
+def admin_server_restart(_: dict = Depends(auth.require_admin)):
+    """重启本服务: 先 detached 起启动器, 再退出本进程, 浏览器里一键完成。"""
+    try:
+        _spawn_detached_launcher()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"启动拉起失败: {e}")
+
+    def _shutdown():
+        time.sleep(0.6)
+        os._exit(0)
+
+    threading.Thread(target=_shutdown, daemon=True).start()
+    return {"ok": True, "restarting": True}
+
+
+@app.get("/api/admin/server/log")
+def admin_server_log(lines: int = 30, _: dict = Depends(auth.require_admin)):
+    """服务日志尾部(读 server.log, 与 launch_resident.py 同一份文件)。"""
+    log_file = Path(__file__).resolve().parent / "server.log"
+    if not log_file.exists():
+        return {"log": "(暂无日志)", "path": str(log_file)}
+    try:
+        content = log_file.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except Exception as e:
+        return {"log": f"读取失败: {e}", "path": str(log_file)}
+    n = max(1, min(int(lines), 500))
+    return {"log": "\n".join(content[-n:]), "path": str(log_file), "lines": n}
 
 
 # ---------- 静态页面 ----------
@@ -6993,6 +7977,9 @@ def wx_qr_select(body: WxQrSelectBody):
                 if g.get("accountId") == body.account_id), None)
     if not sel or not sel.get("groupId"):
         _reset_risk()
+        # cookie 已保存, 同样落进账号池(即使未切换集团, 账号本身可用)
+        # 顺带拉取 tanyu 后台的员工姓名/角色, 作为账号可读标注
+        _accounts_upsert_from_cfg(profile=fetch_tanyu_profile())
         with _wx_qr_lock:
             _wx_qr_state["phase"] = "done"
             _wx_qr_state["error"] = None
@@ -7011,6 +7998,10 @@ def wx_qr_select(body: WxQrSelectBody):
     except Exception as e:
         log_line("auth", f"登录后切换集团失败: {e}")
     _reset_risk()
+    # 登录成功: 把当前登录态落进账号池(按 tanyu-account-id 去重), 并设为活跃账号
+    # 顺带拉取 tanyu 后台的员工姓名/角色, 作为账号可读标注(对"只看得到数字 account_id"
+    # 的运营场景, 能直接看出这是谁的账号)
+    _accounts_upsert_from_cfg(profile=fetch_tanyu_profile())
     with _wx_qr_lock:
         _wx_qr_state["phase"] = "done"
         _wx_qr_state["error"] = None
@@ -7246,7 +8237,8 @@ def repair_platform_attribution():
     return fixed
 
 
-def prefetch_trace_window(days=None, prune=True, progress_cb=None):
+def prefetch_trace_window(days=None, prune=True, progress_cb=None,
+                           platforms=None, force_days=None):
     """夜间预抓: 轮询拼多多→京东→抖音三集团, 按集团窗口抓缺失/过期天, 并滚动裁剪
 
     每天 00:00 由计划任务 TanyuDashboardTracePrefetch 触发:
@@ -7266,6 +8258,10 @@ def prefetch_trace_window(days=None, prune=True, progress_cb=None):
       何时进入"满 35 天连续无缺口才裁最老一天"的滚动模式)。默认 True 保持既有行为。
     progress_cb: 可选回调 fn(progress_dict), 每完成一家店铺调用一次
       {"done": 累计完成店铺数, "total": 总店铺数, "current": "集团·店名"}, 供前端进度条。
+    platforms: 可选, 只预抓指定平台的集团(如 [7]=只抓京东); None=按配置全抓。
+      排错常用: 某平台挂了/风控了, 单独重抓另一平台, 不必三平台全跑。
+    force_days: 可选, 本次强制重抓最近 N 天(覆盖 config.prefetch_force_days);
+      0=不强制。用于"立即执行"临时加大力度, 不改配置。
     """
     t_all = time.time()
     trace_store.init_db()
@@ -7273,7 +8269,6 @@ def prefetch_trace_window(days=None, prune=True, progress_cb=None):
     days = days or int(cfg.get("prefetch_days", 7))
     # prefetch_windows 的 key 可能是 JSON 字符串("5")或数字(5), 统一归一化为 int
     window_map = {int(k): int(v) for k, v in (cfg.get("prefetch_windows") or {}).items()}
-    force_days = int(cfg.get("prefetch_force_days", 1) or 0)
     platform_order = cfg.get("prefetch_platforms") or [1, 5, 7]
     groups = cfg.get("groups") or []
     # 按平台排序优先级(1 拼多多, 5 抖音, 7 京东), 未标注平台的集团放最后
@@ -7282,6 +8277,18 @@ def prefetch_trace_window(days=None, prune=True, progress_cb=None):
         [g for g in groups if g.get("groupId")],
         key=lambda g: plat_rank.get(g.get("platform"), 99),
     )
+    # platforms 过滤: 只预抓指定平台的集团(排错时单独重抓某平台)
+    if platforms:
+        _pls = set(int(p) for p in platforms)
+        ordered = [g for g in ordered if g.get("platform") in _pls]
+        if not ordered:
+            print(f"[prefetch] ⚠️ 指定平台 {sorted(_pls)} 下无激活集团, 无可预抓")
+            return
+    # force_days 覆盖: 本次强制重抓最近 N 天(覆盖 config.prefetch_force_days)
+    if force_days is None:
+        force_days = int(cfg.get("prefetch_force_days", 1) or 0)
+    else:
+        force_days = int(force_days)
     if not ordered:
         print("[prefetch] ⚠️ config.groups 为空, 无可预抓集团")
         return
